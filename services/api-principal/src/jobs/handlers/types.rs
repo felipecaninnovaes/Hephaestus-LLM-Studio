@@ -203,6 +203,8 @@ pub struct TelemetryResponse {
     #[serde(rename = "ramTotal")]
     pub ram_total: Option<i64>,
     pub gpus: Vec<String>,
+    #[serde(rename = "gpuDevices", default, skip_serializing_if = "Vec::is_empty")]
+    pub gpu_devices: Vec<crate::monitoring::GpuDeviceResponse>,
     #[serde(rename = "jobsActive")]
     pub jobs_active: i32,
 }

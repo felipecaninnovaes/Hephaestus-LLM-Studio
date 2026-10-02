@@ -325,6 +325,7 @@ pub async fn get_telemetry(State(state): State<AppState>) -> Response {
         ram: t.ram,
         ram_total: t.ram_total,
         gpus: t.gpus,
+        gpu_devices: t.gpu_devices.into_iter().map(Into::into).collect(),
         jobs_active: t.jobs_active,
     };
     (StatusCode::OK, Json(resp)).into_response()

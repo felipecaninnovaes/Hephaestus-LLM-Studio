@@ -5311,6 +5311,40 @@ components:
         nextOffset: { type: integer, format: int64, description: "Offset a usar no próximo pedido." }
         eof: { type: boolean, description: "true quando não há mais linhas no artefato." }
 
+    GpuDeviceTelemetry:
+      type: object
+      required: [index, uuid, name, vramTotal, vramUsed]
+      additionalProperties: false
+      description: "Telemetria detalhada de uma GPU individual (nvidia-smi)."
+      properties:
+        index:
+          type: integer
+          minimum: 0
+          description: "Índice da GPU no host (nvidia-smi)."
+        uuid:
+          type: string
+          description: "Identificador canônico da GPU (GPU-...)."
+        name:
+          type: string
+          description: "Nome do modelo da GPU."
+        vramTotal:
+          type: integer
+          format: int64
+          description: "VRAM total da GPU em MiB."
+        vramUsed:
+          type: integer
+          format: int64
+          description: "VRAM usada da GPU em MiB."
+        powerWatts:
+          type: [number, "null"]
+          description: "Consumo elétrico atual em Watts."
+        gpuUtilizationPct:
+          type: [number, "null"]
+          description: "Percentual de utilização da GPU (0..100)."
+        temperatureC:
+          type: [integer, "null"]
+          description: "Temperatura atual da GPU em graus Celsius."
+
     Telemetry:
       type: object
       required: [measured, gpus, jobsActive]
@@ -5339,6 +5373,10 @@ components:
           type: array
           items: { type: string }
           description: "Lista de GPUs detectadas (vazia no mock)."
+        gpuDevices:
+          type: array
+          items: { $ref: "#/components/schemas/GpuDeviceTelemetry" }
+          description: "Lista de GPUs individuais com telemetria detalhada."
         jobsActive:
           type: integer
           minimum: 0
@@ -5398,6 +5436,10 @@ components:
           type: array
           items: { type: string }
           description: "Lista de GPUs detectadas (vazia no mock)."
+        gpuDevices:
+          type: array
+          items: { $ref: "#/components/schemas/GpuDeviceTelemetry" }
+          description: "Lista de GPUs individuais com telemetria detalhada."
         jobsActive:
           type: integer
           minimum: 0

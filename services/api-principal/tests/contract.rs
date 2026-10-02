@@ -1107,6 +1107,7 @@ async fn orchestrator_response_keys_are_camel_case() {
             vram_total: Some(6144),
             vram_total_gb: Some(6),
             gpus: vec!["NVIDIA GeForce GTX 1660 SUPER".into()],
+            gpu_devices: vec![],
             jobs_active: 1,
             disk_total_gb: Some(100.0),
             disk_used_gb: Some(25.0),
@@ -1138,6 +1139,96 @@ async fn orchestrator_response_keys_are_camel_case() {
         item.get("last_heartbeat").is_none(),
         "leaked snake_case last_heartbeat"
     );
+}
+#[tokio::test]
+async fn orchestrator_response_gpu_devices_camel_case() {
+    use api_principal::jobs::manager_client::{InternalOrchestrator, MockManager};
+    use heph_contracts::GpuDeviceTelemetry;
+
+    let mock = MockManager::default();
+    let mut state = setup_state();
+    state.manager = std::sync::Arc::new({
+        let mut m = mock;
+        m.list_orchestrators_result = Some(vec![InternalOrchestrator {
+            id: "550e8400-e29b-41d4-a716-446655440000".into(),
+            name: "docker-04".into(),
+            kind: "remoto".into(),
+            endpoint: "http://docker-04:8082".into(),
+            status: "online".into(),
+            last_heartbeat: Some("2026-09-09T12:00:00Z".into()),
+            measured: true,
+            cpu: Some(10.0),
+            ram: Some(4096),
+            ram_total: Some(16384),
+            vram_used: Some(8024),
+            vram_total: Some(18432),
+            vram_total_gb: Some(12),
+            gpus: vec![
+                "NVIDIA GeForce RTX 3060".into(),
+                "NVIDIA GeForce GTX 1660 SUPER".into(),
+            ],
+            gpu_devices: vec![
+                GpuDeviceTelemetry {
+                    index: 0,
+                    uuid: "GPU-1c1e01c2-4192-8f38-1a8a-33fb78b06f17".into(),
+                    name: "NVIDIA GeForce RTX 3060".into(),
+                    vram_total: 12288,
+                    vram_used: 6961,
+                    power_watts: Some(18.03),
+                    gpu_utilization_pct: Some(0.0),
+                    temperature_c: Some(50),
+                },
+                GpuDeviceTelemetry {
+                    index: 1,
+                    uuid: "GPU-c83cc056-07f7-d31e-cc98-7486ddac0296".into(),
+                    name: "NVIDIA GeForce GTX 1660 SUPER".into(),
+                    vram_total: 6144,
+                    vram_used: 1063,
+                    power_watts: Some(42.78),
+                    gpu_utilization_pct: Some(12.0),
+                    temperature_c: Some(51),
+                },
+            ],
+            jobs_active: 0,
+            disk_total_gb: Some(200.0),
+            disk_used_gb: Some(50.0),
+        }]);
+        m
+    });
+    let app = routes::build(state);
+    let (token, _) = session::issue_jwt(uuid::Uuid::new_v4(), &SETUP_SECRET);
+    let cookie = format!("heph_session={token}");
+
+    let (status, _, body) = call(
+        app,
+        Request::builder()
+            .method("GET")
+            .uri("/api/orchestrators")
+            .header(http::header::COOKIE, cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let json = json(&body);
+    let items = json["items"].as_array().expect("items array");
+    let item = &items[0];
+    let devs = item["gpuDevices"].as_array().expect("gpuDevices array");
+    assert_eq!(devs.len(), 2);
+    let d0 = &devs[0];
+    assert_eq!(d0["index"], 0);
+    assert_eq!(d0["uuid"], "GPU-1c1e01c2-4192-8f38-1a8a-33fb78b06f17");
+    assert_eq!(d0["vramTotal"], 12288);
+    assert_eq!(d0["vramUsed"], 6961);
+    assert_eq!(d0["powerWatts"], 18.03);
+    assert_eq!(d0["gpuUtilizationPct"], 0.0);
+    assert_eq!(d0["temperatureC"], 50);
+
+    // Sem vazamento de snake_case
+    assert!(d0.get("vram_total").is_none());
+    assert!(d0.get("power_watts").is_none());
+    assert!(d0.get("gpu_utilization_pct").is_none());
+    assert!(d0.get("temperature_c").is_none());
 }
 
 #[tokio::test]

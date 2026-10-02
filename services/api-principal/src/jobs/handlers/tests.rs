@@ -390,6 +390,7 @@ async fn get_telemetry_handler_200() {
         ram: Some(1024),
         ram_total: None,
         gpus: vec![],
+        gpu_devices: vec![],
         jobs_active: 0,
     });
     let state = test_state(mock);
@@ -417,6 +418,7 @@ async fn get_telemetry_handler_ram_total() {
         ram: Some(1024),
         ram_total: Some(8_000_000_000),
         gpus: vec![],
+        gpu_devices: vec![],
         jobs_active: 0,
     });
     let state = test_state(mock);

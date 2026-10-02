@@ -24,6 +24,51 @@ use crate::state::AppState;
 // Wire types (camelCase — ADR-0002 D1)
 // ---------------------------------------------------------------------------
 
+/// Telemetria por dispositivo GPU (camelCase wire — B1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GpuDeviceResponse {
+    pub index: u32,
+    pub uuid: String,
+    pub name: String,
+    #[serde(rename = "vramTotal")]
+    pub vram_total: i64,
+    #[serde(rename = "vramUsed")]
+    pub vram_used: i64,
+    #[serde(
+        rename = "powerWatts",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub power_watts: Option<f64>,
+    #[serde(
+        rename = "gpuUtilizationPct",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub gpu_utilization_pct: Option<f64>,
+    #[serde(
+        rename = "temperatureC",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub temperature_c: Option<i32>,
+}
+
+impl From<heph_contracts::GpuDeviceTelemetry> for GpuDeviceResponse {
+    fn from(d: heph_contracts::GpuDeviceTelemetry) -> Self {
+        Self {
+            index: d.index,
+            uuid: d.uuid,
+            name: d.name,
+            vram_total: d.vram_total,
+            vram_used: d.vram_used,
+            power_watts: d.power_watts,
+            gpu_utilization_pct: d.gpu_utilization_pct,
+            temperature_c: d.temperature_c,
+        }
+    }
+}
+
 /// Orquestrador (camelCase wire — D1).
 #[derive(Debug, Serialize)]
 pub struct OrchestratorResponse {
@@ -47,6 +92,8 @@ pub struct OrchestratorResponse {
     #[serde(rename = "vramTotalGb")]
     pub vram_total_gb: Option<i32>,
     pub gpus: Vec<String>,
+    #[serde(rename = "gpuDevices", default, skip_serializing_if = "Vec::is_empty")]
+    pub gpu_devices: Vec<GpuDeviceResponse>,
     #[serde(rename = "jobsActive")]
     pub jobs_active: i32,
     #[serde(rename = "diskTotalGb", skip_serializing_if = "Option::is_none")]
@@ -54,7 +101,6 @@ pub struct OrchestratorResponse {
     #[serde(rename = "diskUsedGb", skip_serializing_if = "Option::is_none")]
     pub disk_used_gb: Option<f64>,
 }
-
 /// Lista de orquestradores.
 #[derive(Debug, Serialize)]
 pub struct OrchestratorListResponse {
@@ -153,6 +199,7 @@ pub async fn get_orchestrators(State(state): State<AppState>) -> Response {
             vram_total: o.vram_total,
             vram_total_gb: o.vram_total_gb,
             gpus: o.gpus,
+            gpu_devices: o.gpu_devices.into_iter().map(Into::into).collect(),
             jobs_active: o.jobs_active,
             disk_total_gb: o.disk_total_gb,
             disk_used_gb: o.disk_used_gb,
@@ -319,6 +366,7 @@ pub async fn adopt_orchestrator(
                 vram_total: o.vram_total,
                 vram_total_gb: o.vram_total_gb,
                 gpus: o.gpus,
+                gpu_devices: o.gpu_devices.into_iter().map(Into::into).collect(),
                 jobs_active: o.jobs_active,
                 disk_total_gb: o.disk_total_gb,
                 disk_used_gb: o.disk_used_gb,
@@ -387,6 +435,7 @@ mod tests {
             vram_total: Some(6144),
             vram_total_gb: Some(6),
             gpus: vec!["NVIDIA GeForce GTX 1660 SUPER".into()],
+            gpu_devices: vec![],
             jobs_active: 1,
             disk_total_gb: Some(100.0),
             disk_used_gb: Some(25.0),
@@ -469,6 +518,50 @@ mod tests {
             "leaked snake_case last_heartbeat"
         );
         assert_eq!(item["kind"], "local");
+    }
+    #[tokio::test]
+    async fn get_orchestrators_with_gpu_devices_camel_case() {
+        let mut mock = MockManager::default();
+        let mut orch = mock_orchestrator();
+        orch.gpu_devices = vec![
+            heph_contracts::GpuDeviceTelemetry {
+                index: 0,
+                uuid: "GPU-1c1e01c2-4192-8f38-1a8a-33fb78b06f17".into(),
+                name: "NVIDIA GeForce RTX 3060".into(),
+                vram_total: 12288,
+                vram_used: 6961,
+                power_watts: Some(18.03),
+                gpu_utilization_pct: Some(0.0),
+                temperature_c: Some(50),
+            },
+            heph_contracts::GpuDeviceTelemetry {
+                index: 1,
+                uuid: "GPU-c83cc056-07f7-d31e-cc98-7486ddac0296".into(),
+                name: "NVIDIA GeForce GTX 1660 SUPER".into(),
+                vram_total: 6144,
+                vram_used: 1063,
+                power_watts: Some(42.78),
+                gpu_utilization_pct: Some(12.0),
+                temperature_c: Some(51),
+            },
+        ];
+        mock.list_orchestrators_result = Some(vec![orch]);
+        let state = test_state(mock);
+        let resp = get_orchestrators(axum::extract::State(state)).await;
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let items = json["items"].as_array().expect("items array");
+        let item = &items[0];
+        let devs = item["gpuDevices"].as_array().expect("gpuDevices array");
+        assert_eq!(devs.len(), 2);
+        assert_eq!(devs[0]["uuid"], "GPU-1c1e01c2-4192-8f38-1a8a-33fb78b06f17");
+        assert_eq!(devs[0]["vramTotal"], 12288);
+        assert_eq!(devs[0]["powerWatts"], 18.03);
+        assert_eq!(devs[1]["uuid"], "GPU-c83cc056-07f7-d31e-cc98-7486ddac0296");
+        assert_eq!(devs[1]["vramTotal"], 6144);
+        assert_eq!(devs[1]["powerWatts"], 42.78);
     }
 
     // --- get_models ---

@@ -4,3 +4,4 @@ export * from "./JobHeroHeader";
 export * from "./JobArtifactsList";
 export * from "./JobLineage";
 export * from "./JobMetricsChips";
+export * from "./JobAlertsPanel";

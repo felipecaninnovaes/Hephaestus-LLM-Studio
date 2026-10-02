@@ -82,6 +82,30 @@ export interface JobArtifactsResponse {
   items: JobArtifact[];
 }
 
+/* ── Alertas (fatia 3c): regras nan_detected / telemetry_stale ── */
+
+export type JobAlertRuleId =
+  | "nan_detected"
+  | "vram_high"
+  | "disk_high"
+  | "telemetry_stale";
+
+export type JobAlertSeverity = "warning" | "critical";
+
+export interface JobAlert {
+  id: string;
+  jobId: string;
+  ruleId: JobAlertRuleId;
+  severity: JobAlertSeverity;
+  message: string;
+  firedAt: string;
+  resolvedAt?: string | null;
+}
+
+export interface JobAlertsResponse {
+  items: JobAlert[];
+}
+
 export type JobTerminalStatus = "done" | "failed" | "cancelled";
 
 export interface JobDeletedResponse {

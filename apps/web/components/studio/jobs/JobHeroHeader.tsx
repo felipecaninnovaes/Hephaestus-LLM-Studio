@@ -2,7 +2,8 @@
 
 import { IconActivity, IconTrash, IconX } from "@/components/icons";
 import { Badge, jobStatusToBadgeVariant } from "@/components/ui/Badge";
-import type { Job, JobStatus } from "@/types/studio";
+import type { Job, JobAlert, JobStatus } from "@/types/studio";
+import { JobAlertsBadge } from "./JobAlertsPanel";
 
 const STATUS_LABEL: Record<JobStatus, string> = {
   preparing: "Preparando",
@@ -22,6 +23,8 @@ interface JobHeroHeaderProps {
   selectedJobId: string | null;
   hasActiveJobs: boolean;
   activeJobId?: string;
+  alerts?: JobAlert[] | null;
+  onOpenAlerts?: () => void;
   onSetFocus: (enable: boolean, jobId?: string) => void;
   onDelete: (job: Job) => void;
   onSelectJob: (jobId: string | null) => void;
@@ -34,6 +37,8 @@ export function JobHeroHeader({
   selectedJobId,
   hasActiveJobs,
   activeJobId,
+  alerts,
+  onOpenAlerts,
   onSetFocus,
   onDelete,
   onSelectJob,
@@ -54,6 +59,9 @@ export function JobHeroHeader({
         >
           {STATUS_LABEL[selectedJob.status]}
         </Badge>
+        {onOpenAlerts && (
+          <JobAlertsBadge alerts={alerts} onOpen={onOpenAlerts} />
+        )}
       </div>
       <div className="flex items-center gap-3">
         {focusMode ? (

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { getJob, getJobMetricPoints } from "@/lib/jobs";
-import type { MetricPointWithKey } from "@/types/jobs";
+import type { JobAlert, MetricPointWithKey } from "@/types/jobs";
 import type { JobTelemetryEvent } from "@/types/studio";
 
 export interface UseJobTelemetryOptions {
@@ -10,6 +10,8 @@ export interface UseJobTelemetryOptions {
 	onFinished?: (event: JobTelemetryEvent | null) => void;
 	onError?: (err: Error) => void;
 	onMetricPoints?: (points: MetricPointWithKey[], maxSeq: number) => void;
+	/** Snapshot completo de alertas recebido via evento SSE `alerts` (fatia 3c). */
+	onAlerts?: (alerts: JobAlert[]) => void;
 	/** Último seq de métrica já carregado (delta no polling de fallback) */
 	metricAfterSeq?: number;
 	/** Chaves de métrica pedidas no polling de fallback */
@@ -96,6 +98,8 @@ export function useJobTelemetry(
 	onErrorRef.current = onError;
 	const onMetricPointsRef = useRef(options.onMetricPoints);
 	onMetricPointsRef.current = options.onMetricPoints;
+	const onAlertsRef = useRef(options.onAlerts);
+	onAlertsRef.current = options.onAlerts;
 	const metricSeqRef = useRef(0);
 	metricSeqRef.current = Math.max(
 		metricSeqRef.current,
@@ -269,6 +273,18 @@ export function useJobTelemetry(
 							data.maxSeq ?? 0,
 						);
 						onMetricPointsRef.current(data.items, data.maxSeq ?? 0);
+					}
+				} catch {
+					// Ignora JSON malformado
+				}
+			});
+
+			es.addEventListener("alerts", (e: MessageEvent) => {
+				if (isClosed) return;
+				try {
+					const data = JSON.parse(e.data);
+					if (data && Array.isArray(data.items) && onAlertsRef.current) {
+						onAlertsRef.current(data.items);
 					}
 				} catch {
 					// Ignora JSON malformado

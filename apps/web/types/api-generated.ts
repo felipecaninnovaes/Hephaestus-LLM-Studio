@@ -1185,6 +1185,56 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/jobs/{id}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description PK do job. UUID inválido ⇒ 404 `not_found`. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Exporta métricas de um job em CSV ou Parquet (fatia 5c)
+         * @description Fatia 5c (`telemetria-observabilidade.md` §3.4, §4 Onda 5c):
+         *     Exporta a série temporal completa de `job_metric_points` para o job especificado.
+         *     Colunas: `seq,epoch,step,key,value,ts`, uma linha por ponto, ordenado por seq ascendente.
+         *     CSV é transmitido em streaming (`text/csv`).
+         *     Parquet (`application/vnd.apache.parquet`) é montado em batch com teto de 2.000.000 pontos.
+         */
+        get: operations["exportJobMetrics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{id}/alerts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description PK do job. UUID inválido ⇒ 404 `not_found`. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Lista alertas disparados e histórico recente de um job
+         * @description Retorna alertas ativos e resolvidos associados ao job (fatia 3c).
+         */
+        get: operations["getJobAlerts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/jobs/{id}/events": {
         parameters: {
             query?: never;
@@ -1197,8 +1247,26 @@ export interface paths {
         };
         /**
          * Stream de eventos de telemetria em tempo real (SSE)
-         * @description Canal Server-Sent Events (ADR-0021 D3) transmitindo eventos de telemetria em tempo real
-         *     conforme são emitidos pelo motor de execução.
+         * @description Canal Server-Sent Events (ADR-0021 D3) transmitindo eventos de telemetria em tempo real.
+         *
+         *     Fatia 1b (`telemetria-observabilidade.md` §3.2/§3.3): o BFF não mais faz polling de
+         *     300ms por cliente — um único `PgListener` ouve `pg_notify('job_events', …)` emitido
+         *     pelo manager (mesma transação da escrita) e distribui o resultado via fan-out
+         *     in-process. Eventos SSE:
+         *     - `snapshot`: estado inicial ao conectar (sempre o 1º evento).
+         *     - `telemetry`: atualização de progress/phase/step/epoch/vram.
+         *     - `metrics`: novos pontos de `job_metric_points` — `id:` SSE é o `seq` máximo do
+         *       lote (`data: {"items":[{seq,epoch,step,key,value,ts}],"maxSeq":N}`).
+         *     - `alerts`: snapshot completo dos alertas do job, ativos e resolvidos (`data: JobAlertsResponse`,
+         *       fatia 3c) — idempotente: o cliente substitui a lista inteira a cada evento.
+         *     - `finished`: status terminal (`done`/`failed`/`cancelled`) — último evento, a conexão
+         *       encerra em seguida.
+         *
+         *     Reconexão: enviar o header `Last-Event-ID` com o `seq` do último evento `metrics`
+         *     recebido — o servidor busca o delta (`afterSeq`) antes de reassinar o fan-out, sem
+         *     perder pontos publicados durante a desconexão. Se o `PgListener` do BFF cair, os
+         *     clientes seguem recebendo atualizações via poll de 5s compartilhado (não por
+         *     cliente) até a reconexão automática do listener.
          */
         get: operations["streamJobEvents"];
         put?: never;
@@ -3040,6 +3108,43 @@ export interface components {
             metrics?: {
                 [key: string]: number | string | boolean | null;
             } | null;
+            /** @description Diagnósticos adicionais de treinamento (fatia 3b/3c). */
+            diagnostics?: components["schemas"]["TrainingDiagnostics"] | null;
+        };
+        /** @description Diagnósticos de treino emitidos pelo engine (fatia 3b/3c). */
+        TrainingDiagnostics: {
+            /** @description Norma L2 global dos gradientes. */
+            gradNormL2?: number | null;
+            /** @description Contagem de tensores/valores NaN detectados no step. */
+            nanCount?: number | null;
+            /** @description Contagem de valores infinitos detectados no step. */
+            infCount?: number | null;
+            /** @description Taxas de aprendizado ativas por grupo de parâmetros. */
+            lrPerGroup?: (number | null)[];
+            /** @description Normas dos pesos/gradientes dos adaptadores LoRA. */
+            loraNorms?: {
+                [key: string]: number | null;
+            };
+        };
+        /** @description Alerta associado à execução de um job (fatia 3c). */
+        JobAlert: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            jobId: string;
+            /** @enum {string} */
+            ruleId: "nan_detected" | "vram_high" | "disk_high" | "telemetry_stale";
+            /** @enum {string} */
+            severity: "warning" | "critical";
+            message: string;
+            /** Format: date-time */
+            firedAt: string;
+            /** Format: date-time */
+            resolvedAt?: string | null;
+        };
+        /** @description Lista de alertas do job. */
+        JobAlertsResponse: {
+            items: components["schemas"]["JobAlert"][];
         };
         /** @description Lista de jobs (ADR-0007 D7). */
         JobList: {
@@ -6034,6 +6139,130 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Sem sessão válida (`code: unauthorized`). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Job inexistente ou id não-UUID (`code: not_found`). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Manager indisponível (`code: queue_unavailable`). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    exportJobMetrics: {
+        parameters: {
+            query: {
+                /** @description Formato de exportação desejado (csv ou parquet). */
+                format: "csv" | "parquet";
+            };
+            header?: never;
+            path: {
+                /** @description PK do job. UUID inválido ⇒ 404 `not_found`. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Arquivo exportado de métricas no formato solicitado. */
+            200: {
+                headers: {
+                    /** @description attachment; filename="job-{id}-metrics.{csv|parquet}" */
+                    "Content-Disposition"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": string;
+                    "application/vnd.apache.parquet": string;
+                };
+            };
+            /** @description Formato ausente ou inválido (`code: invalid_format`). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Sem sessão válida (`code: unauthorized`). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Job inexistente ou id não-UUID (`code: not_found`). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Volume de pontos excede o teto de 2.000.000 para Parquet (`code: export_too_large`). */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Manager indisponível (`code: queue_unavailable`). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getJobAlerts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description PK do job. UUID inválido ⇒ 404 `not_found`. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Lista de alertas do job. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobAlertsResponse"];
                 };
             };
             /** @description Sem sessão válida (`code: unauthorized`). */

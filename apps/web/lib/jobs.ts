@@ -2,6 +2,7 @@ import { apiFetch } from "@/lib/api";
 import type {
   DiffusionOptimizer,
   Job,
+  JobAlertsResponse,
   JobArtifact,
   JobArtifactsResponse,
   JobCleanupRequest,
@@ -185,6 +186,14 @@ export function getJobLineage(
   init?: RequestInit,
 ): Promise<LineageGraph> {
   return apiFetch(`/api/jobs/${jobId}/lineage`, init);
+}
+
+/** GET /api/jobs/:id/alerts — alertas ativos e resolvidos do job (fatia 3c). */
+export function getJobAlerts(
+  jobId: string,
+  init?: RequestInit,
+): Promise<JobAlertsResponse> {
+  return apiFetch(`/api/jobs/${jobId}/alerts`, init);
 }
 
 /** GET /api/jobs/:id/artifacts/:artifactId/data — download de artefato via blob. */

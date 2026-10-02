@@ -8127,20 +8127,30 @@ async fn lineage_cadeia_resume_resume_com_geracao() {
         "as 2 gerações de resume2 devem aparecer"
     );
 
-    // Arestas: resumed_from (job resume1 → job root), generated_with
-    // (job resume2 → job resume1, já que resume2 é mode=generate).
+    // Arestas no sentido do fluxo de dados (origem → consumidor): checkpoint A
+    // → resume1 (resumed_by, treino), checkpoint B → resume2 (used_by,
+    // geração). Nunca aresta direta job→job (a UI deriva o pai via
+    // job→checkpoint→job).
     assert!(
-        graph.edges.iter().any(|e| e.from == job_node(resume1)
-            && e.to == job_node(root)
-            && e.kind == "resumed_from"),
-        "aresta resumed_from resume1→root ausente: {:?}",
+        graph.edges.iter().any(|e| e.from == ckpt_node(ckpt_a)
+            && e.to == job_node(resume1)
+            && e.kind == "resumed_by"),
+        "aresta resumed_by checkpoint_a→resume1 ausente: {:?}",
         graph.edges
     );
     assert!(
-        graph.edges.iter().any(|e| e.from == job_node(resume2)
-            && e.to == job_node(resume1)
-            && e.kind == "generated_with"),
-        "aresta generated_with resume2→resume1 ausente: {:?}",
+        graph.edges.iter().any(|e| e.from == ckpt_node(ckpt_b)
+            && e.to == job_node(resume2)
+            && e.kind == "used_by"),
+        "aresta used_by checkpoint_b→resume2 ausente: {:?}",
+        graph.edges
+    );
+    assert!(
+        !graph
+            .edges
+            .iter()
+            .any(|e| e.from.starts_with("job:") && e.to.starts_with("job:")),
+        "nunca deve haver aresta direta job→job: {:?}",
         graph.edges
     );
     assert!(

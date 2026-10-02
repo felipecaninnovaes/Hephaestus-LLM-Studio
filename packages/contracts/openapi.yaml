@@ -5062,8 +5062,8 @@ components:
         to: { type: string, description: "Id de nó de destino." }
         kind:
           type: string
-          enum: [trained_on, produced, resumed_from, generated_with]
-          description: "trained_on: dataset→job. produced: job→checkpoint|generation. resumed_from: checkpoint→job ou job→job (treino que retomou pesos). generated_with: checkpoint→job ou job→job (geração que usou o checkpoint)."
+          enum: [trains, produced, resumed_by, used_by]
+          description: "Toda aresta aponta no sentido do fluxo de dados (origem→consumidor). trains: dataset→job. produced: job→checkpoint|generation. resumed_by: checkpoint→job (treino que retomou o checkpoint). used_by: checkpoint→job (geração que usou o checkpoint). Não há aresta direta job→job — a UI deriva o job pai pelo caminho job→checkpoint→job."
 
     LineageGraph:
       type: object

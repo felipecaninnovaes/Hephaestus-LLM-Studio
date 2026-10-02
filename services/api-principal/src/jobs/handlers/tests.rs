@@ -2426,7 +2426,7 @@ async fn get_job_lineage_handler_200() {
             edges: vec![LineageEdge {
                 from: format!("job:{job_id}"),
                 to: format!("job:{parent_id}"),
-                kind: "resumed_from".into(),
+                kind: "resumed_by".into(),
             }],
         },
     );
@@ -2440,7 +2440,7 @@ async fn get_job_lineage_handler_200() {
     assert_eq!(json["nodes"].as_array().unwrap().len(), 2);
     assert_eq!(json["edges"][0]["from"], format!("job:{job_id}"));
     assert_eq!(json["edges"][0]["to"], format!("job:{parent_id}"));
-    assert_eq!(json["edges"][0]["kind"], "resumed_from");
+    assert_eq!(json["edges"][0]["kind"], "resumed_by");
     // Wire camelCase: createdAt, nunca created_at.
     assert_eq!(json["nodes"][0]["createdAt"], "2026-10-01T00:00:00Z");
     assert!(json["nodes"][0].get("created_at").is_none());

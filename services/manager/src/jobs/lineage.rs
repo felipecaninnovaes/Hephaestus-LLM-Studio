@@ -308,7 +308,7 @@ impl GraphBuilder {
         self.add_edge(
             Self::dataset_node_id(dataset_id),
             Self::job_node_id(j.id),
-            "trained_on",
+            "trains",
         );
         Ok(())
     }
@@ -356,31 +356,19 @@ impl GraphBuilder {
         Ok(())
     }
 
-    /// Aresta checkpoint→job pela retomada/geração; kind depende do modo do job filho.
+    /// Aresta checkpoint→job pela retomada/geração (sentido do fluxo de
+    /// dados: o checkpoint alimenta o job); kind depende do modo do job filho.
+    /// A UI deriva o job pai seguindo job→checkpoint→job (sem aresta direta
+    /// job→job, que duplicaria a mesma relação em dois sentidos).
     fn add_lineage_edge(&mut self, checkpoint_id: Uuid, child: &JobMini) {
         let kind = if child.mode == "generate" {
-            "generated_with"
+            "used_by"
         } else {
-            "resumed_from"
+            "resumed_by"
         };
         self.add_edge(
             Self::checkpoint_node_id(checkpoint_id),
             Self::job_node_id(child.id),
-            kind,
-        );
-    }
-
-    /// Aresta direta job→job (resume/geração), satisfazendo a leitura literal
-    /// do contrato ("resumedFrom aponta para o job pai").
-    fn add_direct_job_edge(&mut self, child: &JobMini, parent_id: Uuid) {
-        let kind = if child.mode == "generate" {
-            "generated_with"
-        } else {
-            "resumed_from"
-        };
-        self.add_edge(
-            Self::job_node_id(child.id),
-            Self::job_node_id(parent_id),
             kind,
         );
     }
@@ -436,7 +424,6 @@ pub async fn get_job_lineage(pool: &PgPool, job_id: Uuid) -> Result<LineageRespo
         };
         visited.insert(parent.id);
         g.add_job(&parent);
-        g.add_direct_job_edge(&current, parent.id);
         g.add_dataset_edge(pool, &parent).await?;
         g.add_produced_checkpoints(pool, parent.id).await?;
         g.add_generations(pool, &parent).await?;
@@ -460,7 +447,6 @@ pub async fn get_job_lineage(pool: &PgPool, job_id: Uuid) -> Result<LineageRespo
         if let Some(wid) = weights_id {
             g.add_lineage_edge(wid, &child);
         }
-        g.add_direct_job_edge(&child, job_id);
         g.add_dataset_edge(pool, &child).await?;
         g.add_generations(pool, &child).await?;
     }

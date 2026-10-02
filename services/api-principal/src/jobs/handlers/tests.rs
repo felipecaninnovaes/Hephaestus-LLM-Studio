@@ -1451,6 +1451,7 @@ fn test_state(manager: MockManager) -> crate::state::AppState {
         embedding_model: "ViT-B-32".to_string(),
         manager: std::sync::Arc::new(manager),
         model_download_allowed_hosts: vec![],
+        job_events: crate::jobs::events_hub::JobEventsHub::new(),
     }
 }
 

@@ -296,6 +296,7 @@ mod tests {
             embedding_model: "ViT-B-32".to_string(),
             manager: std::sync::Arc::new(crate::jobs::manager_client::MockManager::default()),
             model_download_allowed_hosts: vec![],
+            job_events: crate::jobs::events_hub::JobEventsHub::new(),
         };
         let resp = login(
             axum::extract::State(state),

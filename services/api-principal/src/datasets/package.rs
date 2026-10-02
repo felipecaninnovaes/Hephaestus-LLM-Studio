@@ -1310,6 +1310,7 @@ mod tests {
             embedding_model: "ViT-B-32".to_string(),
             manager: std::sync::Arc::new(crate::jobs::manager_client::MockManager::default()),
             model_download_allowed_hosts: vec![],
+            job_events: crate::jobs::events_hub::JobEventsHub::new(),
         };
         let resp = package_dataset(
             axum::extract::State(state),
@@ -1334,6 +1335,7 @@ mod tests {
             embedding_model: "ViT-B-32".to_string(),
             manager: std::sync::Arc::new(crate::jobs::manager_client::MockManager::default()),
             model_download_allowed_hosts: vec![],
+            job_events: crate::jobs::events_hub::JobEventsHub::new(),
         };
         let resp = package_dataset(
             axum::extract::State(state),
@@ -1466,6 +1468,7 @@ mod tests {
             embedding_model: "ViT-B-32".to_string(),
             manager: std::sync::Arc::new(crate::jobs::manager_client::MockManager::default()),
             model_download_allowed_hosts: vec![],
+            job_events: crate::jobs::events_hub::JobEventsHub::new(),
         };
         let tmp = tempfile::TempDir::new().expect("tempdir");
         tokio::fs::create_dir_all(tmp.path().join("images"))
@@ -1525,6 +1528,7 @@ mod tests {
             embedding_model: "ViT-B-32".to_string(),
             manager: std::sync::Arc::new(crate::jobs::manager_client::MockManager::default()),
             model_download_allowed_hosts: vec![],
+            job_events: crate::jobs::events_hub::JobEventsHub::new(),
         };
         let tmp = tempfile::TempDir::new().expect("tempdir");
         tokio::fs::create_dir_all(tmp.path().join("images"))

@@ -92,6 +92,7 @@ async fn state() -> AppState {
         embedding_model: "ViT-B-32".to_string(),
         manager: std::sync::Arc::new(api_principal::jobs::manager_client::MockManager::default()),
         model_download_allowed_hosts: vec![],
+        job_events: api_principal::jobs::events_hub::JobEventsHub::new(),
     }
 }
 
@@ -5394,6 +5395,7 @@ async fn state_with_manager(
         embedding_model: "ViT-B-32".to_string(),
         manager: manager_arc.clone(),
         model_download_allowed_hosts: vec![],
+        job_events: api_principal::jobs::events_hub::JobEventsHub::new(),
     };
     (st, storage, manager_arc)
 }
@@ -6125,6 +6127,7 @@ async fn state_with_seeded_storage(
         embedding_model: "ViT-B-32".to_string(),
         manager: manager_arc,
         model_download_allowed_hosts: vec![],
+        job_events: api_principal::jobs::events_hub::JobEventsHub::new(),
     }
 }
 

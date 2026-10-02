@@ -7,6 +7,8 @@ import "uplot/dist/uPlot.min.css";
 export interface UPlotChartProps {
 	options: uPlot.Options;
 	data: uPlot.AlignedData;
+	/** Força redefinição dos limites do eixo X quando mudam (ex.: troca de modo Step / Época / Tempo) */
+	xRange?: { min: number; max: number };
 	className?: string;
 	onInit?: (u: uPlot) => void;
 	onDestroy?: () => void;
@@ -24,6 +26,7 @@ export interface UPlotChartProps {
 export function UPlotChart({
 	options,
 	data,
+	xRange,
 	className,
 	onInit,
 	onDestroy,
@@ -38,7 +41,6 @@ export function UPlotChart({
 	const onFirstDrawRef = useRef(onFirstDraw);
 	onFirstDrawRef.current = onFirstDraw;
 
-	const initialDataRef = useRef(data);
 	const hasDrawnFirstRef = useRef(false);
 
 	// Cria / recria o uPlot quando as options estruturais mudarem
@@ -89,7 +91,7 @@ export function UPlotChart({
 			},
 		};
 
-		const chart = new uPlot(mergedOpts, initialDataRef.current, el);
+		const chart = new uPlot(mergedOpts, data, el);
 		chartRef.current = chart;
 
 		if (onInitRef.current) {
@@ -105,12 +107,21 @@ export function UPlotChart({
 		};
 	}, [options]);
 
-	// Atualiza dados de forma imperativa e eficiente sem recriar o gráfico
+	// Atualiza dados de forma imperativa. Quando `xRange` muda (troca de modo
+	// Step / Época / Tempo), o zoom é descartado: auto-range de todas as
+	// escalas e X fixado no range completo dos novos dados.
 	useEffect(() => {
 		const chart = chartRef.current;
 		if (!chart) return;
-		chart.setData(data, false);
-	}, [data]);
+		if (!xRange) {
+			chart.setData(data, false);
+			return;
+		}
+		chart.batch(() => {
+			chart.setData(data, true);
+			chart.setScale("x", { min: xRange.min, max: xRange.max });
+		});
+	}, [data, xRange]);
 
 	// ResizeObserver para manter o gráfico esticado na largura do card
 	useEffect(() => {

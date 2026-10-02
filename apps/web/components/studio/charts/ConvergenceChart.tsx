@@ -217,7 +217,6 @@ export function ConvergenceChart({
 		return activeKeys.some((k) => SERIES_PALETTE[k]?.axis === "right");
 	}, [activeKeys]);
 
-
 	// Matriz de dados para o uPlot:
 	// Para cada chave ativa K:
 	//  - série K_raw (bruta esmaecida)
@@ -252,6 +251,10 @@ export function ConvergenceChart({
 				stroke: "#756d82",
 				grid: { stroke: "rgba(131, 80, 242, 0.08)", width: 1 },
 				ticks: { stroke: "#3e3749", width: 1 },
+				// Espaço mínimo entre ticks por modo: rótulos de hora são largos
+				space: xMode === "ts" ? 110 : 50,
+				// Épocas são inteiras: só incrementos inteiros
+				...(xMode === "epoch" ? { incrs: [1, 2, 5, 10, 20, 50, 100, 200, 500] } : {}),
 				values: (_self, splits) => {
 					return splits.map((val) => {
 						if (xMode === "ts") {
@@ -261,9 +264,6 @@ export function ConvergenceChart({
 								minute: "2-digit",
 								second: "2-digit",
 							});
-						}
-						if (xMode === "epoch") {
-							return `${Math.round(val)}`;
 						}
 						return `${Math.round(val)}`;
 					});
@@ -399,18 +399,17 @@ export function ConvergenceChart({
 		}));
 	}, []);
 
-	// Duplo clique ou botão para resetar zoom
+	// Duplo clique ou botão para resetar zoom para o range completo do modo ativo
 	const handleResetZoom = useCallback(() => {
 		const chart = uPlotInstanceRef.current;
 		if (!chart || pivoted.xValues.length === 0) return;
 
 		chart.batch(() => {
-			const minX = pivoted.xValues[0];
-			const maxX = pivoted.xValues[pivoted.xValues.length - 1];
-			chart.setScale("x", { min: minX, max: maxX });
 			chart.setData(chart.data, true);
+			const { min, max } = pivoted.xRange;
+			chart.setScale("x", { min, max });
 		});
-	}, [pivoted.xValues]);
+	}, [pivoted.xValues, pivoted.xRange]);
 
 	// Se não houver dados
 	if (allPoints.length === 0 || activeKeys.length === 0) {
@@ -561,6 +560,7 @@ export function ConvergenceChart({
 				<UPlotChart
 					options={uPlotOptions}
 					data={uPlotData}
+					xRange={pivoted.xRange}
 					onInit={(u) => {
 						uPlotInstanceRef.current = u;
 					}}

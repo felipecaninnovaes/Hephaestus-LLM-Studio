@@ -2162,6 +2162,73 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/jobs/{id}/export:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: "PK do job. UUID inválido ⇒ 404 `not_found`."
+    get:
+      operationId: exportJobMetrics
+      tags: [jobs]
+      summary: Exporta métricas de um job em CSV ou Parquet (fatia 5c)
+      description: |
+        Fatia 5c (`telemetria-observabilidade.md` §3.4, §4 Onda 5c):
+        Exporta a série temporal completa de `job_metric_points` para o job especificado.
+        Colunas: `seq,epoch,step,key,value,ts`, uma linha por ponto, ordenado por seq ascendente.
+        CSV é transmitido em streaming (`text/csv`).
+        Parquet (`application/vnd.apache.parquet`) é montado em batch com teto de 2.000.000 pontos.
+      parameters:
+        - name: format
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [csv, parquet]
+          description: "Formato de exportação desejado (csv ou parquet)."
+      responses:
+        "200":
+          description: "Arquivo exportado de métricas no formato solicitado."
+          headers:
+            Content-Disposition:
+              schema: { type: string }
+              description: "attachment; filename=\"job-{id}-metrics.{csv|parquet}\""
+          content:
+            text/csv:
+              schema:
+                type: string
+                format: binary
+            application/vnd.apache.parquet:
+              schema:
+                type: string
+                format: binary
+        "400":
+          description: "Formato ausente ou inválido (`code: invalid_format`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Job inexistente ou id não-UUID (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413":
+          description: "Volume de pontos excede o teto de 2.000.000 para Parquet (`code: export_too_large`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/jobs/{id}/events:
     parameters:
       - name: id

@@ -2651,3 +2651,245 @@ async fn stream_job_events_handles_lagged_receiver_with_delta_refetch() {
     );
     assert!(text2.contains("id: 75"));
 }
+
+// ---------------------------------------------------------------------------
+// Fatia 5c — GET /api/jobs/:id/export?format=csv|parquet
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn export_job_metrics_handler_400_invalid_format() {
+    use crate::jobs::handlers::export::{export_job_metrics, JobExportQuery};
+
+    let job_id = "550e8400-e29b-41d4-a716-446655440000";
+    let mock = MockManager::default();
+    let state = test_state(mock);
+
+    // Formato ausente
+    let resp = export_job_metrics(
+        axum::extract::State(state.clone()),
+        Path(job_id.to_string()),
+        Query(JobExportQuery { format: None }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // Formato desconhecido
+    let resp = export_job_metrics(
+        axum::extract::State(state),
+        Path(job_id.to_string()),
+        Query(JobExportQuery {
+            format: Some("json".to_string()),
+        }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn export_job_metrics_handler_404_id_nao_uuid() {
+    use crate::jobs::handlers::export::{export_job_metrics, JobExportQuery};
+
+    let mock = MockManager::default();
+    let state = test_state(mock);
+    let resp = export_job_metrics(
+        axum::extract::State(state),
+        Path("not-a-uuid".to_string()),
+        Query(JobExportQuery {
+            format: Some("csv".to_string()),
+        }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn export_job_metrics_handler_404_job_inexistente() {
+    use crate::jobs::handlers::export::{export_job_metrics, JobExportQuery};
+
+    let job_id = "550e8400-e29b-41d4-a716-446655440000";
+    let mock = MockManager::default(); // metric_points_result é None ⇒ NotFound
+    let state = test_state(mock);
+    let resp = export_job_metrics(
+        axum::extract::State(state),
+        Path(job_id.to_string()),
+        Query(JobExportQuery {
+            format: Some("csv".to_string()),
+        }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn export_job_metrics_handler_200_csv_exact_header_and_rows() {
+    use crate::jobs::handlers::export::{export_job_metrics, JobExportQuery};
+    use axum::http::header;
+    use heph_contracts::telemetry::{MetricPointWithKey, MetricPointsResponse};
+
+    let job_id = "550e8400-e29b-41d4-a716-446655440000";
+    let mut mock = MockManager::default();
+    mock.metric_points_result = Some(MetricPointsResponse {
+        items: vec![
+            MetricPointWithKey {
+                seq: 1,
+                epoch: Some(1),
+                step: 10,
+                key: "loss".to_string(),
+                value: 0.5432,
+                ts: "2026-10-02T10:00:00Z".to_string(),
+            },
+            MetricPointWithKey {
+                seq: 2,
+                epoch: None, // epoch nullable test
+                step: 20,
+                key: "lr".to_string(),
+                value: 0.001,
+                ts: "2026-10-02T10:01:00Z".to_string(),
+            },
+        ],
+        max_seq: 2,
+        downsampled: false,
+    });
+
+    let state = test_state(mock);
+    let resp = export_job_metrics(
+        axum::extract::State(state),
+        Path(job_id.to_string()),
+        Query(JobExportQuery {
+            format: Some("csv".to_string()),
+        }),
+    )
+    .await;
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()
+            .get(header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "text/csv; charset=utf-8"
+    );
+    assert_eq!(
+        resp.headers()
+            .get(header::CONTENT_DISPOSITION)
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        format!("attachment; filename=\"job-{job_id}-metrics.csv\"")
+    );
+
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 3);
+    assert_eq!(lines[0], "seq,epoch,step,key,value,ts");
+    assert_eq!(lines[1], "1,1,10,loss,0.5432,2026-10-02T10:00:00Z");
+    assert_eq!(lines[2], "2,,20,lr,0.001,2026-10-02T10:01:00Z");
+}
+
+#[tokio::test]
+async fn export_job_metrics_handler_200_parquet_roundtrip() {
+    use crate::jobs::handlers::export::{export_job_metrics, JobExportQuery};
+    use axum::http::header;
+    use heph_contracts::telemetry::{MetricPointWithKey, MetricPointsResponse};
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+    let job_id = "550e8400-e29b-41d4-a716-446655440000";
+    let mut mock = MockManager::default();
+    mock.metric_points_result = Some(MetricPointsResponse {
+        items: vec![
+            MetricPointWithKey {
+                seq: 1,
+                epoch: Some(1),
+                step: 10,
+                key: "loss".to_string(),
+                value: 0.5432,
+                ts: "2026-10-02T10:00:00Z".to_string(),
+            },
+            MetricPointWithKey {
+                seq: 2,
+                epoch: None,
+                step: 20,
+                key: "lr".to_string(),
+                value: 0.001,
+                ts: "2026-10-02T10:01:00Z".to_string(),
+            },
+        ],
+        max_seq: 2,
+        downsampled: false,
+    });
+
+    let state = test_state(mock);
+    let resp = export_job_metrics(
+        axum::extract::State(state),
+        Path(job_id.to_string()),
+        Query(JobExportQuery {
+            format: Some("parquet".to_string()),
+        }),
+    )
+    .await;
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()
+            .get(header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "application/vnd.apache.parquet"
+    );
+    assert_eq!(
+        resp.headers()
+            .get(header::CONTENT_DISPOSITION)
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        format!("attachment; filename=\"job-{job_id}-metrics.parquet\"")
+    );
+
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+
+    // Ler o parquet de volta usando parquet crate para validar contagem e tipos
+    let reader_builder = ParquetRecordBatchReaderBuilder::try_new(body).unwrap();
+    let mut reader = reader_builder.build().unwrap();
+    let batch = reader.next().unwrap().unwrap();
+
+    assert_eq!(batch.num_rows(), 2);
+    assert_eq!(batch.num_columns(), 6);
+
+    // Checar schema
+    assert_eq!(batch.schema().field(0).name(), "seq");
+    assert_eq!(batch.schema().field(1).name(), "epoch");
+    assert_eq!(batch.schema().field(2).name(), "step");
+    assert_eq!(batch.schema().field(3).name(), "key");
+    assert_eq!(batch.schema().field(4).name(), "value");
+    assert_eq!(batch.schema().field(5).name(), "ts");
+
+    use arrow_array::cast::AsArray;
+    use arrow_array::Array;
+    let seq_col = batch
+        .column(0)
+        .as_primitive::<arrow_array::types::Int64Type>();
+    let epoch_col = batch
+        .column(1)
+        .as_primitive::<arrow_array::types::Int32Type>();
+    let key_col = batch.column(3).as_string::<i32>();
+    let val_col = batch
+        .column(4)
+        .as_primitive::<arrow_array::types::Float64Type>();
+
+    assert_eq!(seq_col.value(0), 1);
+    assert_eq!(seq_col.value(1), 2);
+    assert!(!epoch_col.is_null(0));
+    assert_eq!(epoch_col.value(0), 1);
+    assert!(epoch_col.is_null(1));
+    assert_eq!(key_col.value(0), "loss");
+    assert_eq!(key_col.value(1), "lr");
+    assert_eq!(val_col.value(0), 0.5432);
+    assert_eq!(val_col.value(1), 0.001);
+}

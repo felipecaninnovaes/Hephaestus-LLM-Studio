@@ -5,6 +5,7 @@
 
 pub mod apply;
 pub mod artifacts;
+pub mod export;
 pub mod helpers;
 pub mod lifecycle;
 pub mod lineage;
@@ -18,6 +19,7 @@ mod tests;
 
 pub use apply::*;
 pub use artifacts::*;
+pub use export::*;
 pub use helpers::*;
 pub use lifecycle::*;
 pub use lineage::*;

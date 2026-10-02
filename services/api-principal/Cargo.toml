@@ -34,6 +34,9 @@ tokio-util = { version = "0.7", features = ["io"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 heph-contracts = { path = "../../crates/heph-contracts", features = ["otel"] }
+parquet = { version = "60.0.0", default-features = false, features = ["arrow", "flate2-zlib-rs", "lz4", "zstd", "snap"] }
+arrow-array = "60.0.0"
+arrow-schema = "60.0.0"
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }

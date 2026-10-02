@@ -13,6 +13,7 @@ from typing import Any
 from engine_kit.telemetry import sanitize_finite_floats
 from engine_kit.vram import vram_allocated_gb, vram_reserved_gb as _get_vram_reserved_gb
 
+from engine_kit.sensors import get_global_sensors, sanitize_system_metrics
 
 def _format_eta(seconds: int | float | None) -> str:
     """Formata segundos em representação legível humana de ETA (ex.: '2h 15m', '45s')."""
@@ -49,6 +50,7 @@ def _emit_metric(
     speed: str | None = None,
     grad_norm: float | None = None,
     diagnostics: dict[str, Any] | None = None,
+    system_metrics: dict[str, Any] | None = None,
 ) -> None:
     try:
         metrics_path.parent.mkdir(parents=True, exist_ok=True)
@@ -178,6 +180,30 @@ def _emit_metric(
                 except Exception as diag_err:
                     print(
                         f"[WARN] Falha ao processar diagnostics na emissão de métrica: {diag_err}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+            if system_metrics is not None:
+                try:
+                    clean_sys = sanitize_system_metrics(system_metrics)
+                    if clean_sys:
+                        t_payload["systemMetrics"] = clean_sys
+                except Exception as sys_err:
+                    print(
+                        f"[WARN] Falha ao sanitizar system_metrics na emissão de métrica: {sys_err}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+            else:
+                try:
+                    collected = get_global_sensors().collect()
+                    if collected is not None:
+                        clean_sys = sanitize_system_metrics(collected)
+                        if clean_sys:
+                            t_payload["systemMetrics"] = clean_sys
+                except Exception as sys_err:
+                    print(
+                        f"[WARN] Falha ao coletar system_metrics na emissão de métrica: {sys_err}",
                         file=sys.stderr,
                         flush=True,
                     )

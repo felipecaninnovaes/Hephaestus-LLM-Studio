@@ -2,6 +2,12 @@
 Hephaestus Engine Kit — Primitivas compartilhadas e biblioteca de infraestrutura das engines.
 """
 from engine_kit.telemetry import TelemetryEmitter
+from engine_kit.sensors import (
+    SystemSensors,
+    collect_system_metrics,
+    sanitize_system_metrics,
+    get_global_sensors,
+)
 from engine_kit.mock import (
     is_mock,
     seed_bytes,
@@ -26,6 +32,10 @@ from engine_kit.artifacts import prune_checkpoints, make_fake_safetensors, make_
 
 __all__ = [
     "TelemetryEmitter",
+    "SystemSensors",
+    "collect_system_metrics",
+    "sanitize_system_metrics",
+    "get_global_sensors",
     "is_mock",
     "seed_bytes",
     "mock_vector",

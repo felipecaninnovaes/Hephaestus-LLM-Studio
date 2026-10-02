@@ -54,6 +54,7 @@ class TelemetryEmitter:
         self.telemetry_path = self.output_dir / filename
         self.legacy_path = self.output_dir / legacy_filename if legacy_filename else None
         self._current_phase = "init"
+        self._sensors = None
         self._last_progress = 0.0
 
     def _ensure_writable(self) -> None:
@@ -94,6 +95,7 @@ class TelemetryEmitter:
         eta_seconds: Optional[int] = None,
         eta_formatted: Optional[str] = None,
         diagnostics: Optional[dict[str, Any]] = None,
+        system_metrics: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """Emite um evento estruturado de telemetria com flush imediato."""
         self._current_phase = phase
@@ -193,6 +195,36 @@ class TelemetryEmitter:
             except Exception as e:
                 print(
                     f"[WARN] Falha ao processar diagnostics na telemetria: {e}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+        # Coleta ou sanitiza métricas de sistema (ADR-0021 / Fatia 3a)
+        if system_metrics is not None:
+            try:
+                from engine_kit.sensors import sanitize_system_metrics
+                clean_sys = sanitize_system_metrics(system_metrics)
+                if clean_sys:
+                    event["systemMetrics"] = clean_sys
+            except Exception as e:
+                print(
+                    f"[WARN] Falha ao sanitizar system_metrics na telemetria: {e}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+        else:
+            try:
+                if self._sensors is None:
+                    from engine_kit.sensors import SystemSensors
+                    self._sensors = SystemSensors()
+                collected = self._sensors.collect()
+                if collected is not None:
+                    from engine_kit.sensors import sanitize_system_metrics
+                    clean_sys = sanitize_system_metrics(collected)
+                    if clean_sys:
+                        event["systemMetrics"] = clean_sys
+            except Exception as e:
+                print(
+                    f"[WARN] Falha ao coletar system_metrics na telemetria: {e}",
                     file=sys.stderr,
                     flush=True,
                 )

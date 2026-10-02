@@ -28,6 +28,10 @@ pub struct OrchestratorItem {
     pub gpus: Vec<String>,
     #[serde(default)]
     pub jobs_active: i32,
+    #[serde(default)]
+    pub disk_total_gb: Option<f64>,
+    #[serde(default)]
+    pub disk_used_gb: Option<f64>,
 }
 
 /// Telemetria global agregada (camelCase wire direto do manager — D9).

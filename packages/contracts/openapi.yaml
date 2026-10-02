@@ -4986,6 +4986,29 @@ components:
             - $ref: "#/components/schemas/TrainingDiagnostics"
             - type: "null"
           description: "Diagnósticos adicionais de treinamento (fatia 3b/3c)."
+        systemMetrics:
+          anyOf:
+            - $ref: "#/components/schemas/SystemMetrics"
+            - type: "null"
+          description: "Métricas de sistema do processo/container durante o treino (fatia 3a)."
+
+    SystemMetrics:
+      type: object
+      additionalProperties: false
+      description: "Métricas de sistema coletadas dentro do container do engine (fatia 3a)."
+      properties:
+        cpuPct:
+          type: [number, "null"]
+          description: "Uso de CPU pelo processo do treino (%)."
+        ramUsedGb:
+          type: [number, "null"]
+          description: "RAM usada pelo processo/container em GB."
+        diskReadMbS:
+          type: [number, "null"]
+          description: "Taxa de leitura de disco em MB/s."
+        diskWriteMbS:
+          type: [number, "null"]
+          description: "Taxa de escrita em disco em MB/s."
 
     TrainingDiagnostics:
       type: object
@@ -5379,6 +5402,12 @@ components:
           type: integer
           minimum: 0
           description: "Número de jobs ativos (preparing/running)."
+        diskTotalGb:
+          type: [number, "null"]
+          description: "Capacidade total do filesystem do workdir do orquestrador em GB."
+        diskUsedGb:
+          type: [number, "null"]
+          description: "Espaço em disco usado no filesystem do workdir do orquestrador em GB."
 
     OrchestratorList:
       type: object

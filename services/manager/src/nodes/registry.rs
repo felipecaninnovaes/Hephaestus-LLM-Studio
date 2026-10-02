@@ -26,6 +26,8 @@ pub struct OrchestratorItem {
     pub vram_total: Option<i64>,
     pub gpus: Vec<String>,
     pub jobs_active: i32,
+    pub disk_total_gb: Option<f64>,
+    pub disk_used_gb: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -106,26 +108,38 @@ pub async fn list_orchestrators(
         .map(|r| {
             let orch_id = r.0;
             let telemetry = cache.get(&orch_id);
-            let (measured, cpu, ram, ram_total, vram_used, vram_total, gpus, jobs_active) =
-                match telemetry {
-                    Some(state) => {
-                        let m = state
-                            .last_heartbeat
-                            .map(|last| (now - last).num_seconds() <= 10)
-                            .unwrap_or(false);
-                        (
-                            m,
-                            state.cpu,
-                            state.ram,
-                            state.ram_total,
-                            state.vram_used,
-                            state.vram_total,
-                            state.gpus.clone(),
-                            state.jobs_active,
-                        )
-                    }
-                    None => (false, None, None, None, None, None, vec![], 0),
-                };
+            let (
+                measured,
+                cpu,
+                ram,
+                ram_total,
+                vram_used,
+                vram_total,
+                gpus,
+                jobs_active,
+                disk_total_gb,
+                disk_used_gb,
+            ) = match telemetry {
+                Some(state) => {
+                    let m = state
+                        .last_heartbeat
+                        .map(|last| (now - last).num_seconds() <= 10)
+                        .unwrap_or(false);
+                    (
+                        m,
+                        state.cpu,
+                        state.ram,
+                        state.ram_total,
+                        state.vram_used,
+                        state.vram_total,
+                        state.gpus.clone(),
+                        state.jobs_active,
+                        state.disk_total_gb,
+                        state.disk_used_gb,
+                    )
+                }
+                None => (false, None, None, None, None, None, vec![], 0, None, None),
+            };
 
             OrchestratorItem {
                 id: orch_id.to_string(),
@@ -143,6 +157,8 @@ pub async fn list_orchestrators(
                 vram_total,
                 gpus,
                 jobs_active,
+                disk_total_gb,
+                disk_used_gb,
             }
         })
         .collect();
@@ -233,6 +249,8 @@ pub async fn adopt_internal(
         vram_total: None,
         gpus: vec![],
         jobs_active: 0,
+        disk_total_gb: None,
+        disk_used_gb: None,
     })
 }
 

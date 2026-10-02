@@ -1108,6 +1108,8 @@ async fn orchestrator_response_keys_are_camel_case() {
             vram_total_gb: Some(6),
             gpus: vec!["NVIDIA GeForce GTX 1660 SUPER".into()],
             jobs_active: 1,
+            disk_total_gb: Some(100.0),
+            disk_used_gb: Some(25.0),
         }]);
         m
     });

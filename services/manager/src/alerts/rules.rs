@@ -16,6 +16,18 @@ pub const SEVERITY_CRITICAL: &str = "critical";
 /// Limiar padrão de job running sem telemetria em segundos (ALERT_STALE_SECS).
 pub const DEFAULT_ALERT_STALE_SECS: i64 = 300;
 
+/// Limiar padrão de uso de disco para warning (ALERT_DISK_RATIO).
+pub const DEFAULT_ALERT_DISK_RATIO: f64 = 0.85;
+/// Limiar de uso de disco para critical.
+pub const CRITICAL_ALERT_DISK_RATIO: f64 = 0.95;
+
+pub fn get_alert_disk_ratio() -> f64 {
+    std::env::var("ALERT_DISK_RATIO")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_ALERT_DISK_RATIO)
+}
+
 pub fn get_alert_stale_secs() -> i64 {
     std::env::var("ALERT_STALE_SECS")
         .ok()

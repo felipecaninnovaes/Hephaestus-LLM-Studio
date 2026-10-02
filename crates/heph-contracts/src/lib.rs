@@ -28,4 +28,4 @@ pub use models::{GenerationItem, GenerationRow, ModelItem, ModelResponse, Storag
 pub use nodes::{OrchestratorItem, TelemetryResponse};
 pub use report::{ReportBody, ReportRequest};
 pub use request_context::RequestContext;
-pub use telemetry::{JobTelemetryEvent, MetricsItem, TrainingDiagnostics};
+pub use telemetry::{JobTelemetryEvent, MetricsItem, SystemMetrics, TrainingDiagnostics};

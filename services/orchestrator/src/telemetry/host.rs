@@ -93,3 +93,32 @@ pub fn parse_ram_total_from_content(content: &str) -> Option<i64> {
     }
     None
 }
+
+/// Lê o espaço total e usado (em GB) do filesystem onde o caminho reside via `statvfs`.
+pub fn read_disk_space_gb(path: &str) -> (Option<f64>, Option<f64>) {
+    use std::ffi::CString;
+    use std::mem::MaybeUninit;
+
+    let c_path = match CString::new(path) {
+        Ok(p) => p,
+        Err(_) => return (None, None),
+    };
+
+    let mut stat: MaybeUninit<libc::statvfs> = MaybeUninit::uninit();
+    let res = unsafe { libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) };
+    if res != 0 {
+        return (None, None);
+    }
+
+    let stat = unsafe { stat.assume_init() };
+    let block_size = stat.f_frsize as f64;
+    let total_blocks = stat.f_blocks as f64;
+    let free_blocks = stat.f_bavail as f64;
+
+    let bytes_per_gb = 1024.0 * 1024.0 * 1024.0;
+    let total_gb = (total_blocks * block_size) / bytes_per_gb;
+    let free_gb = (free_blocks * block_size) / bytes_per_gb;
+    let used_gb = (total_gb - free_gb).max(0.0);
+
+    (Some(total_gb), Some(used_gb))
+}

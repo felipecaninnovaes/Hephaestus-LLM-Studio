@@ -2481,6 +2481,7 @@ dependencies = [
  "heph-contracts",
  "hex",
  "http-body-util",
+ "libc",
  "md-5 0.10.6",
  "parking_lot",
  "rand 0.8.8",

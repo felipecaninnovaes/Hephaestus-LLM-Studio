@@ -18,6 +18,8 @@ pub struct TelemetryState {
     pub gpus: Vec<String>,
     pub jobs_active: i32,
     pub last_heartbeat: Option<DateTime<Utc>>,
+    pub disk_total_gb: Option<f64>,
+    pub disk_used_gb: Option<f64>,
 }
 
 pub type TelemetryCache = Arc<RwLock<HashMap<Uuid, TelemetryState>>>;

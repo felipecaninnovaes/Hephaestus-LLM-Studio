@@ -84,6 +84,7 @@ async fn main() {
     let dispatch_image = state.trainer_image.clone();
     let dispatch_vram = state.vram_table.clone();
     let dispatch_interval = std::time::Duration::from_secs(config.watchdog.dispatch_interval_secs);
+    let dispatch_cache = state.telemetry_cache.clone();
 
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(dispatch_interval);
@@ -93,6 +94,9 @@ async fn main() {
             // Watchdog tick (ADR-0011 D4).
             if let Err(e) = manager::watchdog_tick(&dispatch_pool).await {
                 tracing::error!("watchdog error: {e}");
+            }
+            if let Err(e) = manager::evaluate_disk_alerts(&dispatch_pool, &dispatch_cache).await {
+                tracing::error!("watchdog disk alert error: {e}");
             }
 
             match manager::dispatch_next(

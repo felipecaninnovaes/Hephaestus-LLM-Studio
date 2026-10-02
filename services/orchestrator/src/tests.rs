@@ -2045,6 +2045,8 @@ fn heartbeat_body_serializes_endpoint() {
         ram_total: Some(8_000_000_000),
         jobs_active: 1,
         max_gpu_mib: Some(12288),
+        disk_total_gb: Some(100.0),
+        disk_used_gb: Some(25.0),
     };
     let json = serde_json::to_value(&body).unwrap();
     assert_eq!(json["endpoint"], "http://orchestrator-local:8082");

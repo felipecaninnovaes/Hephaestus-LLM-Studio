@@ -966,6 +966,8 @@ async fn telemetry_com_heartbeat() {
         ram_total: Some(67108864000),
         jobs_active: 2,
         max_gpu_mib: Some(24000),
+        disk_total_gb: None,
+        disk_used_gb: None,
     };
 
     manager::receive_heartbeat(&p, &cache, hb)
@@ -1886,6 +1888,8 @@ async fn list_orchestrators_heartbeat_atualiza_last() {
         ram_total: Some(4096),
         jobs_active: 0,
         max_gpu_mib: None,
+        disk_total_gb: None,
+        disk_used_gb: None,
     };
     manager::receive_heartbeat(&p, &cache, hb)
         .await
@@ -3153,6 +3157,8 @@ async fn heartbeat_2_nos_atualiza_só_linha_correta() {
         ram_total: Some(8192),
         jobs_active: 1,
         max_gpu_mib: None,
+        disk_total_gb: None,
+        disk_used_gb: None,
     };
     manager::receive_heartbeat(&p, &cache, hb)
         .await
@@ -3195,6 +3201,8 @@ async fn heartbeat_endpoint_inexistente_nada_gravado() {
         ram_total: None,
         jobs_active: 0,
         max_gpu_mib: None,
+        disk_total_gb: None,
+        disk_used_gb: None,
     };
     manager::receive_heartbeat(&p, &cache, hb)
         .await
@@ -3253,6 +3261,8 @@ async fn heartbeat_revive_offline_nao_revive_revoked() {
         ram_total: None,
         jobs_active: 0,
         max_gpu_mib: None,
+        disk_total_gb: None,
+        disk_used_gb: None,
     };
     manager::receive_heartbeat(&p, &cache, hb)
         .await
@@ -3305,6 +3315,8 @@ async fn heartbeat_grava_vram_total_gb_e_gpus() {
         ram_total: Some(16384),
         jobs_active: 1,
         max_gpu_mib: Some(12288), // maior GPU — capacidade de 1 job
+        disk_total_gb: None,
+        disk_used_gb: None,
     };
     manager::receive_heartbeat(&p, &cache, hb)
         .await
@@ -3353,6 +3365,8 @@ async fn heartbeat_fallback_vram_total_sem_max_gpu_mib() {
         ram_total: Some(16384),
         jobs_active: 0,
         max_gpu_mib: None, // orquestrador legado sem parse por GPU
+        disk_total_gb: None,
+        disk_used_gb: None,
     };
     manager::receive_heartbeat(&p, &cache, hb)
         .await
@@ -3408,6 +3422,8 @@ async fn agregacao_2_nos_soma_uniao() {
         ram_total: Some(8192),
         jobs_active: 1,
         max_gpu_mib: Some(12000),
+        disk_total_gb: None,
+        disk_used_gb: None,
     };
     manager::receive_heartbeat(&p, &cache, hb1)
         .await
@@ -3424,6 +3440,8 @@ async fn agregacao_2_nos_soma_uniao() {
         ram_total: Some(16384),
         jobs_active: 2,
         max_gpu_mib: Some(6000),
+        disk_total_gb: None,
+        disk_used_gb: None,
     };
     manager::receive_heartbeat(&p, &cache, hb2)
         .await
@@ -3472,6 +3490,8 @@ async fn agregacao_1_no_compat() {
         ram_total: Some(67108864000),
         jobs_active: 2,
         max_gpu_mib: Some(24000),
+        disk_total_gb: None,
+        disk_used_gb: None,
     };
     manager::receive_heartbeat(&p, &cache, hb)
         .await
@@ -3534,6 +3554,8 @@ fn agregacao_pura_2_nos() {
             gpus: vec!["RTX 3060".into()],
             jobs_active: 1,
             last_heartbeat: Some(now),
+            disk_total_gb: None,
+            disk_used_gb: None,
         },
     );
     cache.insert(
@@ -3549,6 +3571,8 @@ fn agregacao_pura_2_nos() {
             gpus: vec!["GTX 1660S".into(), "RTX 3060".into()],
             jobs_active: 2,
             last_heartbeat: Some(now),
+            disk_total_gb: None,
+            disk_used_gb: None,
         },
     );
 
@@ -8769,4 +8793,257 @@ async fn alert_resolved_when_job_terminates() {
         alerts_post.items[0].resolved_at.is_some(),
         "alertas ativos são resolvidos quando o job encerra"
     );
+}
+
+/// Testes Fatia 3a:
+/// (b) heartbeat com disco 90% e job running nesse nó -> disk_high warning;
+///     96% -> severity critical (alerta anterior resolvido + novo crítico criado);
+///     abaixo de 85% -> resolvido; job terminal -> resolvido;
+/// (c) heartbeat sem campos de disco (nó antigo) não quebra e não dispara;
+/// (d) /api/orchestrators expõe diskTotalGb/diskUsedGb (via manager list_orchestrators).
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn alert_disk_high_warning_critical_resolution_and_legacy() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+    let cache = manager::new_telemetry_cache();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+    let orchs = manager::list_orchestrators(&p, &cache).await.expect("list");
+    let orch_id: uuid::Uuid = orchs.items[0].id.parse().unwrap();
+
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
+        .await
+        .expect("dispatch");
+
+    // Job passa a running
+    sqlx::query("UPDATE jobs SET status = 'running' WHERE id = $1")
+        .bind(job_id)
+        .execute(&p)
+        .await
+        .unwrap();
+
+    // 1. (c) Heartbeat legado: sem campos de disco
+    manager::receive_heartbeat(
+        &p,
+        &cache,
+        HeartbeatRequest {
+            endpoint: "http://orchestrator-local:8082".into(),
+            gpus: vec![],
+            vram_total: None,
+            vram_used: None,
+            cpu: Some(10.0),
+            ram: Some(1024),
+            ram_total: Some(4096),
+            jobs_active: 1,
+            max_gpu_mib: None,
+            disk_total_gb: None,
+            disk_used_gb: None,
+        },
+    )
+    .await
+    .expect("legacy heartbeat");
+
+    manager::evaluate_disk_alerts(&p, &cache)
+        .await
+        .expect("eval disk");
+    let alerts = manager::get_job_alerts(&p, job_id)
+        .await
+        .expect("get alerts");
+    assert!(
+        alerts.items.is_empty(),
+        "nó sem campos de disco não deve disparar disk_high"
+    );
+
+    // 2. (b) Heartbeat com 90% (90/100 GB) -> warning
+    manager::receive_heartbeat(
+        &p,
+        &cache,
+        HeartbeatRequest {
+            endpoint: "http://orchestrator-local:8082".into(),
+            gpus: vec![],
+            vram_total: None,
+            vram_used: None,
+            cpu: Some(10.0),
+            ram: Some(1024),
+            ram_total: Some(4096),
+            jobs_active: 1,
+            max_gpu_mib: None,
+            disk_total_gb: Some(100.0),
+            disk_used_gb: Some(90.0),
+        },
+    )
+    .await
+    .expect("heartbeat 90%");
+
+    manager::evaluate_disk_alerts(&p, &cache)
+        .await
+        .expect("eval disk 90%");
+    let alerts = manager::get_job_alerts(&p, job_id)
+        .await
+        .expect("get alerts 90%");
+    assert_eq!(alerts.items.len(), 1);
+    assert_eq!(alerts.items[0].rule_id, "disk_high");
+    assert_eq!(alerts.items[0].severity, "warning");
+    assert!(alerts.items[0].resolved_at.is_none());
+
+    // 3. Heartbeat com 96% (96/100 GB) -> severity critical
+    manager::receive_heartbeat(
+        &p,
+        &cache,
+        HeartbeatRequest {
+            endpoint: "http://orchestrator-local:8082".into(),
+            gpus: vec![],
+            vram_total: None,
+            vram_used: None,
+            cpu: Some(10.0),
+            ram: Some(1024),
+            ram_total: Some(4096),
+            jobs_active: 1,
+            max_gpu_mib: None,
+            disk_total_gb: Some(100.0),
+            disk_used_gb: Some(96.0),
+        },
+    )
+    .await
+    .expect("heartbeat 96%");
+
+    manager::evaluate_disk_alerts(&p, &cache)
+        .await
+        .expect("eval disk 96%");
+    let alerts = manager::get_job_alerts(&p, job_id)
+        .await
+        .expect("get alerts 96%");
+    assert_eq!(
+        alerts.items.len(),
+        2,
+        "deve conter alerta warning resolvido e novo critical ativo"
+    );
+    let active = alerts
+        .items
+        .iter()
+        .find(|a| a.resolved_at.is_none())
+        .expect("active alert");
+    assert_eq!(active.severity, "critical");
+    let resolved = alerts
+        .items
+        .iter()
+        .find(|a| a.resolved_at.is_some())
+        .expect("resolved alert");
+    assert_eq!(resolved.severity, "warning");
+
+    // 4. Disco cai para 80% (< 85%) -> resolvido
+    manager::receive_heartbeat(
+        &p,
+        &cache,
+        HeartbeatRequest {
+            endpoint: "http://orchestrator-local:8082".into(),
+            gpus: vec![],
+            vram_total: None,
+            vram_used: None,
+            cpu: Some(10.0),
+            ram: Some(1024),
+            ram_total: Some(4096),
+            jobs_active: 1,
+            max_gpu_mib: None,
+            disk_total_gb: Some(100.0),
+            disk_used_gb: Some(80.0),
+        },
+    )
+    .await
+    .expect("heartbeat 80%");
+
+    manager::evaluate_disk_alerts(&p, &cache)
+        .await
+        .expect("eval disk 80%");
+    let alerts = manager::get_job_alerts(&p, job_id)
+        .await
+        .expect("get alerts 80%");
+    assert_eq!(alerts.items.len(), 2);
+    assert!(
+        alerts.items.iter().all(|a| a.resolved_at.is_some()),
+        "todos alertas devem estar resolvidos"
+    );
+
+    // 5. Novo alerta crítico e depois job encerra -> resolvido
+    manager::receive_heartbeat(
+        &p,
+        &cache,
+        HeartbeatRequest {
+            endpoint: "http://orchestrator-local:8082".into(),
+            gpus: vec![],
+            vram_total: None,
+            vram_used: None,
+            cpu: Some(10.0),
+            ram: Some(1024),
+            ram_total: Some(4096),
+            jobs_active: 1,
+            max_gpu_mib: None,
+            disk_total_gb: Some(100.0),
+            disk_used_gb: Some(96.0),
+        },
+    )
+    .await
+    .expect("heartbeat 96% again");
+
+    manager::evaluate_disk_alerts(&p, &cache)
+        .await
+        .expect("eval disk 96% again");
+    let alerts = manager::get_job_alerts(&p, job_id)
+        .await
+        .expect("get alerts 96% again");
+    let active = alerts
+        .items
+        .iter()
+        .find(|a| a.resolved_at.is_none())
+        .expect("active alert");
+    assert_eq!(active.severity, "critical");
+
+    // Job done -> resolve todos os alertas
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "done".into(),
+            progress: Some(1.0),
+            epoch: Some(1),
+            step: Some(10),
+            metrics: None,
+            error: None,
+            artifacts: Some(vec![]),
+            meta_content: None,
+            phase: Some("completed".into()),
+            message: None,
+        },
+    )
+    .await
+    .expect("report done");
+
+    let alerts_final = manager::get_job_alerts(&p, job_id)
+        .await
+        .expect("get alerts final");
+    assert!(
+        alerts_final.items.iter().all(|a| a.resolved_at.is_some()),
+        "job terminal resolve alertas"
+    );
+
+    // 6. (d) list_orchestrators expõe disk_total_gb e disk_used_gb
+    let orch_list = manager::list_orchestrators(&p, &cache)
+        .await
+        .expect("list orchs");
+    let node = orch_list
+        .items
+        .iter()
+        .find(|n| n.id == orch_id.to_string())
+        .expect("found node");
+    assert_eq!(node.disk_total_gb, Some(100.0));
+    assert_eq!(node.disk_used_gb, Some(96.0));
 }

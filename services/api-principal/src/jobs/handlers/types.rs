@@ -107,6 +107,7 @@ impl JobTelemetryEventExt for JobTelemetryEvent {
             eta_formatted: None,
             metrics,
             diagnostics: None,
+            system_metrics: None,
         }
     }
 }

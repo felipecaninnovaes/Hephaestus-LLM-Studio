@@ -85,6 +85,8 @@ pub async fn receive_heartbeat(
     state.gpus = req.gpus;
     state.jobs_active = req.jobs_active;
     state.last_heartbeat = Some(Utc::now());
+    state.disk_total_gb = req.disk_total_gb;
+    state.disk_used_gb = req.disk_used_gb;
 
     Ok(())
 }

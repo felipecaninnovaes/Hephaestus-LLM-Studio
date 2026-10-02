@@ -49,6 +49,10 @@ pub struct OrchestratorResponse {
     pub gpus: Vec<String>,
     #[serde(rename = "jobsActive")]
     pub jobs_active: i32,
+    #[serde(rename = "diskTotalGb", skip_serializing_if = "Option::is_none")]
+    pub disk_total_gb: Option<f64>,
+    #[serde(rename = "diskUsedGb", skip_serializing_if = "Option::is_none")]
+    pub disk_used_gb: Option<f64>,
 }
 
 /// Lista de orquestradores.
@@ -150,6 +154,8 @@ pub async fn get_orchestrators(State(state): State<AppState>) -> Response {
             vram_total_gb: o.vram_total_gb,
             gpus: o.gpus,
             jobs_active: o.jobs_active,
+            disk_total_gb: o.disk_total_gb,
+            disk_used_gb: o.disk_used_gb,
         })
         .collect();
     (StatusCode::OK, Json(OrchestratorListResponse { items })).into_response()
@@ -314,6 +320,8 @@ pub async fn adopt_orchestrator(
                 vram_total_gb: o.vram_total_gb,
                 gpus: o.gpus,
                 jobs_active: o.jobs_active,
+                disk_total_gb: o.disk_total_gb,
+                disk_used_gb: o.disk_used_gb,
             };
             (StatusCode::OK, Json(resp)).into_response()
         }
@@ -380,6 +388,8 @@ mod tests {
             vram_total_gb: Some(6),
             gpus: vec!["NVIDIA GeForce GTX 1660 SUPER".into()],
             jobs_active: 1,
+            disk_total_gb: Some(100.0),
+            disk_used_gb: Some(25.0),
         }
     }
 

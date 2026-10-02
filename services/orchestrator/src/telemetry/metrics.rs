@@ -201,6 +201,33 @@ pub fn parse_metrics_line(line: &str) -> Option<MetricsLine> {
             }
         }
     }
+
+    // Achatamento de systemMetrics (fatia 3a):
+    // systemMetrics {cpuPct, ramUsedGb, diskReadMbS, diskWriteMbS} ->
+    // sys.cpu_pct, sys.ram_used_gb, sys.disk_read_mb_s, sys.disk_write_mb_s
+    let sys_metrics = v.get("systemMetrics").or_else(|| v.get("system_metrics"));
+    if let Some(sm) = sys_metrics.and_then(|s| s.as_object()) {
+        let field_mappings = [
+            ("cpuPct", "sys.cpu_pct"),
+            ("cpu_pct", "sys.cpu_pct"),
+            ("ramUsedGb", "sys.ram_used_gb"),
+            ("ram_used_gb", "sys.ram_used_gb"),
+            ("diskReadMbS", "sys.disk_read_mb_s"),
+            ("disk_read_mb_s", "sys.disk_read_mb_s"),
+            ("diskWriteMbS", "sys.disk_write_mb_s"),
+            ("disk_write_mb_s", "sys.disk_write_mb_s"),
+        ];
+        for (src_key, dest_key) in field_mappings {
+            if extra.contains_key(dest_key) {
+                continue;
+            }
+            if let Some(val) = sm.get(src_key).and_then(|x| x.as_f64()) {
+                if val.is_finite() {
+                    extra.insert(dest_key.to_string(), val);
+                }
+            }
+        }
+    }
     Some(MetricsLine {
         box_loss: num("box_loss"),
         cls_loss: num("cls_loss"),
@@ -401,5 +428,58 @@ mod tests {
         assert_eq!(m.loss, Some(0.5));
         let json = m.to_report_json();
         assert!(json.get("nan_count").is_none());
+    }
+    #[test]
+    fn parse_system_metrics_flattening() {
+        let line = r#"{
+            "timestamp": "2026-10-02T12:00:00Z",
+            "phase": "training",
+            "progress": 0.5,
+            "step": 10,
+            "epoch": 1,
+            "systemMetrics": {
+                "cpuPct": 45.2,
+                "ramUsedGb": 12.8,
+                "diskReadMbS": 150.5,
+                "diskWriteMbS": 35.0
+            }
+        }"#;
+        let m = parse_metrics_line(line).expect("systemMetrics line should parse");
+        assert!(m.is_training_metric());
+        assert_eq!(m.extra.get("sys.cpu_pct"), Some(&45.2));
+        assert_eq!(m.extra.get("sys.ram_used_gb"), Some(&12.8));
+        assert_eq!(m.extra.get("sys.disk_read_mb_s"), Some(&150.5));
+        assert_eq!(m.extra.get("sys.disk_write_mb_s"), Some(&35.0));
+
+        let report = telemetry_report_for_line(&m, 10);
+        let metrics = report.metrics.expect("metrics should be present");
+        assert_eq!(metrics["sys.cpu_pct"], 45.2);
+        assert_eq!(metrics["sys.ram_used_gb"], 12.8);
+        assert_eq!(metrics["sys.disk_read_mb_s"], 150.5);
+        assert_eq!(metrics["sys.disk_write_mb_s"], 35.0);
+    }
+
+    #[test]
+    fn parse_system_metrics_absent_does_not_produce_sys_keys() {
+        let line = r#"{
+            "timestamp": "2026-10-02T12:00:00Z",
+            "phase": "training",
+            "progress": 0.5,
+            "step": 10,
+            "epoch": 1,
+            "metrics": {
+                "loss": 0.05
+            }
+        }"#;
+        let m = parse_metrics_line(line).expect("line without systemMetrics should parse");
+        assert_eq!(m.extra.get("sys.cpu_pct"), None);
+        assert_eq!(m.extra.get("sys.ram_used_gb"), None);
+        assert_eq!(m.extra.get("sys.disk_read_mb_s"), None);
+        assert_eq!(m.extra.get("sys.disk_write_mb_s"), None);
+        assert!(!m.extra.keys().any(|k| k.starts_with("sys.")));
+
+        let report = telemetry_report_for_line(&m, 10);
+        let metrics = report.metrics.expect("metrics should be present");
+        assert!(metrics.get("sys.cpu_pct").is_none());
     }
 }

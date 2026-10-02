@@ -31,6 +31,22 @@ pub struct JobTelemetryEvent {
     pub metrics: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnostics: Option<TrainingDiagnostics>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_metrics: Option<SystemMetrics>,
+}
+
+/// Métricas do sistema coletadas pelo engine durante o treino (fatia 3a).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemMetrics {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu_pct: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ram_used_gb: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disk_read_mb_s: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disk_write_mb_s: Option<f64>,
 }
 
 /// Diagnósticos de treino emitidos pelo engine (fatia 3b/3c, spec §3.5).
@@ -189,5 +205,26 @@ mod tests {
         assert_eq!(diag.grad_norm_l2, Some(1.45));
         assert_eq!(diag.lr_per_group.len(), 2);
         assert_eq!(diag.lora_norms.get("layer1"), Some(&Some(0.5)));
+    }
+    #[test]
+    fn test_job_telemetry_event_system_metrics_round_trip() {
+        let raw = r#"{
+            "timestamp": "2026-10-02T12:00:00Z",
+            "phase": "training",
+            "progress": 0.5,
+            "systemMetrics": {
+                "cpuPct": 45.2,
+                "ramUsedGb": 12.8,
+                "diskReadMbS": 150.5,
+                "diskWriteMbS": 35.0
+            }
+        }"#;
+        let event: JobTelemetryEvent = serde_json::from_str(raw).unwrap();
+        assert!(event.system_metrics.is_some());
+        let sys = event.system_metrics.unwrap();
+        assert_eq!(sys.cpu_pct, Some(45.2));
+        assert_eq!(sys.ram_used_gb, Some(12.8));
+        assert_eq!(sys.disk_read_mb_s, Some(150.5));
+        assert_eq!(sys.disk_write_mb_s, Some(35.0));
     }
 }

@@ -308,6 +308,9 @@ async fn main() {
                             None => (vec![], None, None, None),
                         };
 
+                    let (disk_total_gb, disk_used_gb) =
+                        orchestrator::read_disk_space_gb(&cfg.workdir);
+
                     let body = HeartbeatBody {
                         endpoint: heartbeat_advertise_url.clone(),
                         gpus,
@@ -318,6 +321,8 @@ async fn main() {
                         ram_total: orchestrator::read_ram_total(),
                         jobs_active: heartbeat_active_jobs.len() as i32,
                         max_gpu_mib,
+                        disk_total_gb,
+                        disk_used_gb,
                     };
 
                     match heartbeat_client.send(&body).await {

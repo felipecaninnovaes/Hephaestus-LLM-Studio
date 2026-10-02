@@ -173,6 +173,7 @@ fn agregacao_filtro_stale() {
             gpus: vec!["RTX 3060".into()],
             jobs_active: 1,
             last_heartbeat: Some(now),
+            ..Default::default()
         },
     );
 
@@ -190,6 +191,7 @@ fn agregacao_filtro_stale() {
             gpus: vec!["RTX 4090".into()],
             jobs_active: 5,
             last_heartbeat: Some(now - Duration::seconds(60)),
+            ..Default::default()
         },
     );
 

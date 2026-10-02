@@ -2,7 +2,7 @@
 
 **Data da especificação:** 2026-10-01  
 **Autor:** @orchestrator (plano base do @planner revisado com 13 correções; redação @docs)  
-**Status:** Aprovada — escopo COMPLETO (ondas 0–5, 17 fatias). Implementado em `develop` (`8b6e442`): 0a, 0b, 1a, 1b, 1c, 2a, 2b, 2c, 3b, 3c (backend), 5a, 5b, 5c. Abertos: 3a, 3c (UI), 4a, 4b, 4c.
+**Status:** Aprovada — escopo COMPLETO (ondas 0–5, 17 fatias). Implementado em `develop` (`8b6e442`): 0a, 0b, 1a, 1b, 1c, 2a, 2b, 2c, 3b, 3c (backend), 5a, 5b, 5c; depois (`fe32265`): 3c (UI), 4a, 4b, 4c + fix `0f1c90c`. Abertos: 3a (sensores; depende de `tasks/specs/multi-gpu-sensores-selecao.md`) e as regras `vram_high`/`disk_high` da 3c.
 **Branches:** uma por fatia, a partir de `develop` (tabela §8)
 
 Restrições: single-user/homelab; nó GPU 10.15.50.114 (RTX 3060 12GB + GTX 1660S 6GB, 158G disco); topologia fixa BFF (`api-principal`) → `manager` → `orchestrator` → engines. Wire público camelCase (`packages/contracts/openapi.yaml`); Rust/Postgres snake_case (`crates/heph-contracts`). Contract ≡ router: toda rota/campo novo entra no openapi na mesma fatia.
@@ -279,25 +279,27 @@ Formato: dono · branch · arquivos · depende de · aceite (binário; smoke rea
 - [x] Loss NaN injetado → `nan_detected` aparece em `GET /api/jobs/:id/alerts` e chega como evento SSE `alerts`.
 - [x] Job `running` sem telemetria por mais que o limiar → `telemetry_stale`; telemetria volta → `resolvedAt` preenchido.
 - [x] Reavaliar a mesma regra não cria segundo alerta ativo (índice parcial).
-- [ ] Web mostra badge com contagem no card do job; clique abre a lista (prova visual). *(3c-UI, aberto)*
+- [x] Web mostra badge de alertas no job selecionado (detalhe); clique abre a lista; atualização via evento SSE `alerts` (snapshot `JobAlertsResponse`). *(3c-UI)*
+- [ ] Regras `vram_high`/`disk_high` (dependem da 3a / spec multi-GPU).
 
 ### Onda 4 — Gráficos e comparação (4a → 4b → 4c)
 
 **4a — uPlot no lugar do `ConvergenceChart`**  
 @frontend · `feat/charts-uplift` · `apps/web/components/studio/charts/` (componente uPlot), hook de métricas consumindo `GET /api/jobs/:id/metrics?maxPoints=` + delta SSE; `ConvergenceChartCanvas.tsx` removido · depende: 1a, 1b  
-- [ ] Job em execução: gráfico atualiza via SSE sem refetch completo.
-- [ ] Zoom (arrastar) e pan funcionam; legenda liga/desliga série.
-- [ ] Job com 10k pontos renderiza sem travar a aba (prova visual + profile).
-- [ ] Nenhum import restante de `ConvergenceChartCanvas`.
+- [x] Job em execução: gráfico atualiza via SSE sem refetch completo.
+- [x] Zoom (arrastar) e pan funcionam; legenda liga/desliga série.
+- [x] Job com 10k pontos renderiza sem travar a aba (prova visual + profile).
+- [x] Nenhum import restante de `ConvergenceChartCanvas`.
+- Fix `0f1c90c` (orchestrator): `metrics` do report repassa as chaves numéricas do dict `metrics` da telemetria como vieram, sem zeros YOLO fabricados por `#[serde(default)]` e sem descartar chaves novas (achado em smoke GPU real).
 
 **4b — Busca de métricas multi-run**  
 @frontend · `feat/metrics-multi-run-fetch` · `apps/web/lib/jobMetrics.ts`, hook multi-job · depende: 4a  
-- [ ] Hook busca 3 jobs em paralelo (3 requests concorrentes no DevTools) e devolve séries separadas por `jobId`.
+- [x] Hook busca 3 jobs em paralelo (3 requests concorrentes no DevTools) e devolve séries separadas por `jobId`.
 
 **4c — Comparação de runs**  
 @frontend · `feat/run-comparison` · `apps/web/app/(studio)/jobs/compare/page.tsx`, `ComparisonChart.tsx`, `ComparisonTable.tsx` · depende: 4b  
-- [ ] Selecionar 2–3 jobs → overlay colorido por run.
-- [ ] Tabela de hiperparâmetros lado a lado destaca diferenças.
+- [x] Rota web `/jobs/compare?ids=<id1>,<id2>[,…]` (2–4 runs) → overlay colorido por run.
+- [x] Tabela de hiperparâmetros lado a lado destaca diferenças.
 
 ### Onda 5 — Galeria, linhagem, export
 

@@ -36,6 +36,7 @@ aqui com a fonte. Trabalho futuro → `tasks/backlog.md`.
 - **SSE para de receber métricas sem erro após queda do Postgres** → `PgListener::recv()` reconecta silenciosamente e as notificações do intervalo se perdem → todo consumidor de `pg_notify` trata reconexão com refetch/delta por `seq` (e `Lagged` do broadcast refaz delta); notify é só ponteiro, nunca a fonte. (spec telemetria-observabilidade §3.2)
 - **Migration de backfill derruba o boot do api-principal** → `(item->>'epoch')::INTEGER` aborta com JSON `1.0` e `sqlx::migrate!` roda no boot → casts em backfill de JSONB sempre guardados (`jsonb_typeof` + `numeric`/`trunc`, fallback NULL). (migration 0021)
 - **Loki recebe logs de containers alheios ao stack (incl. env com `HF_TOKEN`)** → receiver `filelog` lê `/var/lib/docker/containers/*` do host inteiro → filtrar por label `com.docker.compose.project` (exige `labels:` no logging do compose). (fatia 2c, revisão de segurança)
+- **Gráfico de job de difusão mostra métricas YOLO zeradas e perde chaves novas (sem erro)** → struct de parse de métricas no orchestrator com campos `f64` + `#[serde(default)]` fabricava `0.0` para chaves de outra família de modelo e descartava as não declaradas → repassar as chaves numéricas do dict `metrics` como vieram; nunca `#[serde(default)]` em valor de métrica (ausente ≠ zero). (smoke GPU real; fix `0f1c90c`)
 
 ## Storage — S3/SeaweedFS
 

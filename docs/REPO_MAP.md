@@ -158,6 +158,8 @@ checkpoint+encoder).
   classes, anotação manual/verificação de boxes.
 - `(studio)/treino` — abas de setup de treino (YOLO, Difusão, CLIP).
 - `(studio)/jobs` — Action Center (fila, telemetria, drawer, lixeira/cleanup).
+- `(studio)/jobs/compare?ids=` — comparação de 2–4 runs (overlay de métricas
+  por run + tabela de hiperparâmetros com diferenças destacadas).
 - `(studio)/difusao` e `(studio)/geracao` — forja difusiva e galeria de gerações
   (img2img: dropzone + slider `initStrength` no `GenerationPanel`, ação
   "Usar como input" da galeria via localStorage `geracao:initSource`).

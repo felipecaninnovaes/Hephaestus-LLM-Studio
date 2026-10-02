@@ -721,6 +721,7 @@ fn make_dispatch(job_id: &str, engine: &str) -> DispatchRequest {
         text_encoder: None,
         init_image_ref: None,
         control_package_ref: None,
+        gpu_device: None,
     }
 }
 
@@ -3098,6 +3099,7 @@ fn make_autotracker_dispatch(job_id: &str) -> DispatchRequest {
         text_encoder: None,
         init_image_ref: None,
         control_package_ref: None,
+        gpu_device: None,
     }
 }
 
@@ -6355,4 +6357,24 @@ async fn stream_metrics_and_samples_retries_apos_falha_de_report() {
     drop(calls);
 
     handle.abort();
+}
+
+#[test]
+fn b2_docker_run_args_with_uuid_device() {
+    let uuid = "GPU-1c1e01c2-4192-8f38-1a8a-33fb78b06f17";
+    let args = build_docker_run_args(
+        "hephaestus/trainer-yolo:gpu",
+        "trainer-job-uuid",
+        &[],
+        &["train".to_string()],
+        &[],
+        Some(uuid),
+    );
+    let gpu_idx = args.iter().position(|a| a == "--gpus").expect("--gpus");
+    assert_eq!(args[gpu_idx + 1], format!("device={uuid}"));
+    let nvd_idx = args
+        .iter()
+        .position(|a| a == &format!("NVIDIA_VISIBLE_DEVICES={uuid}"))
+        .expect("NVIDIA_VISIBLE_DEVICES");
+    assert_eq!(args[nvd_idx - 1], "-e");
 }

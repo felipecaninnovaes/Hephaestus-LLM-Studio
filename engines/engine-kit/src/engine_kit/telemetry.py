@@ -11,6 +11,18 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
+import math
+
+
+def sanitize_finite_floats(obj: Any) -> Any:
+    """Sanitiza recursivamente qualquer float não-finito (NaN, Inf, -Inf) para None."""
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: sanitize_finite_floats(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [sanitize_finite_floats(x) for x in obj]
+    return obj
 
 def format_eta(seconds: Optional[int | float]) -> str:
     """Formata segundos em representação legível humana de ETA (ex.: '2h 15m', '45s')."""
@@ -159,17 +171,23 @@ class TelemetryEmitter:
                     if v is None:
                         continue
                     if k in ("grad_norm_l2", "gradNormL2"):
-                        clean_diag["gradNormL2"] = float(v)
+                        f_val = float(v)
+                        clean_diag["gradNormL2"] = f_val if math.isfinite(f_val) else None
                     elif k in ("nan_count", "nanCount"):
                         clean_diag["nanCount"] = int(v)
                     elif k in ("inf_count", "infCount"):
                         clean_diag["infCount"] = int(v)
                     elif k in ("lr_per_group", "lrPerGroup"):
-                        clean_diag["lrPerGroup"] = [float(x) for x in v]
+                        clean_diag["lrPerGroup"] = [
+                            float(x) if math.isfinite(float(x)) else None for x in v
+                        ]
                     elif k in ("lora_norms", "loraNorms"):
-                        clean_diag["loraNorms"] = {str(lk): float(lv) for lk, lv in v.items()}
+                        clean_diag["loraNorms"] = {
+                            str(lk): (float(lv) if math.isfinite(float(lv)) else None)
+                            for lk, lv in v.items()
+                        }
                     else:
-                        clean_diag[k] = v
+                        clean_diag[k] = sanitize_finite_floats(v)
                 if clean_diag:
                     event["diagnostics"] = clean_diag
             except Exception as e:
@@ -178,7 +196,8 @@ class TelemetryEmitter:
                     file=sys.stderr,
                     flush=True,
                 )
-        line = json.dumps(event) + "\n"
+        event = sanitize_finite_floats(event)
+        line = json.dumps(event, allow_nan=False) + "\n"
 
         # 1. Grava no telemetry.jsonl canônico
         try:
@@ -202,7 +221,8 @@ class TelemetryEmitter:
                 legacy_payload["phaseMessage"] = message
                 legacy_payload["message"] = message
                 legacy_payload["progress"] = self._last_progress
-                legacy_line = json.dumps(legacy_payload) + "\n"
+                legacy_payload = sanitize_finite_floats(legacy_payload)
+                legacy_line = json.dumps(legacy_payload, allow_nan=False) + "\n"
                 with open(self.legacy_path, "a", encoding="utf-8") as f:
                     f.write(legacy_line)
                     f.flush()

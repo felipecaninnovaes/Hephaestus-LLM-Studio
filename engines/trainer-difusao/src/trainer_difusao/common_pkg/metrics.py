@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import datetime
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Any
 
+from engine_kit.telemetry import sanitize_finite_floats
 from engine_kit.vram import vram_allocated_gb, vram_reserved_gb as _get_vram_reserved_gb
 
 
@@ -88,8 +90,9 @@ def _emit_metric(
         if vram_res is not None:
             payload["vramReservedGb"] = float(vram_res)
         if not telemetry_only:
+            payload = sanitize_finite_floats(payload)
             with open(metrics_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(payload) + "\n")
+                f.write(json.dumps(payload, allow_nan=False) + "\n")
                 f.flush()
         # ADR-0021: Espelha em telemetry.jsonl no formato canônico
         try:
@@ -153,17 +156,23 @@ def _emit_metric(
                         if v is None:
                             continue
                         if k in ("grad_norm_l2", "gradNormL2"):
-                            clean_diag["gradNormL2"] = float(v)
+                            f_val = float(v)
+                            clean_diag["gradNormL2"] = f_val if math.isfinite(f_val) else None
                         elif k in ("nan_count", "nanCount"):
                             clean_diag["nanCount"] = int(v)
                         elif k in ("inf_count", "infCount"):
                             clean_diag["infCount"] = int(v)
                         elif k in ("lr_per_group", "lrPerGroup"):
-                            clean_diag["lrPerGroup"] = [float(x) for x in v]
+                            clean_diag["lrPerGroup"] = [
+                                float(x) if math.isfinite(float(x)) else None for x in v
+                            ]
                         elif k in ("lora_norms", "loraNorms"):
-                            clean_diag["loraNorms"] = {str(lk): float(lv) for lk, lv in v.items()}
+                            clean_diag["loraNorms"] = {
+                                str(lk): (float(lv) if math.isfinite(float(lv)) else None)
+                                for lk, lv in v.items()
+                            }
                         else:
-                            clean_diag[k] = v
+                            clean_diag[k] = sanitize_finite_floats(v)
                     if clean_diag:
                         t_payload["diagnostics"] = clean_diag
                 except Exception as diag_err:
@@ -172,8 +181,9 @@ def _emit_metric(
                         file=sys.stderr,
                         flush=True,
                     )
+            t_payload = sanitize_finite_floats(t_payload)
             with open(telemetry_path, "a", encoding="utf-8") as tf:
-                tf.write(json.dumps(t_payload) + "\n")
+                tf.write(json.dumps(t_payload, allow_nan=False) + "\n")
                 tf.flush()
         except Exception:
             pass

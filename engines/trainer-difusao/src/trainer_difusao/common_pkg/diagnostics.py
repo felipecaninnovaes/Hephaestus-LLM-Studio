@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import math
 from typing import Any
+from engine_kit.telemetry import sanitize_finite_floats
 
 
 def extract_lora_group(name: str) -> str:
@@ -135,18 +136,23 @@ class DiagnosticsTracker:
                     self.cached_lora_norms = norms
 
             diag: dict[str, Any] = {
-                "gradNormL2": float(grad_norm_l2),
+                "gradNormL2": float(grad_norm_l2) if math.isfinite(float(grad_norm_l2)) else None,
                 "nanCount": int(self.nan_count),
                 "infCount": int(self.inf_count),
                 "lrPerGroup": lr_groups,
             }
             if self.cached_lora_norms:
                 diag["loraNorms"] = dict(self.cached_lora_norms)
-            return diag
+            return sanitize_finite_floats(diag)
         except Exception:
-            return {
-                "gradNormL2": float(grad_norm_l2) if not math.isnan(grad_norm_l2) and not math.isinf(grad_norm_l2) else 0.0,
+            fallback = {
+                "gradNormL2": (
+                    float(grad_norm_l2)
+                    if math.isfinite(float(grad_norm_l2))
+                    else None
+                ),
                 "nanCount": int(self.nan_count),
                 "infCount": int(self.inf_count),
                 "lrPerGroup": [float(default_lr)] if default_lr is not None else [],
             }
+            return sanitize_finite_floats(fallback)

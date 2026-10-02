@@ -121,6 +121,43 @@ class TestTelemetryEmitter(unittest.TestCase):
         # Não lança exceção e evento continua emitido
         self.assertEqual(ev_bad["step"], 11)
 
+    def test_emit_strict_json_replaces_non_finite_floats_with_null(self):
+        emitter = TelemetryEmitter(self.tmp_dir)
+        diag_payload = {
+            "grad_norm_l2": float("nan"),
+            "nan_count": 1,
+            "inf_count": 1,
+            "lr_per_group": [1e-4, float("inf"), float("-inf")],
+            "lora_norms": {"block_0": float("nan")},
+        }
+        ev = emitter.emit(
+            phase="training",
+            message="Step NaN",
+            progress=0.1,
+            step=1,
+            metrics={"loss": float("nan"), "lr": float("inf")},
+            diagnostics=diag_payload,
+            vram_used_gb=float("nan"),
+        )
+        telemetry_file = self.tmp_dir / "telemetry.jsonl"
+        for line in telemetry_file.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            # Strict JSON check
+            parsed = json.loads(
+                line,
+                parse_constant=lambda c: (_ for _ in ()).throw(ValueError(f"Unexpected constant: {c}")),
+            )
+            self.assertIsNone(parsed.get("vramUsedGb"))
+            self.assertIsNone(parsed["metrics"]["loss"])
+            self.assertIsNone(parsed["metrics"]["lr"])
+            diag = parsed["diagnostics"]
+            self.assertIsNone(diag["gradNormL2"])
+            self.assertEqual(diag["nanCount"], 1)
+            self.assertEqual(diag["infCount"], 1)
+            self.assertEqual(diag["lrPerGroup"], [1e-4, None, None])
+            self.assertIsNone(diag["loraNorms"]["block_0"])
+
     def test_emit_stdout_suffix_speed_and_eta(self):
         import io
         from unittest.mock import patch

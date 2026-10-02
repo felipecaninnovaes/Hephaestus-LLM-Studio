@@ -764,7 +764,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                             diagnostics=diag_payload,
                             progress=progress,
                             phase="training",
-                            message=f"Epoch {epoch}/{epoch_offset + epochs}, step {global_step}, loss={avg_loss:.4f}",
+                            message=f"Epoch {epoch}/{epoch_offset + epochs}, step {global_step}, loss={(f'{avg_loss:.4f}' if math.isfinite(avg_loss) else 'null')}",
                             eta_s=int(eta_seconds) if eta_seconds is not None else None,
                             step_time_s=time_per_step,
                             vram_reserved_gb=vram_used,
@@ -815,7 +815,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                 diagnostics=epoch_diag,
                 progress=0.45 + local_epoch_idx / epochs * 0.50,
                 phase="epoch_complete",
-                message=f"Epoch {epoch} completo, loss médio={avg_epoch_loss:.4f}",
+                message=f"Epoch {epoch} completo, loss médio={(f'{avg_epoch_loss:.4f}' if math.isfinite(avg_epoch_loss) else 'null')}",
             )
             # Sample during training (reduced resolution)
             if sample_prompt and sample_interval > 0 and local_epoch_idx % sample_interval == 0:

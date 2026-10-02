@@ -195,3 +195,64 @@ class TestTrainingDiagnostics(unittest.TestCase):
         self.assertEqual(diag["nanCount"], 0)
         self.assertEqual(diag["infCount"], 0)
         self.assertEqual(diag["lrPerGroup"], [0.001])
+
+    def test_tracker_nan_and_inf_produces_strict_json(self):
+        """Teste: DiagnosticsTracker real com loss NaN e grad norm Inf -> linha do telemetry.jsonl
+        é JSON estrito (sem NaN/Inf como literais), nanCount > 0, gradNormL2 é null, e lrPerGroup com NaN vira null.
+        """
+        from trainer_difusao.common_pkg.metrics import _emit_metric
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            metrics_path = tmp_path / "metrics.jsonl"
+            telemetry_path = tmp_path / "telemetry.jsonl"
+
+            tracker = DiagnosticsTracker()
+            # Observa NaN em loss e Inf em grad_norm
+            tracker.observe_step(float("nan"), float("inf"))
+
+            # Cria optimizer mock com lr com NaN
+            mock_opt = MagicMock()
+            mock_opt.param_groups = [{"lr": float("nan")}, {"lr": 0.001}]
+
+            diag = tracker.build_diagnostics(
+                grad_norm_l2=float("inf"),
+                optimizer=mock_opt,
+                default_lr=0.001,
+                model=None,
+                step=1,
+            )
+
+            # Emite métrica
+            _emit_metric(
+                metrics_path=metrics_path,
+                epoch=1,
+                step=1,
+                loss=float("nan"),
+                lr=float("inf"),
+                grad_norm=float("inf"),
+                diagnostics=diag,
+            )
+
+            # Verifica que tanto metrics.jsonl quanto telemetry.jsonl são JSON estrito
+            for target_file in (telemetry_path, metrics_path):
+                self.assertTrue(target_file.exists())
+                for line in target_file.read_text(encoding="utf-8").splitlines():
+                    if not line.strip():
+                        continue
+                    # JSON estrito que lança se encontrar NaN / Infinity / -Infinity
+                    parsed = json.loads(
+                        line,
+                        parse_constant=lambda c: (_ for _ in ()).throw(ValueError(f"Unexpected constant: {c}")),
+                    )
+                    if "diagnostics" in parsed:
+                        diag_parsed = parsed["diagnostics"]
+                        self.assertGreater(diag_parsed["nanCount"], 0)
+                        self.assertGreater(diag_parsed["infCount"], 0)
+                        self.assertIsNone(diag_parsed["gradNormL2"])
+                        self.assertIsNone(diag_parsed["lrPerGroup"][0])
+                        self.assertEqual(diag_parsed["lrPerGroup"][1], 0.001)
+                    if "metrics" in parsed and "grad_norm" in parsed["metrics"]:
+                        self.assertIsNone(parsed["metrics"]["grad_norm"])
+                        self.assertIsNone(parsed["metrics"]["loss"])
+                        self.assertIsNone(parsed["metrics"]["lr"])

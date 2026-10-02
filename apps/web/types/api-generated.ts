@@ -1163,9 +1163,18 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Métricas de treinamento por epoch
-         * @description Séries por epoch com re-mapeamento camelCase (ADR-0007 D7): `mAP50-95` → `map5095`.
-         *     Job existe mas sem métricas ⇒ 200 com `items: []`.
+         * Métricas de treinamento (pivot legado) ou pontos brutos (fatia 1a)
+         * @description Fatia 1a (telemetria append-only, `telemetria-observabilidade.md` §3.4):
+         *     **sem nenhum dos três query params abaixo**, preserva o shape legado —
+         *     séries por epoch pivotadas a partir de `job_metric_points`, com
+         *     re-mapeamento camelCase (ADR-0007 D7: `mAP50-95` → `map5095`). Job
+         *     existe mas sem métricas ⇒ 200 com `items: []`.
+         *
+         *     **Com qualquer um** de `afterSeq`/`maxPoints`/`keys` presente, retorna
+         *     pontos brutos (`MetricPointsResponse`): cada ponto é `(seq, epoch,
+         *     step, key, value, ts)`; `epoch` é nullable (ponto sem epoch não é
+         *     descartado). `maxPoints` aciona downsampling server-side (min/max por
+         *     bucket, por key) — `downsampled:true` só quando reduziu.
          */
         get: operations["getJobMetrics"];
         put?: never;
@@ -1257,6 +1266,8 @@ export interface paths {
                 offset?: number;
                 /** @description Linhas por página (máx 2000). */
                 limit?: number;
+                /** @description Fatia 1c: `telemetry` (default, comportamento C2a inalterado) lê `logs/telemetry.jsonl` (fallback `metrics.jsonl` legado); `run` lê `logs/run.log` (stdout+stderr intercalados do container). */
+                source?: "telemetry" | "run";
             };
             header?: never;
             path: {
@@ -1266,14 +1277,18 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Histórico persistido de logs do job (C2a)
-         * @description Páginas o artefato de log do job — `logs/telemetry.jsonl` (snapshot
-         *     incremental reenviado pelo orquestrador durante a execução), com
-         *     fallback legado para `metrics.jsonl` (job antigo) e para `telemetry.jsonl`
-         *     em qualquer path. Linhas do wire espelham o jsonl por linha (camelCase);
-         *     linha malformada vira `message` bruta com demais campos nulos (nunca drop).
-         *     Job sem artefato de log ⇒ 200 `{lines: [], eof: true}` (ausência de log
-         *     é estado válido). Storage fora ⇒ 503 `storage_unavailable`.
+         * Histórico persistido de logs do job (C2a + Fatia 1c)
+         * @description Páginas o artefato de log do job. `source=telemetry` (default): lê
+         *     `logs/telemetry.jsonl` (snapshot incremental reenviado pelo
+         *     orquestrador durante a execução), com fallback legado para
+         *     `metrics.jsonl` (job antigo) e para `telemetry.jsonl` em qualquer
+         *     path. `source=run`: lê `logs/run.log` (stdout+stderr do container,
+         *     intercalados em streaming pelo orquestrador) — linhas trazem `level`
+         *     (`info`/`error`) e `stream` (`stdout`/`stderr`). Linhas do wire
+         *     espelham o arquivo fonte por linha (camelCase); linha malformada vira
+         *     `message` bruta com demais campos nulos (nunca drop). Job ou fonte
+         *     sem artefato ⇒ 200 `{lines: [], eof: true}` (ausência de log é estado
+         *     válido). Storage fora ⇒ 503 `storage_unavailable`.
          */
         get: operations["getJobLogs"];
         put?: never;
@@ -1306,6 +1321,35 @@ export interface paths {
          *     artefatos ⇒ 404.
          */
         get: operations["downloadJobArtifactsZip"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{id}/lineage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description PK do job. UUID inválido ⇒ 404 `not_found` (D8). */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Linhagem dataset→job→checkpoint→resume→geração (fatia 5b)
+         * @description Grafo calculado pelo manager a partir de `jobs.params.weights` (cadeia
+         *     de resume/geração), `job_artifacts`/`models` (checkpoints produzidos)
+         *     e `generations` (saídas de jobs `mode=generate`). Ancestrais completos
+         *     (sobe a cadeia de resumes até a raiz, com guarda de ciclo) + descendentes
+         *     diretos (jobs que retomaram/geraram a partir de um checkpoint deste job,
+         *     e as gerações desses). Referência quebrada (pai/dataset apagado) ⇒ nó
+         *     omitido, sem erro. Manager indisponível ⇒ 503 `queue_unavailable`.
+         */
+        get: operations["getJobLineage"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2984,6 +3028,14 @@ export interface components {
             totalEpochs?: number | null;
             /** @description Uso de VRAM medido na GPU em GB. */
             vramUsedGb?: number | null;
+            /** @description VRAM reservada pelo processo (PyTorch), em GB — pode exceder vramUsedGb. */
+            vramReservedGb?: number | null;
+            /** @description Duração do último passo/step em segundos. */
+            stepTimeSeconds?: number | null;
+            /** @description Tempo estimado restante para conclusão, em segundos. */
+            etaSeconds?: number | null;
+            /** @description Tempo estimado restante formatado para exibição (ex.: "1m 50s"). */
+            etaFormatted?: string | null;
             /** @description Dicionário flexível com métricas adicionais instantâneas (loss, it_s, lr, etc.). */
             metrics?: {
                 [key: string]: number | string | boolean | null;
@@ -3019,6 +3071,37 @@ export interface components {
         JobMetrics: {
             /** @description Série temporal por epoch (vazio se job existe mas sem métricas). */
             items: components["schemas"]["MetricsItem"][];
+        };
+        /**
+         * @description Ponto bruto de série temporal de métricas (fatia 1a, append-only,
+         *     `job_metric_points`). `epoch` é nullable: um ponto sem epoch não é
+         *     descartado (ao contrário do `MetricsItem` legado, que exige epoch).
+         */
+        MetricPointWithKey: {
+            /**
+             * Format: int64
+             * @description Sequência monotônica por job (aloca em `jobs.metric_seq`).
+             */
+            seq: number;
+            epoch?: number | null;
+            /** Format: int64 */
+            step: number;
+            /** @description Nome da métrica (ex.: loss, box_loss, mAP50-95). */
+            key: string;
+            value: number;
+            /** Format: date-time */
+            ts: string;
+        };
+        /** @description Resposta de pontos brutos (fatia 1a §3.4) — ativada por afterSeq/maxPoints/keys. */
+        MetricPointsResponse: {
+            items: components["schemas"]["MetricPointWithKey"][];
+            /**
+             * Format: int64
+             * @description Contador `jobs.metric_seq` do job, independente dos filtros aplicados.
+             */
+            maxSeq: number;
+            /** @description true somente quando maxPoints reduziu alguma série (min/max por bucket). */
+            downsampled: boolean;
         };
         /** @description Item da fila de jobs (ADR-0007 D7). */
         QueueItem: {
@@ -3056,23 +3139,57 @@ export interface components {
         ArtifactList: {
             items: components["schemas"]["JobArtifact"][];
         };
-        /** @description Uma linha persistida do jsonl de telemetria (C2a); campos ausentes na linha vêm null; linha malformada chega como `message` bruta. */
+        /** @description Nó do grafo de linhagem (fatia 5b). */
+        LineageNode: {
+            /** @description Id estável por kind (ex.: `job:<uuid>`, `checkpoint:<uuid>`, `dataset:<uuid>`, `generation:<uuid>`). */
+            id: string;
+            /** @enum {string} */
+            kind: "dataset" | "job" | "checkpoint" | "generation";
+            /** @description Rótulo legível (título do dataset, `<mode> <model>` do job, nome/arquivo do checkpoint, prompt truncado da geração). */
+            label: string;
+            /** @description Status do job, quando `kind: job`. */
+            status?: string | null;
+            /** Format: date-time */
+            createdAt?: string | null;
+            /** @description Época do checkpoint, quando extraível do nome do arquivo. */
+            epoch?: number | null;
+        };
+        /** @description Aresta do grafo de linhagem (fatia 5b). */
+        LineageEdge: {
+            /** @description Id de nó de origem. */
+            from: string;
+            /** @description Id de nó de destino. */
+            to: string;
+            /**
+             * @description Toda aresta aponta no sentido do fluxo de dados (origem→consumidor). trains: dataset→job. produced: job→checkpoint|generation. resumed_by: checkpoint→job (treino que retomou o checkpoint). used_by: checkpoint→job (geração que usou o checkpoint). Não há aresta direta job→job — a UI deriva o job pai pelo caminho job→checkpoint→job.
+             * @enum {string}
+             */
+            kind: "trains" | "produced" | "resumed_by" | "used_by";
+        };
+        /** @description Linhagem dataset→job→checkpoint→resume→geração de um job (fatia 5b). */
+        LineageGraph: {
+            nodes: components["schemas"]["LineageNode"][];
+            edges: components["schemas"]["LineageEdge"][];
+        };
+        /** @description Uma linha persistida do jsonl de telemetria (C2a) ou de `logs/run.log` (`source=run`, Fatia 1c); campos ausentes na linha vêm null; linha malformada chega como `message` bruta. */
         JobLogLine: {
             /**
              * Format: date-time
-             * @description ISO-8601 do evento, quando presente.
+             * @description ISO-8601/RFC3339 do evento, quando presente (mesmo formato para ambas as fontes — `source=run` converte o epoch-millis gravado no arquivo).
              */
             timestamp?: string | null;
-            /** @description Fase do engine-kit (training, preparing_dataset, ...). */
+            /** @description Fase do engine-kit (training, preparing_dataset, ...). Sempre null em `source=run`. */
             phase?: string | null;
             /** @description `message` canônica, fallback `phaseMessage`, senão a linha bruta. */
             message?: string | null;
-            /** @description Progresso 0–1 da linha, quando presente. */
+            /** @description Progresso 0–1 da linha, quando presente. Sempre null em `source=run`. */
             progress?: number | null;
             /** Format: int64 */
             epoch?: number | null;
             /** Format: int64 */
             step?: number | null;
+            /** @description Só em `source=run`: `stdout` ou `stderr`. Não há `level`: stdout/stderr não é nível de log real (logging/tqdm/warnings do Python escrevem em stderr por convenção). */
+            stream?: string | null;
         };
         /** @description Página de logs do job; `offset` do pedido conta LINHAS RAW do jsonl consumidas. */
         JobLogPage: {
@@ -5884,7 +6001,14 @@ export interface operations {
     };
     getJobMetrics: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Só pontos com seq > afterSeq. Ativa o shape de pontos brutos. */
+                afterSeq?: number;
+                /** @description Downsampling min/max por bucket, por key. Ativa o shape de pontos brutos. Fora de [1,10000] ⇒ 400 invalid_max_points. */
+                maxPoints?: number;
+                /** @description CSV de keys para filtrar (ex.: `loss,lr`). Ativa o shape de pontos brutos. */
+                keys?: string;
+            };
             header?: never;
             path: {
                 /** @description PK do job. UUID inválido ⇒ 404 `not_found` (D8). */
@@ -5894,13 +6018,22 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Métricas do job. */
+            /** @description Métricas do job — `JobMetrics` (sem params) ou `MetricPointsResponse` (com algum param). */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["JobMetrics"];
+                    "application/json": components["schemas"]["JobMetrics"] | components["schemas"]["MetricPointsResponse"];
+                };
+            };
+            /** @description `maxPoints` fora de [1,10000] (`code: invalid_max_points`). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
                 };
             };
             /** @description Sem sessão válida (`code: unauthorized`). */
@@ -6091,6 +6224,8 @@ export interface operations {
                 offset?: number;
                 /** @description Linhas por página (máx 2000). */
                 limit?: number;
+                /** @description Fatia 1c: `telemetry` (default, comportamento C2a inalterado) lê `logs/telemetry.jsonl` (fallback `metrics.jsonl` legado); `run` lê `logs/run.log` (stdout+stderr intercalados do container). */
+                source?: "telemetry" | "run";
             };
             header?: never;
             path: {
@@ -6179,6 +6314,56 @@ export interface operations {
                 };
             };
             /** @description Manager ou storage indisponível (`code: queue_unavailable` ou `storage_unavailable`). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getJobLineage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description PK do job. UUID inválido ⇒ 404 `not_found` (D8). */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Grafo de linhagem. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LineageGraph"];
+                };
+            };
+            /** @description Sem sessão válida (`code: unauthorized`). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Job inexistente ou id não-UUID (`code: not_found`). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Manager indisponível (`code: queue_unavailable`). */
             503: {
                 headers: {
                     [name: string]: unknown;

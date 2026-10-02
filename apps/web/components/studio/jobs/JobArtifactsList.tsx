@@ -36,7 +36,8 @@ export function JobArtifactsList({
         {filtered.map((art) => (
           <div
             key={art.id}
-            className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.02] p-3 backdrop-blur-sm"
+            id={`artifact-${art.id}`}
+            className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.02] p-3 backdrop-blur-sm transition-shadow"
           >
             <div className="min-w-0 mr-2">
               <span

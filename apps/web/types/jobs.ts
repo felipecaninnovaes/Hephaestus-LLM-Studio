@@ -209,3 +209,29 @@ export function jobErrorMessage(code: string): string {
       return "Falha ao criar job de treino.";
   }
 }
+
+/* ── Linhagem dataset→job→checkpoint→resume→geração (fatia 5b) ── */
+
+export type LineageNodeKind = "dataset" | "job" | "checkpoint" | "generation";
+
+export interface LineageNode {
+  id: string;
+  kind: LineageNodeKind;
+  label: string;
+  status?: string | null;
+  createdAt?: string | null;
+  epoch?: number | null;
+}
+
+export type LineageEdgeKind = "trains" | "produced" | "resumed_by" | "used_by";
+
+export interface LineageEdge {
+  from: string;
+  to: string;
+  kind: LineageEdgeKind;
+}
+
+export interface LineageGraph {
+  nodes: LineageNode[];
+  edges: LineageEdge[];
+}

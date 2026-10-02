@@ -40,6 +40,7 @@ import {
 	JobsSidebar,
 	JobHeroHeader,
 	JobArtifactsList,
+	JobLineage,
 	JobMetricsChips,
 } from "@/components/studio/jobs";
 import { showToast } from "@/components/ui/Toast";
@@ -120,6 +121,9 @@ function JobsPageContent() {
 	const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
 	const [metrics, setMetrics] = useState<Record<string, JobMetricsType[]>>({});
 	const [artifacts, setArtifacts] = useState<Record<string, JobArtifact[]>>({});
+	const [pendingArtifactFocus, setPendingArtifactFocus] = useState<
+		string | null
+	>(null);
 	const [zipBusy, setZipBusy] = useState(false);
 	const [cleanupOpen, setCleanupOpen] = useState(false);
 	const {
@@ -363,6 +367,29 @@ function JobsPageContent() {
 	}, [selectedJob?.id, jobs]);
 
 
+
+	/** Rola até o artefato (checkpoint) destacado a partir da seção de Linhagem. */
+	function handleFocusLineageArtifact(ownerJobId: string, artifactId: string) {
+		if (ownerJobId !== selectedJobId) {
+			selectJob(ownerJobId);
+		}
+		setPendingArtifactFocus(artifactId);
+	}
+
+	// biome-ignore lint/correctness/useExhaustiveDependencies: roda a cada troca de job/artefatos para encontrar o elemento assim que ele existir no DOM
+	useEffect(() => {
+		if (!pendingArtifactFocus) return;
+		const el = document.getElementById(`artifact-${pendingArtifactFocus}`);
+		if (!el) return; // aguarda o job alvo ser selecionado/renderizado
+		el.scrollIntoView({ behavior: "smooth", block: "center" });
+		el.classList.add("ring-2", "ring-brand-400");
+		const timer = setTimeout(
+			() => el.classList.remove("ring-2", "ring-brand-400"),
+			1600,
+		);
+		setPendingArtifactFocus(null);
+		return () => clearTimeout(timer);
+	}, [pendingArtifactFocus, selectedJobId, artifacts]);
 	function handleResumeFromCheckpoint(job: Job, art: JobArtifact) {
 		const resumeData = buildDiffusionResume(job, art);
 
@@ -689,6 +716,22 @@ function JobsPageContent() {
 												/>
 											</div>
 										)}
+
+									<JobLineage
+										jobId={selectedJob.id}
+										loadedArtifactJobIds={
+											new Set(
+												Object.keys(artifacts).filter(
+													(jid) => (artifacts[jid]?.length ?? 0) > 0,
+												),
+											)
+										}
+										onSelectJob={selectJob}
+										onSelectDataset={(datasetId) =>
+											router.push(`/datasets/${datasetId}`)
+										}
+										onFocusArtifact={handleFocusLineageArtifact}
+									/>
 
 									{/* Ações do Job */}
 									<div className="flex items-center justify-between gap-3 pt-2">

@@ -109,6 +109,8 @@ pub(crate) async fn dispatch_handler(State(state): State<AppState>, body: Bytes)
         return bad_request(msg);
     }
 
+    tracing::Span::current().record("job_id", tracing::field::display(&req.job_id));
+
     // Admissão atômica (P0-3): semáforo de capacidade e idempotência sob lock
     if let Err(err) = state.try_admit(req.job_id.clone(), ActiveJobState::new(String::new())) {
         return match err {
@@ -131,8 +133,13 @@ pub(crate) async fn dispatch_handler(State(state): State<AppState>, body: Bytes)
     let gpu_allow_mock = state.gpu_allow_mock;
     let daemon_state = state.daemon_state.clone();
 
+    // Captura o contexto de correlação da requisição de dispatch ANTES do
+    // spawn — `tokio::spawn` cria uma task nova, o `task_local` da requisição
+    // não atravessa a fronteira sozinho.
+    let ctx = (*heph_contracts::request_context::current_or_generate()).clone();
+
     // Spawna pipeline assíncrono (D5/D6/D8)
-    tokio::spawn(async move {
+    tokio::spawn(ctx.scope(async move {
         run_job(
             req,
             s3,
@@ -144,7 +151,7 @@ pub(crate) async fn dispatch_handler(State(state): State<AppState>, body: Bytes)
             daemon_state,
         )
         .await;
-    });
+    }));
 
     (StatusCode::ACCEPTED, Json(serde_json::json!({"ok": true}))).into_response()
 }

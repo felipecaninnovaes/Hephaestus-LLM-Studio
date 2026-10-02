@@ -289,6 +289,7 @@ pub async fn accept_job_preparing(
     //    com ON CONFLICT no passo 3.)
     match find_active_prepare(&state.pool, spec.dataset_id, &spec.fingerprint).await {
         Ok(Some(existing)) => {
+            tracing::Span::current().record("job_id", tracing::field::display(&existing));
             return (
                 StatusCode::ACCEPTED,
                 Json(serde_json::json!({
@@ -334,6 +335,7 @@ pub async fn accept_job_preparing(
             );
         }
     };
+    tracing::Span::current().record("job_id", tracing::field::display(&job_id));
 
     // 3. INSERT local com arbiter do índice parcial `job_prepares_dedupe`
     //    (dono P4a — migration 0016). 1 linha ⇒ vencemos; 0 linhas ⇒ outro

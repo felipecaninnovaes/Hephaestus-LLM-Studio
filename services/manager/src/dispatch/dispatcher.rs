@@ -1,6 +1,7 @@
 //! Despacho transacional de jobs para orquestradores (MM-14).
 
 use sqlx::PgPool;
+use tracing::Instrument;
 use uuid::Uuid;
 
 use super::election::select_eligible_orchestrator;
@@ -37,6 +38,13 @@ pub async fn dispatch_next(
     image: &str,
     vram_table: &VramTable,
 ) -> Result<bool, ManagerError> {
+    let span = tracing::info_span!(
+        "dispatch",
+        request_id = tracing::field::Empty,
+        trace_id = tracing::field::Empty,
+        job_id = tracing::field::Empty,
+    );
+    async move {
     let mut tx = pool
         .begin()
         .await
@@ -56,6 +64,20 @@ pub async fn dispatch_next(
         Some(r) => r,
         None => return Ok(false),
     };
+    // Continua o MESMO request_id/trace_id da requisição que criou o job
+    // (registro em memória do processo — `remember_for_job` em
+    // `create_job_handler`) quando disponível; senão, novo contexto por
+    // operação (dispatch disparado pelo loop de background do main.rs, ou
+    // job sem registro — ex.: recovery de órfãos).
+    let ctx: std::sync::Arc<heph_contracts::RequestContext> =
+        match heph_contracts::request_context::recall_for_job(&job_id.to_string()) {
+            Some(remembered) => std::sync::Arc::new(remembered),
+            None => heph_contracts::request_context::current_or_generate(),
+        };
+    let current_span = tracing::Span::current();
+    current_span.record("request_id", tracing::field::display(&ctx.request_id));
+    current_span.record("trace_id", tracing::field::display(&ctx.trace_id));
+    current_span.record("job_id", tracing::field::display(&job_id));
 
     // 2. Resolve requisito VRAM da vram-table.
     let required_gb: Option<i32> = vram_table.resolve_required_gb(&engine, &model, &mode);
@@ -129,7 +151,11 @@ pub async fn dispatch_next(
     let url = format!("{}/internal/dispatch", orch.endpoint);
 
     // 7. Compensação best-effort em caso de erro no POST HTTP.
-    if let Err(e) = orch_client.post(&url, &dispatch_body).await {
+    let ctx_for_post = (*ctx).clone();
+    if let Err(e) = ctx_for_post
+        .scope(async { orch_client.post(&url, &dispatch_body).await })
+        .await
+    {
         tracing::warn!("dispatch failed for job {job_id}: {e}");
         sqlx::query(
             "UPDATE jobs SET status = 'queued', queue_reason = 'waiting_slot', orchestrator_id = NULL WHERE id = $1",
@@ -141,4 +167,7 @@ pub async fn dispatch_next(
     }
 
     Ok(true)
+    }
+    .instrument(span)
+    .await
 }

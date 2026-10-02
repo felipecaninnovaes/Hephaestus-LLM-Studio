@@ -29,19 +29,30 @@ impl HttpHeartbeatClient {
 #[async_trait]
 impl HeartbeatClient for HttpHeartbeatClient {
     async fn send(&self, body: &HeartbeatBody) -> Result<(), String> {
-        let url = format!("{}/internal/heartbeat", self.manager_url);
-        let mut req = self.client.post(&url).json(body);
-        if let Some(ref token) = self.token {
-            req = req.header("authorization", format!("Bearer {token}"));
-        }
-        let resp = req
-            .send()
+        // Loop de background sem request de entrada — cada heartbeat ganha
+        // seu próprio request_id/trace_id.
+        let ctx = heph_contracts::request_context::current_or_generate();
+        (*ctx)
+            .clone()
+            .scope(async move {
+                let url = format!("{}/internal/heartbeat", self.manager_url);
+                let mut req = self.client.post(&url).json(body);
+                for (name, value) in heph_contracts::request_context::outbound_headers() {
+                    req = req.header(name, value);
+                }
+                if let Some(ref token) = self.token {
+                    req = req.header("authorization", format!("Bearer {token}"));
+                }
+                let resp = req
+                    .send()
+                    .await
+                    .map_err(|e| format!("heartbeat request: {e}"))?;
+                if !resp.status().is_success() {
+                    return Err(format!("heartbeat status: {}", resp.status()));
+                }
+                Ok(())
+            })
             .await
-            .map_err(|e| format!("heartbeat request: {e}"))?;
-        if !resp.status().is_success() {
-            return Err(format!("heartbeat status: {}", resp.status()));
-        }
-        Ok(())
     }
 }
 

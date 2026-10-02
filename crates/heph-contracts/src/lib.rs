@@ -8,6 +8,7 @@ pub mod jobs;
 pub mod models;
 pub mod nodes;
 pub mod report;
+pub mod request_context;
 pub mod telemetry;
 
 pub use artifacts::{ArtifactItem, ArtifactReport};
@@ -23,4 +24,5 @@ pub use jobs::{
 pub use models::{GenerationItem, GenerationRow, ModelItem, ModelResponse, StorageUsageResponse};
 pub use nodes::{OrchestratorItem, TelemetryResponse};
 pub use report::{ReportBody, ReportRequest};
+pub use request_context::RequestContext;
 pub use telemetry::{JobTelemetryEvent, MetricsItem};

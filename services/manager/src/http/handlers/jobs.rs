@@ -36,12 +36,16 @@ pub async fn create_job_handler(
     State(state): State<AppState>,
     AppJson(req): AppJson<CreateJobRequest>,
 ) -> Response {
-    match crate::create_job(&state.pool, req).await {
-        Ok(resp) => (StatusCode::ACCEPTED, Json(resp)).into_response(),
+    match &crate::create_job(&state.pool, req).await {
+        Ok(resp) => {
+            tracing::Span::current().record("job_id", tracing::field::display(&resp.job_id));
+            heph_contracts::request_context::remember_for_job(&resp.job_id);
+            (StatusCode::ACCEPTED, Json(resp)).into_response()
+        }
         Err(ManagerError::NotFound) => not_found(),
-        Err(ManagerError::InvalidRequest(ref msg)) => bad_request(msg),
-        Err(ManagerError::Conflict(ref code)) => conflict(code, "conflict"),
-        Err(ManagerError::Internal(e)) => internal_error(&e),
+        Err(ManagerError::InvalidRequest(msg)) => bad_request(msg),
+        Err(ManagerError::Conflict(code)) => conflict(code, "conflict"),
+        Err(ManagerError::Internal(e)) => internal_error(e),
         Err(e) => internal_error(&e.to_string()),
     }
 }
@@ -133,6 +137,7 @@ pub async fn report_job_handler(
     JobId(uuid): JobId,
     AppJson(req): AppJson<ReportRequest>,
 ) -> Response {
+    tracing::Span::current().record("job_id", tracing::field::display(&uuid));
     match crate::report_job(&state.pool, uuid, req).await {
         Ok(()) => (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response(),
         Err(ManagerError::NotFound) => not_found(),

@@ -1202,6 +1202,7 @@ pub async fn submit_diffusion_generate_job(
 
     match state.manager.create_job(&manager_body).await {
         Ok(resp) => {
+            tracing::Span::current().record("job_id", tracing::field::display(&resp.job_id));
             let body = SubmitJobResponse {
                 job_id: resp.job_id,
                 status: resp.status,

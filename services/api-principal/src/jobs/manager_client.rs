@@ -6,6 +6,11 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
+/// Headers de correlação (fatia 2b) para anexar numa chamada ao manager.
+fn outbound_hdrs() -> [(&'static str, String); 2] {
+    heph_contracts::request_context::outbound_headers()
+}
+
 /// Erro do manager client.
 ///
 /// `Unavailable` ⇒ 503 `queue_unavailable` no handler.
@@ -234,6 +239,8 @@ impl HttpManager {
             .client
             .get(&url)
             .header("authorization", self.auth_header())
+            .header(outbound_hdrs()[0].0, outbound_hdrs()[0].1.clone())
+            .header(outbound_hdrs()[1].0, outbound_hdrs()[1].1.clone())
             .send()
             .await
             .map_err(|e| ManagerError::Unavailable(format!("manager request: {e}")))?;
@@ -275,6 +282,8 @@ impl ManagerPort for HttpManager {
             .client
             .get(&url)
             .header("authorization", self.auth_header())
+            .header(outbound_hdrs()[0].0, outbound_hdrs()[0].1.clone())
+            .header(outbound_hdrs()[1].0, outbound_hdrs()[1].1.clone())
             .send()
             .await
             .map_err(|e| ManagerError::Unavailable(format!("manager request: {e}")))?;
@@ -351,6 +360,8 @@ impl ManagerPort for HttpManager {
                 .client
                 .post(&url)
                 .header("authorization", self.auth_header())
+                .header(outbound_hdrs()[0].0, outbound_hdrs()[0].1.clone())
+                .header(outbound_hdrs()[1].0, outbound_hdrs()[1].1.clone())
                 .json(body)
                 .send()
                 .await
@@ -395,6 +406,8 @@ impl ManagerPort for HttpManager {
                 .client
                 .post(&url)
                 .header("authorization", self.auth_header())
+                .header(outbound_hdrs()[0].0, outbound_hdrs()[0].1.clone())
+                .header(outbound_hdrs()[1].0, outbound_hdrs()[1].1.clone())
                 .send()
                 .await
             {
@@ -429,6 +442,8 @@ impl ManagerPort for HttpManager {
             .client
             .delete(&url)
             .header("authorization", self.auth_header())
+            .header(outbound_hdrs()[0].0, outbound_hdrs()[0].1.clone())
+            .header(outbound_hdrs()[1].0, outbound_hdrs()[1].1.clone())
             .send()
             .await
             .map_err(|e| ManagerError::Unavailable(format!("manager request: {e}")))?;
@@ -458,6 +473,8 @@ impl ManagerPort for HttpManager {
             .client
             .post(&url)
             .header("authorization", self.auth_header())
+            .header(outbound_hdrs()[0].0, outbound_hdrs()[0].1.clone())
+            .header(outbound_hdrs()[1].0, outbound_hdrs()[1].1.clone())
             .json(body)
             .send()
             .await
@@ -511,6 +528,8 @@ impl ManagerPort for HttpManager {
             .client
             .post(&url)
             .header("authorization", self.auth_header())
+            .header(outbound_hdrs()[0].0, outbound_hdrs()[0].1.clone())
+            .header(outbound_hdrs()[1].0, outbound_hdrs()[1].1.clone())
             .json(body)
             .send()
             .await
@@ -538,6 +557,8 @@ impl ManagerPort for HttpManager {
             .client
             .post(&url)
             .header("authorization", self.auth_header())
+            .header(outbound_hdrs()[0].0, outbound_hdrs()[0].1.clone())
+            .header(outbound_hdrs()[1].0, outbound_hdrs()[1].1.clone())
             .send()
             .await
             .map_err(|e| ManagerError::Unavailable(format!("manager request: {e}")))?;
@@ -562,6 +583,8 @@ impl ManagerPort for HttpManager {
             .client
             .post(&url)
             .header("authorization", self.auth_header())
+            .header(outbound_hdrs()[0].0, outbound_hdrs()[0].1.clone())
+            .header(outbound_hdrs()[1].0, outbound_hdrs()[1].1.clone())
             .json(body)
             .send()
             .await
@@ -593,6 +616,8 @@ impl ManagerPort for HttpManager {
             .client
             .delete(&url)
             .header("authorization", self.auth_header())
+            .header(outbound_hdrs()[0].0, outbound_hdrs()[0].1.clone())
+            .header(outbound_hdrs()[1].0, outbound_hdrs()[1].1.clone())
             .send()
             .await
             .map_err(|e| ManagerError::Unavailable(format!("manager request: {e}")))?;
@@ -623,6 +648,8 @@ impl ManagerPort for HttpManager {
             .client
             .patch(&url)
             .header("authorization", self.auth_header())
+            .header(outbound_hdrs()[0].0, outbound_hdrs()[0].1.clone())
+            .header(outbound_hdrs()[1].0, outbound_hdrs()[1].1.clone())
             .json(&serde_json::json!({ "name": name }))
             .send()
             .await
@@ -693,6 +720,8 @@ impl ManagerPort for HttpManager {
             .client
             .post(&url)
             .header("authorization", self.auth_header())
+            .header(outbound_hdrs()[0].0, outbound_hdrs()[0].1.clone())
+            .header(outbound_hdrs()[1].0, outbound_hdrs()[1].1.clone())
             .json(&body)
             .send()
             .await
@@ -769,6 +798,8 @@ impl HttpManager {
                 .client
                 .post(&url)
                 .header("authorization", self.auth_header())
+                .header(outbound_hdrs()[0].0, outbound_hdrs()[0].1.clone())
+                .header(outbound_hdrs()[1].0, outbound_hdrs()[1].1.clone())
                 .json(body)
                 .send()
                 .await
@@ -815,6 +846,8 @@ impl HttpManager {
             .client
             .get(url)
             .header("authorization", self.auth_header())
+            .header(outbound_hdrs()[0].0, outbound_hdrs()[0].1.clone())
+            .header(outbound_hdrs()[1].0, outbound_hdrs()[1].1.clone())
             .send()
             .await
             .map_err(|e| ManagerError::Unavailable(format!("manager request: {e}")))?;

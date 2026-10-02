@@ -33,6 +33,9 @@ impl HttpOrchestratorClient {
 impl OrchestratorClient for HttpOrchestratorClient {
     async fn post(&self, url: &str, body: &serde_json::Value) -> Result<(), String> {
         let mut req = self.client.post(url).json(body);
+        for (name, value) in heph_contracts::request_context::outbound_headers() {
+            req = req.header(name, value);
+        }
         if let Some(t) = &self.token {
             req = req.header("Authorization", format!("Bearer {t}"));
         }
@@ -53,6 +56,9 @@ impl OrchestratorClient for HttpOrchestratorClient {
         body: &serde_json::Value,
     ) -> Result<serde_json::Value, String> {
         let mut req = self.client.post(url).json(body);
+        for (name, value) in heph_contracts::request_context::outbound_headers() {
+            req = req.header(name, value);
+        }
         if let Some(t) = &self.token {
             req = req.header("Authorization", format!("Bearer {t}"));
         }

@@ -276,6 +276,7 @@ pub fn read_generation_meta_content(outputs: &Path) -> Option<String> {
 /// `tail_jsonl_lines`, escaneia `samples/` e `checkpoints/`, reporta progresso
 /// via `report_client` e faz upload live best-effort via `s3`.
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(skip_all, fields(job_id = %job_id))]
 pub async fn stream_metrics_and_samples(
     s3: Arc<dyn S3Port>,
     report_client: Arc<dyn crate::ports::reporter::ReportClient>,

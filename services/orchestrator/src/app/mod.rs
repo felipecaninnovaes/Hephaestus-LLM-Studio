@@ -107,6 +107,7 @@ pub fn new_active_jobs() -> ActiveJobs {
 /// 8. Sobe artefatos ao bucket
 /// 9. Reporta `done` ou `failed`
 /// 10. Limpa tempdir
+#[tracing::instrument(skip_all, fields(job_id = %dispatch.job_id))]
 pub async fn run_job(
     dispatch: DispatchRequest,
     s3: Arc<dyn S3Port>,

@@ -11,9 +11,9 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use tracing::Instrument;
 
 use super::state::AppState;
-
 // ---------------------------------------------------------------------------
 // Error helpers
 // ---------------------------------------------------------------------------
@@ -43,37 +43,50 @@ pub(crate) async fn request_id_middleware(
     req: axum::http::Request<axum::body::Body>,
     next: Next,
 ) -> Response {
-    let request_id = req
+    let incoming_request_id = req
         .headers()
         .get("x-request-id")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("unknown")
-        .to_string();
+        .and_then(|v| v.to_str().ok());
+    let incoming_traceparent = req
+        .headers()
+        .get("traceparent")
+        .and_then(|v| v.to_str().ok());
+    let ctx =
+        heph_contracts::RequestContext::from_incoming(incoming_request_id, incoming_traceparent);
 
     let method = req.method().clone();
     let uri = req.uri().clone();
 
     let span = tracing::info_span!(
         "request",
-        request_id = %request_id,
+        request_id = %ctx.request_id,
+        trace_id = %ctx.trace_id,
         method = %method,
         path = %uri,
+        job_id = tracing::field::Empty,
     );
-    let _guard = span.enter();
 
+    let request_id = ctx.request_id.clone();
+    let traceparent = ctx.traceparent();
     let start = std::time::Instant::now();
-    let response = next.run(req).await;
+    let mut response = ctx
+        .scope(async { next.run(req).await })
+        .instrument(span.clone())
+        .await;
     let duration = start.elapsed();
+    span.in_scope(|| {
+        tracing::info!(
+            status = response.status().as_u16(),
+            duration_ms = duration.as_millis() as u64,
+            "request completed"
+        );
+    });
 
-    tracing::info!(
-        status = response.status().as_u16(),
-        duration_ms = duration.as_millis() as u64,
-        "request completed"
-    );
-
-    let mut response = response;
     if let Ok(val) = request_id.parse() {
         response.headers_mut().insert("x-request-id", val);
+    }
+    if let Ok(val) = traceparent.parse() {
+        response.headers_mut().insert("traceparent", val);
     }
     response
 }

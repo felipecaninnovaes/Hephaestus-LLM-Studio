@@ -237,10 +237,15 @@ pub struct AutotrackerApplyResponse {
 pub struct JobLogsQuery {
     pub offset: Option<i64>,
     pub limit: Option<i64>,
+    /// Fatia 1c: `telemetry` (default, comportamento C2a intacto) ou `run`
+    /// (pagina `logs/run.log` — stdout+stderr do container).
+    pub source: Option<String>,
 }
 
 /// Linha de log persistida (wire `JobLogLine`, camelCase). Linhas malformadas
 /// do jsonl chegam com `message` = linha bruta e demais campos nulos.
+/// `level`/`stream` (Fatia 1c): só preenchidos para `source=run` (stdout→info,
+/// stderr→error); ausentes (omitidos do wire) para `source=telemetry`.
 #[derive(Debug, Serialize, Clone)]
 pub struct JobLogLine {
     pub timestamp: Option<String>,
@@ -249,6 +254,10 @@ pub struct JobLogLine {
     pub progress: Option<f64>,
     pub epoch: Option<i64>,
     pub step: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream: Option<String>,
 }
 
 /// Página de logs (`JobLogPage`): `offset` conta LINHAS RAW jsonl consumidas.

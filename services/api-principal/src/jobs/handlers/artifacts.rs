@@ -138,6 +138,8 @@ pub fn parse_job_log_line(line: &str) -> JobLogLine {
                 progress: v.get("progress").and_then(|x| x.as_f64()),
                 epoch: v.get("epoch").and_then(|x| x.as_i64()),
                 step: v.get("step").and_then(|x| x.as_i64()),
+                level: None,
+                stream: None,
             }
         }
         _ => JobLogLine {
@@ -147,6 +149,44 @@ pub fn parse_job_log_line(line: &str) -> JobLogLine {
             progress: None,
             epoch: None,
             step: None,
+            level: None,
+            stream: None,
+        },
+    }
+}
+
+/// Parse de uma linha de `logs/run.log` (Fatia 1c): formato gravado pelo
+/// `DockerExecutor` em streaming — `<epoch_millis> <stream> <texto>`, onde
+/// `stream` é `stdout` ou `stderr`. Linha sem esse prefixo (ex.: marcador de
+/// truncamento `[run.log truncado em N bytes]`) vira mensagem bruta — mesmo
+/// fallback honesto de `parse_job_log_line`, nunca descartada.
+pub fn parse_run_log_line(line: &str) -> JobLogLine {
+    let mut parts = line.splitn(3, ' ');
+    let (ts, stream, rest) = (parts.next(), parts.next(), parts.next());
+    match (ts, stream, rest) {
+        (Some(ts), Some(stream @ ("stdout" | "stderr")), Some(msg))
+            if !ts.is_empty() && ts.chars().all(|c| c.is_ascii_digit()) =>
+        {
+            JobLogLine {
+                timestamp: Some(ts.to_string()),
+                phase: None,
+                message: Some(msg.to_string()),
+                progress: None,
+                epoch: None,
+                step: None,
+                level: Some(if stream == "stderr" { "error" } else { "info" }.to_string()),
+                stream: Some(stream.to_string()),
+            }
+        }
+        _ => JobLogLine {
+            timestamp: None,
+            phase: None,
+            message: Some(line.to_string()),
+            progress: None,
+            epoch: None,
+            step: None,
+            level: None,
+            stream: None,
         },
     }
 }
@@ -165,6 +205,15 @@ pub fn pick_log_artifact<'a>(
         .or_else(|| by(&|p| p == "metrics.jsonl" || p.ends_with("/metrics.jsonl")))
 }
 
+/// Elege o artefato de `run.log` do job (Fatia 1c): `logs/run.log` exato.
+pub fn pick_run_log_artifact(
+    arts: &[manager_client::InternalArtifact],
+) -> Option<&manager_client::InternalArtifact> {
+    arts.iter().find(|a| {
+        a.kind != "model" && a.path == "logs/run.log" && validate_artifact_path(&a.path).is_ok()
+    })
+}
+
 fn empty_log_page() -> Response {
     (
         StatusCode::OK,
@@ -177,12 +226,13 @@ fn empty_log_page() -> Response {
         .into_response()
 }
 
-/// GET /api/jobs/:id/logs?offset=&limit= — C2a.
+/// GET /api/jobs/:id/logs?offset=&limit=&source=telemetry|run — C2a + 1c.
 ///
-/// Fonte: artefato de log do job (telemetry.jsonl persistido incrementalmente
-/// pelo orquestrador; métrica legado `metrics.jsonl` como fallback), lido via
-/// StoragePort. Job sem artefato de log → 200 `{lines:[], eof:true}` (não 404
-/// — ausência de log é estado válido, o job existe).
+/// Fonte: `source=telemetry` (default, comportamento C2a intacto) lê o
+/// artefato de log de telemetria (`telemetry.jsonl`, fallback `metrics.jsonl`
+/// legado); `source=run` lê `logs/run.log` (stdout+stderr do container,
+/// Fatia 1c). Ambas via StoragePort. Job/fonte sem artefato → 200
+/// `{lines:[], eof:true}` (não 404 — ausência de log é estado válido).
 pub async fn get_job_logs(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -202,7 +252,13 @@ pub async fn get_job_logs(
         Err(ManagerError::NotFound) => return not_found(),
         Err(_) => return queue_unavailable(),
     };
-    let Some(art) = pick_log_artifact(&arts) else {
+    let is_run_source = q.source.as_deref() == Some("run");
+    let art = if is_run_source {
+        pick_run_log_artifact(&arts)
+    } else {
+        pick_log_artifact(&arts)
+    };
+    let Some(art) = art else {
         return empty_log_page();
     };
     let key = format!("artifacts/{id}/{}", art.path);
@@ -218,10 +274,12 @@ pub async fn get_job_logs(
     let limit = q.limit.unwrap_or(500).clamp(1, 2000);
     let start = (offset as usize).min(all.len());
     let end = (start + limit as usize).min(all.len());
-    let lines: Vec<JobLogLine> = all[start..end]
-        .iter()
-        .map(|l| parse_job_log_line(l))
-        .collect();
+    let parse_line = if is_run_source {
+        parse_run_log_line
+    } else {
+        parse_job_log_line
+    };
+    let lines: Vec<JobLogLine> = all[start..end].iter().map(|l| parse_line(l)).collect();
     let page = JobLogPage {
         lines,
         next_offset: end as i64,
@@ -441,6 +499,42 @@ mod job_logs_zip_tests {
         assert_eq!(pick_log_artifact(&legacy).unwrap().path, "metrics.jsonl");
         let none = vec![art("model", "best.safetensors")];
         assert!(pick_log_artifact(&none).is_none());
+    }
+
+    #[test]
+    fn parses_run_log_stdout_and_stderr_lines() {
+        let out = parse_run_log_line("1790899086122 stdout Época 1/10 · Step 30");
+        assert_eq!(out.timestamp.as_deref(), Some("1790899086122"));
+        assert_eq!(out.stream.as_deref(), Some("stdout"));
+        assert_eq!(out.level.as_deref(), Some("info"));
+        assert_eq!(out.message.as_deref(), Some("Época 1/10 · Step 30"));
+        assert!(out.phase.is_none() && out.epoch.is_none());
+
+        let err = parse_run_log_line("1790899086123 stderr Traceback (most recent call last):");
+        assert_eq!(err.stream.as_deref(), Some("stderr"));
+        assert_eq!(err.level.as_deref(), Some("error"));
+        assert_eq!(
+            err.message.as_deref(),
+            Some("Traceback (most recent call last):")
+        );
+    }
+
+    #[test]
+    fn run_log_truncation_marker_kept_as_raw_message() {
+        let l = parse_run_log_line("[run.log truncado em 50 bytes]");
+        assert_eq!(l.message.as_deref(), Some("[run.log truncado em 50 bytes]"));
+        assert!(l.stream.is_none() && l.level.is_none() && l.timestamp.is_none());
+    }
+
+    #[test]
+    fn run_log_artifact_selected_only_for_exact_path() {
+        let arts = vec![
+            art("logs", "logs/telemetry.jsonl"),
+            art("logs", "logs/run.log"),
+        ];
+        assert_eq!(pick_run_log_artifact(&arts).unwrap().path, "logs/run.log");
+        let none = vec![art("logs", "logs/telemetry.jsonl")];
+        assert!(pick_run_log_artifact(&none).is_none());
     }
 
     #[test]

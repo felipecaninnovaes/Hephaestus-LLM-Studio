@@ -79,8 +79,8 @@ fn parse_metrics_line_valid() {
         r#"{"box_loss":0.5,"cls_loss":0.3,"dfl_loss":0.2,"mAP50":0.8,"mAP50-95":0.6,"epoch":5}"#;
     let m = parse_metrics_line(line).unwrap();
     assert_eq!(m.epoch, 5);
-    assert!((m.map50 - 0.8).abs() < 1e-6);
-    assert!((m.map50_95 - 0.6).abs() < 1e-6);
+    assert!((m.map50.unwrap() - 0.8).abs() < 1e-6);
+    assert!((m.map50_95.unwrap() - 0.6).abs() < 1e-6);
 }
 
 #[test]
@@ -111,7 +111,7 @@ fn parse_metrics_line_diffusion() {
     assert_eq!(parsed.step, Some(30));
     assert_eq!(parsed.loss, Some(0.0452));
     assert_eq!(parsed.lr, Some(0.0001));
-    assert_eq!(parsed.box_loss, 0.0);
+    assert_eq!(parsed.box_loss, None);
 }
 
 #[test]
@@ -278,11 +278,11 @@ fn unzip_safe_accepts_valid() {
 #[test]
 fn compute_progress_basic() {
     let m = MetricsLine {
-        box_loss: 0.0,
-        cls_loss: 0.0,
-        dfl_loss: 0.0,
-        map50: 0.0,
-        map50_95: 0.0,
+        box_loss: Some(0.0),
+        cls_loss: Some(0.0),
+        dfl_loss: Some(0.0),
+        map50: Some(0.0),
+        map50_95: Some(0.0),
         loss: None,
         lr: None,
         step: None,
@@ -299,11 +299,11 @@ fn compute_progress_basic() {
 #[test]
 fn compute_progress_zero_epochs() {
     let m = MetricsLine {
-        box_loss: 0.0,
-        cls_loss: 0.0,
-        dfl_loss: 0.0,
-        map50: 0.0,
-        map50_95: 0.0,
+        box_loss: Some(0.0),
+        cls_loss: Some(0.0),
+        dfl_loss: Some(0.0),
+        map50: Some(0.0),
+        map50_95: Some(0.0),
         loss: None,
         lr: None,
         step: None,
@@ -320,11 +320,11 @@ fn compute_progress_zero_epochs() {
 #[test]
 fn compute_progress_full() {
     let m = MetricsLine {
-        box_loss: 0.0,
-        cls_loss: 0.0,
-        dfl_loss: 0.0,
-        map50: 0.0,
-        map50_95: 0.0,
+        box_loss: Some(0.0),
+        cls_loss: Some(0.0),
+        dfl_loss: Some(0.0),
+        map50: Some(0.0),
+        map50_95: Some(0.0),
         loss: None,
         lr: None,
         step: None,
@@ -341,11 +341,11 @@ fn compute_progress_full() {
 #[test]
 fn compute_progress_explicit() {
     let m = MetricsLine {
-        box_loss: 0.0,
-        cls_loss: 0.0,
-        dfl_loss: 0.0,
-        map50: 0.0,
-        map50_95: 0.0,
+        box_loss: Some(0.0),
+        cls_loss: Some(0.0),
+        dfl_loss: Some(0.0),
+        map50: Some(0.0),
+        map50_95: Some(0.0),
         loss: None,
         lr: None,
         step: None,
@@ -1644,11 +1644,11 @@ fn parse_metrics_line_accepts_autotrack_single_epoch() {
     let line = r#"{"box_loss":0.045,"cls_loss":0.067,"dfl_loss":0.123,"mAP50":0.912,"mAP50-95":0.654,"epoch":1}"#;
     let m = parse_metrics_line(line).expect("should parse autotrack metrics line");
     assert_eq!(m.epoch, 1);
-    assert!((m.box_loss - 0.045).abs() < 1e-6);
-    assert!((m.cls_loss - 0.067).abs() < 1e-6);
-    assert!((m.dfl_loss - 0.123).abs() < 1e-6);
-    assert!((m.map50 - 0.912).abs() < 1e-6);
-    assert!((m.map50_95 - 0.654).abs() < 1e-6);
+    assert!((m.box_loss.unwrap() - 0.045).abs() < 1e-6);
+    assert!((m.cls_loss.unwrap() - 0.067).abs() < 1e-6);
+    assert!((m.dfl_loss.unwrap() - 0.123).abs() < 1e-6);
+    assert!((m.map50.unwrap() - 0.912).abs() < 1e-6);
+    assert!((m.map50_95.unwrap() - 0.654).abs() < 1e-6);
 }
 
 // =========================================================================
@@ -4570,11 +4570,11 @@ fn is_training_metric_phase_only_is_false() {
     let m = MetricsLine {
         loss: None,
         lr: None,
-        box_loss: 0.0,
-        cls_loss: 0.0,
-        dfl_loss: 0.0,
-        map50: 0.0,
-        map50_95: 0.0,
+        box_loss: Some(0.0),
+        cls_loss: Some(0.0),
+        dfl_loss: Some(0.0),
+        map50: Some(0.0),
+        map50_95: Some(0.0),
         step: None,
         epoch: 0,
         progress: Some(0.05),
@@ -4608,11 +4608,11 @@ fn is_training_metric_autolabel_zeros_is_false() {
     let m = MetricsLine {
         loss: None,
         lr: None,
-        box_loss: 0.0,
-        cls_loss: 0.0,
-        dfl_loss: 0.0,
-        map50: 0.0,
-        map50_95: 0.0,
+        box_loss: Some(0.0),
+        cls_loss: Some(0.0),
+        dfl_loss: Some(0.0),
+        map50: Some(0.0),
+        map50_95: Some(0.0),
         step: Some(10),
         epoch: 0,
         progress: Some(0.1),
@@ -4630,11 +4630,11 @@ fn is_training_metric_autolabel_zeros_is_false() {
 #[test]
 fn is_training_metric_yolo_with_box_loss_is_true() {
     let m = MetricsLine {
-        box_loss: 0.5,
-        cls_loss: 0.3,
-        dfl_loss: 0.2,
-        map50: 0.8,
-        map50_95: 0.6,
+        box_loss: Some(0.5),
+        cls_loss: Some(0.3),
+        dfl_loss: Some(0.2),
+        map50: Some(0.8),
+        map50_95: Some(0.6),
         epoch: 5,
         ..Default::default()
     };
@@ -4648,7 +4648,7 @@ fn is_training_metric_yolo_with_box_loss_is_true() {
 fn is_training_metric_diffusion_with_map_is_true() {
     let m = MetricsLine {
         loss: Some(0.045),
-        map50: 0.9,
+        map50: Some(0.9),
         epoch: 3,
         ..Default::default()
     };

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::domain::models::ReportBody;
@@ -10,15 +11,15 @@ use crate::domain::models::ReportBody;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct MetricsLine {
     #[serde(default)]
-    pub box_loss: f64,
+    pub box_loss: Option<f64>,
     #[serde(default)]
-    pub cls_loss: f64,
+    pub cls_loss: Option<f64>,
     #[serde(default)]
-    pub dfl_loss: f64,
+    pub dfl_loss: Option<f64>,
     #[serde(rename = "mAP50", default)]
-    pub map50: f64,
+    pub map50: Option<f64>,
     #[serde(rename = "mAP50-95", default)]
-    pub map50_95: f64,
+    pub map50_95: Option<f64>,
     #[serde(default)]
     pub loss: Option<f64>,
     #[serde(default)]
@@ -38,6 +39,13 @@ pub struct MetricsLine {
     pub nan_count: Option<i64>,
     #[serde(default)]
     pub inf_count: Option<i64>,
+    /// Passthrough de qualquer chave numérica finita do dict `metrics` da
+    /// linha de telemetria que não é um campo YOLO/diffusion conhecido
+    /// acima (ex.: `grad_norm` emitido pelo trainer-difusao). Preserva o
+    /// valor exato sem inventar zeros para campos ausentes (bug do job
+    /// c64b9b74-1c53-4111-a48a-7ab472283654).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extra: BTreeMap<String, f64>,
 }
 
 impl MetricsLine {
@@ -48,24 +56,33 @@ impl MetricsLine {
     pub fn is_training_metric(&self) -> bool {
         matches!(self.loss, Some(x) if x.is_finite())
             || matches!(self.lr, Some(x) if x.is_finite())
-            || matches!(self.box_loss, x if x != 0.0 && x.is_finite())
-            || matches!(self.cls_loss, x if x != 0.0 && x.is_finite())
-            || matches!(self.dfl_loss, x if x != 0.0 && x.is_finite())
-            || matches!(self.map50, x if x != 0.0 && x.is_finite())
-            || matches!(self.map50_95, x if x != 0.0 && x.is_finite())
+            || matches!(self.box_loss, Some(x) if x != 0.0 && x.is_finite())
+            || matches!(self.cls_loss, Some(x) if x != 0.0 && x.is_finite())
+            || matches!(self.dfl_loss, Some(x) if x != 0.0 && x.is_finite())
+            || matches!(self.map50, Some(x) if x != 0.0 && x.is_finite())
+            || matches!(self.map50_95, Some(x) if x != 0.0 && x.is_finite())
             || matches!(self.nan_count, Some(n) if n > 0)
             || matches!(self.inf_count, Some(n) if n > 0)
+            || !self.extra.is_empty()
     }
 
     pub fn to_report_json(&self) -> serde_json::Value {
-        let mut obj = serde_json::json!({
-            "box_loss": self.box_loss,
-            "cls_loss": self.cls_loss,
-            "dfl_loss": self.dfl_loss,
-            "mAP50": self.map50,
-            "mAP50-95": self.map50_95,
-            "epoch": self.epoch,
-        });
+        let mut obj = serde_json::json!({ "epoch": self.epoch });
+        if let Some(box_loss) = self.box_loss {
+            obj["box_loss"] = serde_json::json!(box_loss);
+        }
+        if let Some(cls_loss) = self.cls_loss {
+            obj["cls_loss"] = serde_json::json!(cls_loss);
+        }
+        if let Some(dfl_loss) = self.dfl_loss {
+            obj["dfl_loss"] = serde_json::json!(dfl_loss);
+        }
+        if let Some(map50) = self.map50 {
+            obj["mAP50"] = serde_json::json!(map50);
+        }
+        if let Some(map50_95) = self.map50_95 {
+            obj["mAP50-95"] = serde_json::json!(map50_95);
+        }
         if let Some(loss) = self.loss {
             obj["loss"] = serde_json::json!(loss);
         }
@@ -78,10 +95,10 @@ impl MetricsLine {
         if let Some(p) = self.progress {
             obj["progress"] = serde_json::json!(p);
         }
-        if let Some(ref phase) = self.phase {
+        if let Some(phase) = &self.phase {
             obj["phase"] = serde_json::json!(phase);
         }
-        if let Some(ref msg) = self.message {
+        if let Some(msg) = &self.message {
             obj["message"] = serde_json::json!(msg);
         }
         if let Some(vram) = self.vram_used_gb {
@@ -93,9 +110,20 @@ impl MetricsLine {
         if let Some(inf_count) = self.inf_count {
             obj["inf_count"] = serde_json::json!(inf_count);
         }
+        for (key, value) in &self.extra {
+            obj[key] = serde_json::json!(value);
+        }
         obj
     }
 }
+
+/// Chaves do dict `metrics`/topo já mapeadas para campos conhecidos de
+/// `MetricsLine` — excluídas do passthrough genérico em `extra` para não
+/// duplicar.
+const KNOWN_METRIC_KEYS: &[&str] = &[
+    "box_loss", "cls_loss", "dfl_loss", "mAP50", "mAP50-95", "loss", "lr", "step", "epoch",
+    "progress",
+];
 
 /// Parse tolerante de uma linha de metrics.jsonl ou telemetry.jsonl.
 /// Linhas malformadas são ignoradas (skip silencioso).
@@ -155,12 +183,30 @@ pub fn parse_metrics_line(line: &str) -> Option<MetricsLine> {
         .get("vramUsedGb")
         .or_else(|| v.get("vram_used_gb"))
         .and_then(|x| x.as_f64());
+    // Passthrough genérico: TODAS as chaves numéricas finitas do dict
+    // `metrics` aninhado que não são campos YOLO/diffusion já conhecidos
+    // (ex.: `grad_norm` do trainer-difusao, spec fatia 3b). Sem isso o
+    // report descartava silenciosamente qualquer chave nova emitida pelo
+    // engine.
+    let mut extra = BTreeMap::new();
+    if let Some(m) = nested.and_then(|m| m.as_object()) {
+        for (key, value) in m {
+            if KNOWN_METRIC_KEYS.contains(&key.as_str()) {
+                continue;
+            }
+            if let Some(x) = value.as_f64() {
+                if x.is_finite() {
+                    extra.insert(key.clone(), x);
+                }
+            }
+        }
+    }
     Some(MetricsLine {
-        box_loss: num("box_loss").unwrap_or(0.0),
-        cls_loss: num("cls_loss").unwrap_or(0.0),
-        dfl_loss: num("dfl_loss").unwrap_or(0.0),
-        map50: num("mAP50").unwrap_or(0.0),
-        map50_95: num("mAP50-95").unwrap_or(0.0),
+        box_loss: num("box_loss"),
+        cls_loss: num("cls_loss"),
+        dfl_loss: num("dfl_loss"),
+        map50: num("mAP50"),
+        map50_95: num("mAP50-95"),
         loss: num("loss"),
         lr: num("lr"),
         step: int("step"),
@@ -171,6 +217,7 @@ pub fn parse_metrics_line(line: &str) -> Option<MetricsLine> {
         vram_used_gb,
         nan_count: diag_int("nanCount", "nan_count"),
         inf_count: diag_int("infCount", "inf_count"),
+        extra,
     })
 }
 
@@ -265,6 +312,41 @@ mod tests {
         assert!(m.is_training_metric());
         let report = telemetry_report_for_line(&m, 10);
         assert!(report.metrics.is_some());
+    }
+
+    /// Regressão do bug confirmado no smoke GPU real (job
+    /// c64b9b74-1c53-4111-a48a-7ab472283654, SD1.5): uma linha de difusão
+    /// (`metrics.grad_norm`) deve repassar `grad_norm` no report e NÃO
+    /// inventar `box_loss`/`mAP50`/etc. com 0; uma linha YOLO real continua
+    /// trazendo suas próprias chaves inalteradas.
+    #[test]
+    fn diffusion_line_passes_grad_norm_without_fabricating_yolo_zeros() {
+        let line = r#"{"timestamp":"2026-09-20T00:00:00Z","phase":"training","progress":0.5,"step":30,"epoch":3,"metrics":{"loss":0.0452,"lr":0.0001,"grad_norm":1.23},"diagnostics":{"nanCount":0,"infCount":0}}"#;
+        let m = parse_metrics_line(line).expect("linha de difusão deve parsear");
+        assert_eq!(m.extra.get("grad_norm"), Some(&1.23));
+        assert_eq!(m.box_loss, None);
+        assert_eq!(m.map50, None);
+        let json = m.to_report_json();
+        assert_eq!(json["grad_norm"], 1.23);
+        assert!(json.get("box_loss").is_none());
+        assert!(json.get("mAP50").is_none());
+        assert!(json.get("mAP50-95").is_none());
+    }
+
+    #[test]
+    fn yolo_line_unchanged_by_extra_passthrough() {
+        let line = r#"{"box_loss":0.045,"cls_loss":0.067,"dfl_loss":0.123,"mAP50":0.912,"mAP50-95":0.654,"epoch":1}"#;
+        let m = parse_metrics_line(line).expect("linha YOLO deve parsear");
+        assert_eq!(m.box_loss, Some(0.045));
+        assert_eq!(m.cls_loss, Some(0.067));
+        assert_eq!(m.dfl_loss, Some(0.123));
+        assert_eq!(m.map50, Some(0.912));
+        assert_eq!(m.map50_95, Some(0.654));
+        assert!(m.extra.is_empty());
+        let json = m.to_report_json();
+        assert_eq!(json["box_loss"], 0.045);
+        assert_eq!(json["mAP50-95"], 0.654);
+        assert!(json.get("grad_norm").is_none());
     }
 
     #[test]

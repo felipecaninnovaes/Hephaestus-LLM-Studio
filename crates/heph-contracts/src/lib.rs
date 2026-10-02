@@ -25,7 +25,7 @@ pub use jobs::{
     LineageResponse, PrepareCompleteRequest, PrepareFailRequest, PreparePackageRef, QueueItem,
 };
 pub use models::{GenerationItem, GenerationRow, ModelItem, ModelResponse, StorageUsageResponse};
-pub use nodes::{OrchestratorItem, TelemetryResponse};
+pub use nodes::{GpuDeviceTelemetry, OrchestratorItem, TelemetryResponse};
 pub use report::{ReportBody, ReportRequest};
 pub use request_context::RequestContext;
 pub use telemetry::{JobTelemetryEvent, MetricsItem, SystemMetrics, TrainingDiagnostics};

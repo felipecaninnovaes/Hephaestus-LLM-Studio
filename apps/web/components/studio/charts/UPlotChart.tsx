@@ -10,6 +10,8 @@ export interface UPlotChartProps {
 	className?: string;
 	onInit?: (u: uPlot) => void;
 	onDestroy?: () => void;
+	/** Callback para medir o tempo do mount até o primeiro draw */
+	onFirstDraw?: (durationMs: number) => void;
 }
 
 /**
@@ -25,6 +27,7 @@ export function UPlotChart({
 	className,
 	onInit,
 	onDestroy,
+	onFirstDraw,
 }: UPlotChartProps) {
 	const containerRef = useRef<HTMLDivElement | null>(null);
 	const chartRef = useRef<uPlot | null>(null);
@@ -32,21 +35,58 @@ export function UPlotChart({
 	onInitRef.current = onInit;
 	const onDestroyRef = useRef(onDestroy);
 	onDestroyRef.current = onDestroy;
+	const onFirstDrawRef = useRef(onFirstDraw);
+	onFirstDrawRef.current = onFirstDraw;
+
 	const initialDataRef = useRef(data);
+	const hasDrawnFirstRef = useRef(false);
+
 	// Cria / recria o uPlot quando as options estruturais mudarem
 	useEffect(() => {
 		const el = containerRef.current;
 		if (!el) return;
 
-		// Mede tamanho real do container se options width/height não forem rígidos
+		// Marca início da medição de render
+		performance.mark("uplot-mount-start");
+		hasDrawnFirstRef.current = false;
+
 		const rect = el.getBoundingClientRect();
 		const width = Math.max(Math.floor(rect.width) || options.width || 600, 100);
 		const height = Math.max(Math.floor(options.height) || 240, 100);
+
+		// Clona hooks para interceptar o primeiro draw
+		const userHooks = options.hooks || {};
+		const drawHooks = [...(userHooks.draw || [])];
+
+		drawHooks.unshift((_u: uPlot) => {
+			if (!hasDrawnFirstRef.current) {
+				hasDrawnFirstRef.current = true;
+				performance.mark("uplot-draw-end");
+				try {
+					performance.measure(
+						"uplot-initial-render",
+						"uplot-mount-start",
+						"uplot-draw-end",
+					);
+					const entries = performance.getEntriesByName("uplot-initial-render");
+					const last = entries[entries.length - 1];
+					if (last && onFirstDrawRef.current) {
+						onFirstDrawRef.current(last.duration);
+					}
+				} catch {
+					// Medição opcional
+				}
+			}
+		});
 
 		const mergedOpts: uPlot.Options = {
 			...options,
 			width,
 			height,
+			hooks: {
+				...userHooks,
+				draw: drawHooks,
+			},
 		};
 
 		const chart = new uPlot(mergedOpts, initialDataRef.current, el);
@@ -69,7 +109,6 @@ export function UPlotChart({
 	useEffect(() => {
 		const chart = chartRef.current;
 		if (!chart) return;
-		// setData atualiza os caminhos Canvas diretamente em sub-milissegundos
 		chart.setData(data, false);
 	}, [data]);
 

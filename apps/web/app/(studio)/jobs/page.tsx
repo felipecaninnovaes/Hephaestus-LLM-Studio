@@ -304,10 +304,20 @@ function JobsPageContent() {
 	const isSelectedActive = selectedJob ? isActive(selectedJob.status) : false;
 
 	// Hook de séries brutas (fatia 4a) com carga inicial
+	const isYoloSelected = selectedJob?.kind.startsWith("yolo");
+	const requestedKeys = useMemo(
+		() =>
+			isYoloSelected
+				? ["box_loss", "cls_loss", "dfl_loss", "mAP50", "mAP50-95"]
+				: ["loss", "lr", "grad_norm"],
+		[isYoloSelected],
+	);
+
 	const { points: currentJobPoints, appendPoints: appendCurrentJobPoints } =
 		useJobMetricSeries(selectedJob?.id, {
 			enabled: !!selectedJob,
-			maxPoints: 3000,
+			maxPoints: 2500, // ~2x largura em px
+			keys: requestedKeys,
 		});
 
 	// Sincroniza pontos do hook para o mapa de cache por jobId
@@ -710,6 +720,7 @@ function JobsPageContent() {
 														metricPoints[selectedJob.id] ?? currentJobPoints
 													}
 													metrics={selectedTrainingMetrics}
+													jobKind={selectedJob.kind}
 													totalEpochs={selectedJob.epoch || 100}
 													isJobActive={selectedJob.status === "running"}
 												/>

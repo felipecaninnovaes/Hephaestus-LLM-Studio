@@ -12,12 +12,11 @@ export function dedupeMetricPoints(
 	// Ordena por seq crescente
 	const sorted = points.slice().sort((a, b) => {
 		if (a.seq !== b.seq) return a.seq < b.seq ? -1 : 1;
-		// Em caso improvável de mesmo seq, desempata por timestamp
 		return a.ts.localeCompare(b.ts);
 	});
 
 	const deduped: MetricPointWithKey[] = [];
-	const seenSeqs = new Set<string>(); // BigInt/number safe via string
+	const seenSeqs = new Set<string>();
 
 	for (const pt of sorted) {
 		const key = `${pt.seq}:${pt.key}`;
@@ -43,18 +42,10 @@ export function mergeMetricPoints(
 	return dedupeMetricPoints([...existing, ...incoming]);
 }
 
-export interface MetricIndexEntry {
-	epoch: number | null;
-	step: number;
-	ts: number;
-}
-
 /**
  * Deriva um step global monotônico crescente para jobs onde o step reinicia por época.
- * Mapeia cada par único (epoch, step) ordenado cronologicamente / lexicograficamente
- * para um índice sequencial [0, 1, 2, ...].
- *
- * Retorna um Map com chave `${epoch ?? "null"}:${step}` -> globalStep (number).
+ * Mapeia cada par único (epoch, step) para um índice numérico contínuo.
+ * Se o step nos pontos já for cumulativo/monotônico contínuo, preserva o próprio step.
  */
 export function computeGlobalSteps(
 	points: MetricPointWithKey[],
@@ -62,7 +53,7 @@ export function computeGlobalSteps(
 	const map = new Map<string, number>();
 	if (points.length === 0) return map;
 
-	// Extrai todas as combinações únicas de (epoch, step, ts_min)
+	// Coleta pares únicos de (epoch, step) com menor timestamp e menor seq
 	const uniqueSteps = new Map<
 		string,
 		{ epoch: number | null; step: number; minTs: number; firstSeq: number }
@@ -81,12 +72,13 @@ export function computeGlobalSteps(
 			});
 		} else {
 			if (parsedTs < existing.minTs) existing.minTs = parsedTs;
-			if (Number(pt.seq) < existing.firstSeq)
+			if (Number(pt.seq) < existing.firstSeq) {
 				existing.firstSeq = Number(pt.seq);
+			}
 		}
 	}
 
-	// Ordena por epoch (nulls first), step, e firstSeq/minTs
+	// Ordena por epoch (nulls first), step, e firstSeq
 	const sorted = Array.from(uniqueSteps.values()).sort((a, b) => {
 		const epA = a.epoch ?? -1;
 		const epB = b.epoch ?? -1;
@@ -95,9 +87,24 @@ export function computeGlobalSteps(
 		return a.firstSeq - b.firstSeq;
 	});
 
-	// Atribui step global sequencial começando em 0 (ou 1 se step inicial > 0, mas índice 0-based contínuo é padrão para escala de linha)
+	// Verifica se os steps já são estritamente crescentes sem reiniciar
+	let isAlreadyStrictlyIncreasing = true;
+	let lastStep = -Infinity;
+	for (const item of sorted) {
+		if (item.step <= lastStep) {
+			isAlreadyStrictlyIncreasing = false;
+			break;
+		}
+		lastStep = item.step;
+	}
+
 	sorted.forEach((item, index) => {
-		map.set(`${item.epoch ?? "null"}:${item.step}`, index + 1);
+		const key = `${item.epoch ?? "null"}:${item.step}`;
+		if (isAlreadyStrictlyIncreasing && item.step > 0) {
+			map.set(key, item.step);
+		} else {
+			map.set(key, index + 1);
+		}
 	});
 
 	return map;
@@ -106,8 +113,6 @@ export function computeGlobalSteps(
 /**
  * Calcula Média Móvel Exponencial (EMA) sobre uma série de números (podendo conter nulls).
  * alpha = 1 - smoothing (onde smoothing varia de 0 a 0.99).
- * Se smoothing == 0, devolve a própria série intacta.
- * Nulls são preservados.
  */
 export function calculateEMA(
 	values: (number | null | undefined)[],
@@ -144,20 +149,27 @@ export function calculateEMA(
 export type XAxisMode = "global_step" | "epoch" | "ts";
 
 export interface PivotSeriesResult {
-	xValues: number[]; // Epochs, timestamps (segundos) ou global steps
+	xValues: number[];
 	seriesKeys: string[];
-	seriesData: Record<string, (number | null)[]>; // seriesKey -> array alinhado a xValues
+	seriesData: Record<string, (number | null)[]>;
 	xIndexMap: { epoch: number | null; step: number; ts: number }[];
+}
+
+export interface PivotOptions {
+	jobKind?: string;
+	allowedKeys?: string[];
 }
 
 /**
  * Agrupa pontos brutos de métricas em matriz alinhada para o uPlot.
- * O uPlot exige que data[0] seja o eixo X em ordem estritamente crescente,
- * e data[1..N] sejam arrays com mesmo tamanho de data[0].
+ * - Filtra estritamente chaves de treino permitidas
+ * - Elimina séries cujos valores são todos 0 ou ausentes
+ * - uPlot exige que data[0] seja o eixo X em ordem estritamente crescente
  */
 export function pivotMetricPoints(
 	points: MetricPointWithKey[],
 	xMode: XAxisMode = "global_step",
+	options: PivotOptions = {},
 ): PivotSeriesResult {
 	const deduped = dedupeMetricPoints(points);
 	if (deduped.length === 0) {
@@ -169,9 +181,35 @@ export function pivotMetricPoints(
 		};
 	}
 
-	const globalStepMap = computeGlobalSteps(deduped);
+	// 1. Determina chaves permitidas por tipo de job
+	const isYolo = options.jobKind?.startsWith("yolo");
+	const defaultAllowed = isYolo
+		? [
+				"box_loss",
+				"cls_loss",
+				"dfl_loss",
+				"mAP50",
+				"mAP50-95",
+				"map50",
+				"map5095",
+			]
+		: ["loss", "lr", "grad_norm", "gradNorm"];
 
-	// Chave de agrupamento por ponto de amostragem no eixo X
+	const allowedSet = new Set<string>(options.allowedKeys ?? defaultAllowed);
+
+	// Filtra pontos permitidos
+	const validPoints = deduped.filter((pt) => allowedSet.has(pt.key));
+	if (validPoints.length === 0) {
+		return {
+			xValues: [],
+			seriesKeys: [],
+			seriesData: {},
+			xIndexMap: [],
+		};
+	}
+
+	const globalStepMap = computeGlobalSteps(validPoints);
+
 	interface SampleBin {
 		xVal: number;
 		epoch: number | null;
@@ -181,10 +219,10 @@ export function pivotMetricPoints(
 	}
 
 	const binsMap = new Map<string, SampleBin>();
-	const keysSet = new Set<string>();
+	const allKeysSet = new Set<string>();
 
-	for (const pt of deduped) {
-		keysSet.add(pt.key);
+	for (const pt of validPoints) {
+		allKeysSet.add(pt.key);
 
 		const stepKey = `${pt.epoch ?? "null"}:${pt.step}`;
 		const tsSec = Math.floor((Date.parse(pt.ts) || 0) / 1000);
@@ -193,7 +231,6 @@ export function pivotMetricPoints(
 		let xVal = 0;
 
 		if (xMode === "epoch") {
-			// Se eixo for epoch, agrupa por epoch. Se houver múltiplos steps na mesma época, usa step fractional se disponível
 			const ep = pt.epoch ?? 0;
 			xVal = ep;
 			binKey = `${ep}:${pt.step}`;
@@ -201,7 +238,6 @@ export function pivotMetricPoints(
 			xVal = tsSec;
 			binKey = `${tsSec}:${pt.step}`;
 		} else {
-			// global_step
 			xVal = globalStepMap.get(stepKey) ?? (pt.epoch ?? 0) * 10000 + pt.step;
 			binKey = stepKey;
 		}
@@ -229,8 +265,7 @@ export function pivotMetricPoints(
 		return a.step - b.step;
 	});
 
-	// Se por ventura múltiplos bins tiverem o mesmo xVal (ex: xMode == "epoch" com vários steps),
-	// ajustamos xVal com micro-offset para preservar monotonicidade estrita exigida por uPlot.
+	// Garante monotonicidade estrita exigida por uPlot
 	const xValues: number[] = [];
 	const xIndexMap: { epoch: number | null; step: number; ts: number }[] = [];
 
@@ -250,16 +285,24 @@ export function pivotMetricPoints(
 		});
 	}
 
-	const seriesKeys = Array.from(keysSet);
+	// 2. Filtra séries cujos valores são TODOS zero (ex.: métricas YOLO legado em job de difusão)
+	const filteredKeys: string[] = [];
 	const seriesData: Record<string, (number | null)[]> = {};
 
-	for (const key of seriesKeys) {
-		seriesData[key] = sortedBins.map((bin) => bin.values.get(key) ?? null);
+	for (const key of Array.from(allKeysSet)) {
+		const rawValues = sortedBins.map((bin) => bin.values.get(key) ?? null);
+		const hasNonZero = rawValues.some(
+			(v) => v !== null && Number.isFinite(v) && v !== 0,
+		);
+		if (hasNonZero) {
+			filteredKeys.push(key);
+			seriesData[key] = rawValues;
+		}
 	}
 
 	return {
 		xValues,
-		seriesKeys,
+		seriesKeys: filteredKeys,
 		seriesData,
 		xIndexMap,
 	};

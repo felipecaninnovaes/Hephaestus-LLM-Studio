@@ -7,26 +7,45 @@
 # logs nesta fatia (fora de escopo @infra). Em vez disso o collector lê os
 # arquivos json-file do Docker (`filelog`, opção §4 2c "(b)" — menos peças
 # que promtail/Alloy: reusa o coletor já mergeado, nenhum processo novo).
-# Cada container já tem o label `com.docker.compose.service` (Compose
-# aplica automaticamente); `x-logging.options.labels` no compose.yaml manda
-# o daemon Docker embutir esse label no campo `attrs` de cada linha
-# json-file (comportamento documentado do driver `json-file`, opções
-# `labels`/`env` → bloco `attrs`). O pipeline abaixo:
+# Cada container já tem os labels `com.docker.compose.service` e
+# `com.docker.compose.project` (Compose aplica automaticamente);
+# `x-logging.options.labels` no compose.yaml manda o daemon Docker embutir
+# ambos no campo `attrs` de cada linha json-file (comportamento documentado
+# do driver `json-file`, opções `labels`/`env` → bloco `attrs`). O pipeline
+# abaixo:
 #   1. desembrulha o wrapper do Docker (`{"log","stream","time","attrs"}`);
-#   2. troca o `body` pelo conteúdo de `log` (a linha JSON emitida pelo
+#   2. FILTRA por projeto (revisão de segurança pós-reprova, ver abaixo) —
+#      descarta qualquer linha cujo `attrs["com.docker.compose.project"]`
+#      não seja EXATAMENTE o projeto deste stack (`COMPOSE_PROJECT_NAME`,
+#      propagado como env do container no compose.yaml). Sem o label
+#      (container de outro host/projeto, ou qualquer coisa fora do Compose)
+#      também é descartado — o operador `filter` do stanza dropa a entrada
+#      quando a expressão avalia `true`, e comparar uma chave ausente com a
+#      string do projeto sempre dá `true` (nil != "infra"). SEM este filtro
+#      o `filelog` lia `/var/lib/docker/containers/*` de TODO o host —
+#      vazava logs de outros projetos/containers (ex.: engines com
+#      `HF_TOKEN`) para o Loki deste stack. Bloqueante corrigido aqui.
+#   3. troca o `body` pelo conteúdo de `log` (a linha JSON emitida pelo
 #      tracing_subscriber `fmt().json()` dos 3 serviços — ver
 #      `crates/heph-contracts/src/otel.rs`);
-#   3. faz o parse dessa linha (json_parser `parse_to: body`, mantendo-a
+#   4. faz o parse dessa linha (json_parser `parse_to: body`, mantendo-a
 #      estruturada) e achata `body.span` (`request_id`/`trace_id`/`job_id`
 #      ficam na raiz) — assim `{service="…"} | json | request_id="…"` no
 #      Loki funciona direto, sem acoplar o schema do Loki ao formato
 #      aninhado do tracing;
-#   4. promove `attrs["com.docker.compose.service"]` para o resource
+#   5. promove `attrs["com.docker.compose.service"]` para o resource
 #      attribute `service` (vira label de índice no Loki — ver
 #      `infra/loki-config.yaml`).
 # Containers sem log JSON válido (loki/tempo/grafana/otel-collector etc.)
-# só perdem o parse da linha 3 (`on_error: send`): aparecem em
+# só perdem o parse do passo 4 (`on_error: send`): aparecem em
 # `{service="<nome>"}` com o texto cru, sem quebrar o pipeline.
+#
+# Engines efêmeros (`trainer-*`, daemon de difusão) são subidos pelo
+# orchestrator via `docker run` direto (não via `docker compose`) — NÃO
+# carregam `com.docker.compose.project`/`.service`, então o filtro do
+# passo 2 já os descarta por padrão (nenhuma allowlist adicional
+# necessária). O log deles (stdout/stderr do treino) vai para
+# `outputs/<job>/logs/run.log` no S3 pela fatia 1c, não por aqui.
 
 receivers:
   otlp:
@@ -48,6 +67,13 @@ receivers:
         timestamp:
           parse_from: attributes.time
           layout: '%Y-%m-%dT%H:%M:%S.%LZ'
+      - type: filter
+        id: scope_to_project
+        # `filter` DROPA a entrada quando a expressão é `true` (semântica
+        # invertida do stanza — não é um "keep"). `${env:COMPOSE_PROJECT_NAME}`
+        # é expandido pelo próprio otelcol a partir da env do container
+        # (default "infra", igual ao resto do compose).
+        expr: 'attributes.attrs["com.docker.compose.project"] != "${env:COMPOSE_PROJECT_NAME}"'
       - type: move
         from: attributes.log
         to: body

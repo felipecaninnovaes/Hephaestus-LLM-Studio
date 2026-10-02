@@ -3,12 +3,15 @@ x-logging: &default-logging
   options:
     max-size: "10m"
     max-file: "3"
-    # Fatia 2c (telemetria-observabilidade): embute o label
-    # `com.docker.compose.service` (setado automaticamente pelo Compose em
-    # todo container) no campo `attrs` de cada linha json-file — é assim
-    # que o otel-collector (`filelog`) sabe de qual serviço veio o log sem
-    # falar com a API do Docker (ver infra/otel-collector.yaml).
-    labels: "com.docker.compose.service"
+    # Fatia 2c (telemetria-observabilidade): embute os labels
+    # `com.docker.compose.service`/`.project` (setados automaticamente pelo
+    # Compose em todo container) no campo `attrs` de cada linha json-file —
+    # é assim que o otel-collector (`filelog`) sabe de qual serviço/projeto
+    # veio o log sem falar com a API do Docker (ver infra/otel-collector.yaml).
+    # `.project` é OBRIGATÓRIO (revisão de segurança pós-reprova): sem ele o
+    # collector não tem como distinguir este stack de qualquer outro
+    # container do host, e vazaria log de projetos/engines alheios no Loki.
+    labels: "com.docker.compose.service,com.docker.compose.project"
 
 services:
   db:
@@ -189,12 +192,37 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.otel-collector
-    # Fatia 2c: `user: root` é necessário para o receiver `filelog` ler
-    # /var/lib/docker/containers (dono root:root, modo 0640 no host) — a
-    # imagem upstream roda non-root (USER 10001) só para o healthcheck
-    # (wget); aqui sobrescrevemos para o processo conseguir tailar os logs.
-    # Mount READ-ONLY: o collector nunca escreve no diretório do Docker.
+    # Fatia 2c + revisão de segurança pós-reprova:
+    # - `user: root` é necessário para o receiver `filelog` ler
+    #   /var/lib/docker/containers (dono root:root, modo 0640 no host) — a
+    #   imagem upstream roda non-root (USER 10001) só para o healthcheck.
+    # - `cap_drop: [ALL]` + `cap_add: [DAC_READ_SEARCH]`: root sem a
+    #   capability DAC_READ_SEARCH fica sujeito às permissões normais de
+    #   arquivo (não lê os logs 0640 de outro dono); com ela, só ganha o
+    #   bypass mínimo de leitura/busca — nenhuma outra capability de root
+    #   (SETUID, NET_ADMIN, SYS_ADMIN etc.) sobra.
+    # - `security_opt: no-new-privileges`: bloqueia escalonamento via
+    #   setuid/setgid binaries dentro do container.
+    # - `read_only: true` + `tmpfs: [/tmp]`: o binário não precisa escrever
+    #   em lugar nenhum além de /tmp (sem storage extension configurada —
+    #   checkpoint do filelog fica em memória; reinício relê do
+    #   `start_at: beginning`, aceitável neste stack single-node).
+    # - Mount de /var/lib/docker/containers é READ-ONLY: o collector nunca
+    #   escreve no diretório do Docker.
     user: "0:0"
+    cap_drop: ["ALL"]
+    cap_add: ["DAC_READ_SEARCH"]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      # Usado pelo filtro `scope_to_project` do otel-collector.yaml —
+      # descarta log de qualquer container fora deste projeto Compose
+      # (revisão de segurança pós-reprova: sem isso o filelog lia
+      # /var/lib/docker/containers/* de TODO o host, vazando log de
+      # outros stacks/engines no Loki deste stack).
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-infra}
     volumes:
       - ./otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro

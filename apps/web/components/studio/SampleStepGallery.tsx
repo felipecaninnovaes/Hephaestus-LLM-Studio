@@ -32,10 +32,17 @@ function StepPane({
   onDownload?: (jobId: string, art: JobArtifact) => void;
 }) {
   const step = steps[position];
+  const gridClass =
+    !step || step.groups.length <= 1
+      ? "grid-cols-1"
+      : step.groups.length === 2
+        ? "grid-cols-2"
+        : "grid-cols-2 sm:grid-cols-3";
   return (
     <div className="space-y-2">
       <Slider
         label={label}
+        aria-label={label}
         value={position}
         min={0}
         max={Math.max(0, steps.length - 1)}
@@ -45,7 +52,7 @@ function StepPane({
         aria-valuetext={step?.label ?? ""}
       />
       {step && (
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+        <div className={`grid gap-2 ${gridClass}`}>
           {step.groups.map((g) => (
             <SampleCard
               key={g.art.id}

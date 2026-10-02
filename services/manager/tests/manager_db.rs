@@ -1323,6 +1323,239 @@ async fn metrics_append_e_dedup_por_epoch() {
 }
 
 // ===========================================================================
+// Fatia 1a (telemetria append-only) — job_metric_points
+// ===========================================================================
+
+/// (a) Dois reports concorrentes de 5 pontos cada no mesmo job (chaves
+/// distintas, sem conflito de chave natural) → 10 linhas, seq 1..10 sem
+/// buraco nem duplicata (o lock de linha em `metric_seq` serializa a
+/// alocação mesmo sob concorrência real via `tokio::join!`).
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn a_dois_reports_concorrentes_10_linhas_seq_sem_buraco() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    let batch_a =
+        serde_json::json!({"epoch": 1, "a1": 1.0, "a2": 2.0, "a3": 3.0, "a4": 4.0, "a5": 5.0});
+    let batch_b =
+        serde_json::json!({"epoch": 2, "b1": 1.0, "b2": 2.0, "b3": 3.0, "b4": 4.0, "b5": 5.0});
+
+    let (r1, r2) = tokio::join!(
+        manager::insert_metrics_points(&p, job_id, &batch_a),
+        manager::insert_metrics_points(&p, job_id, &batch_b),
+    );
+    r1.expect("insert batch a");
+    r2.expect("insert batch b");
+
+    let seqs: Vec<i64> =
+        sqlx::query_scalar("SELECT seq FROM job_metric_points WHERE job_id = $1 ORDER BY seq")
+            .bind(job_id)
+            .fetch_all(&p)
+            .await
+            .expect("select seqs");
+    assert_eq!(
+        seqs.len(),
+        10,
+        "10 pontos distintos (5+5, sem conflito de chave natural)"
+    );
+    assert_eq!(
+        seqs,
+        (1..=10).collect::<Vec<i64>>(),
+        "seq 1..10 sem buraco nem duplicata"
+    );
+}
+
+/// (b) Item sem epoch é persistido com `epoch IS NULL` (não descartado,
+/// ao contrário do legado `metrics_key` que exigia epoch).
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn b_item_sem_epoch_persiste_com_epoch_null() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    manager::insert_metrics_points(&p, job_id, &serde_json::json!({"loss": 0.5}))
+        .await
+        .expect("insert sem epoch");
+
+    let row: (Option<i32>, i64, String, f64) =
+        sqlx::query_as("SELECT epoch, step, key, value FROM job_metric_points WHERE job_id = $1")
+            .bind(job_id)
+            .fetch_one(&p)
+            .await
+            .expect("select ponto sem epoch");
+    assert_eq!(row.0, None, "epoch IS NULL, não descartado");
+    assert_eq!(row.1, 0, "step default 0");
+    assert_eq!(row.2, "loss");
+    assert_eq!(row.3, 0.5);
+}
+
+/// (c) Reenvio idêntico (outbox at-least-once) não duplica: mesma chave
+/// natural → `ON CONFLICT DO UPDATE`, não uma 2ª linha.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn c_reenvio_identico_nao_duplica() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    let payload = serde_json::json!({"epoch": 1, "loss": 0.3, "lr": 0.01});
+    manager::insert_metrics_points(&p, job_id, &payload)
+        .await
+        .expect("1º envio");
+    manager::insert_metrics_points(&p, job_id, &payload)
+        .await
+        .expect("reenvio idêntico");
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM job_metric_points WHERE job_id = $1")
+        .bind(job_id)
+        .fetch_one(&p)
+        .await
+        .expect("count");
+    assert_eq!(
+        count, 2,
+        "2 keys (loss, lr) — reenvio não duplica, continua 2 linhas"
+    );
+}
+
+/// (d) Pivot (`fetch_metrics_pivoted_batch`) reconstrói os itens de um report
+/// a partir dos pontos — wire legado compatível.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn d_pivot_reconstroi_itens_de_um_report() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    manager::insert_metrics_points(
+        &p,
+        job_id,
+        &serde_json::json!({"epoch": 1, "box_loss": 0.5, "mAP50": 0.8}),
+    )
+    .await
+    .expect("insert");
+    manager::insert_metrics_points(
+        &p,
+        job_id,
+        &serde_json::json!({"epoch": 2, "box_loss": 0.4, "mAP50": 0.9}),
+    )
+    .await
+    .expect("insert");
+
+    let by_job = manager::fetch_metrics_pivoted_batch(&p, &[job_id])
+        .await
+        .expect("pivot");
+    let items = by_job
+        .get(&job_id)
+        .and_then(|v| v.get("items"))
+        .and_then(|v| v.as_array())
+        .expect("items");
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["epoch"], 1);
+    assert_eq!(items[0]["box_loss"], 0.5);
+    assert_eq!(items[0]["mAP50"], 0.8);
+    assert_eq!(items[1]["epoch"], 2);
+    assert_eq!(items[1]["box_loss"], 0.4);
+    assert_eq!(items[1]["mAP50"], 0.9);
+}
+
+/// (e) `afterSeq` filtra: só pontos com `seq > afterSeq`.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn e_after_seq_filtra_pontos() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    for epoch in 1..=5 {
+        manager::insert_metrics_points(
+            &p,
+            job_id,
+            &serde_json::json!({"epoch": epoch, "loss": epoch}),
+        )
+        .await
+        .expect("insert");
+    }
+    let all = manager::get_job_metric_points(&p, job_id, None, None, None)
+        .await
+        .expect("all points");
+    assert_eq!(all.items.len(), 5);
+    let cutoff = all.items[1].seq;
+
+    let filtered = manager::get_job_metric_points(&p, job_id, Some(cutoff), None, None)
+        .await
+        .expect("filtered points");
+    assert_eq!(filtered.items.len(), 3, "só seq > cutoff");
+    assert!(filtered.items.iter().all(|it| it.seq > cutoff));
+}
+
+/// (f) `maxPoints=100` sobre ≥10k pontos de uma key → ≤100 pontos e
+/// `downsampled:true` (min/max por bucket).
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn f_max_points_downsample_10k_pontos() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    let mut tx = p.begin().await.expect("begin bulk insert tx");
+    let items: Vec<serde_json::Value> = (0..10_000)
+        .map(|i| serde_json::json!({"epoch": i, "loss": (i as f64) * 0.001}))
+        .collect();
+    manager::insert_metrics_points_conn(&mut tx, job_id, &serde_json::json!(items))
+        .await
+        .expect("bulk insert 10k points");
+    tx.commit().await.expect("commit bulk insert");
+
+    let resp =
+        manager::get_job_metric_points(&p, job_id, None, Some(&["loss".to_string()]), Some(100))
+            .await
+            .expect("downsampled points");
+    assert!(
+        resp.items.len() <= 100,
+        "≤100 pontos após downsample, veio {}",
+        resp.items.len()
+    );
+    assert!(resp.downsampled, "downsampled:true quando reduziu");
+    assert_eq!(
+        resp.max_seq, 10_000,
+        "max_seq reflete o contador do job, não os filtrados"
+    );
+}
+
+// ===========================================================================
 // F6.1a — Rotas internas de leitura
 // ===========================================================================
 

@@ -58,6 +58,31 @@ pub struct MetricsItem {
     pub vram_used_gb: Option<f64>,
 }
 
+/// GET /internal/jobs/:id/metrics (manager) e GET /api/jobs/:id/metrics?afterSeq=
+/// (BFF, com algum parâmetro novo) — fatia 1a §3.4. Ponto bruto de série
+/// temporal (linha de `job_metric_points`); `epoch` é nullable: um ponto sem
+/// epoch não é descartado (ao contrário do legado `MetricsItem`, que exige
+/// epoch).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetricPointWithKey {
+    pub seq: i64,
+    pub epoch: Option<i32>,
+    pub step: i64,
+    pub key: String,
+    pub value: f64,
+    pub ts: String,
+}
+
+/// Resposta da rota de pontos brutos (fatia 1a §3.4).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetricPointsResponse {
+    pub items: Vec<MetricPointWithKey>,
+    pub max_seq: i64,
+    pub downsampled: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

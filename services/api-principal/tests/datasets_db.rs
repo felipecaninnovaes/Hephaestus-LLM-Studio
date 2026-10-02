@@ -7929,6 +7929,20 @@ impl api_principal::jobs::manager_client::ManagerPort for RaceManager {
     > {
         self.inner.list_artifacts(job_id).await
     }
+    async fn get_job_metric_points(
+        &self,
+        job_id: &str,
+        after_seq: Option<i64>,
+        max_points: Option<i64>,
+        keys: Option<&str>,
+    ) -> Result<
+        heph_contracts::telemetry::MetricPointsResponse,
+        api_principal::jobs::manager_client::ManagerError,
+    > {
+        self.inner
+            .get_job_metric_points(job_id, after_seq, max_points, keys)
+            .await
+    }
     async fn get_telemetry(
         &self,
     ) -> Result<

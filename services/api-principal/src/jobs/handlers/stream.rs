@@ -1,16 +1,31 @@
 //! Handlers de streaming e telemetria (SSE, métricas e telemetria global).
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     Json,
 };
+use serde::Deserialize;
 
 use super::helpers::{not_found, parse_uuid, queue_unavailable, remap_metrics, to_job_response};
 use super::types::{JobTelemetryEvent, JobTelemetryEventExt, TelemetryResponse};
 use crate::jobs::manager_client::ManagerError;
 use crate::state::AppState;
+
+/// Query de `GET /api/jobs/:id/metrics` (fatia 1a §3.4). Sem NENHUM destes
+/// parâmetros, a rota preserva o shape legado (`{items: MetricsItem[]}`,
+/// consumido por `apps/web/lib/jobs.ts#getJobMetrics` e o gráfico de
+/// convergência) — a reconstrução pivotada é feita pelo manager. Com
+/// qualquer parâmetro presente, retorna o shape de pontos brutos
+/// `{items: MetricPointWithKey[], maxSeq, downsampled}`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobMetricsQuery {
+    pub after_seq: Option<i64>,
+    pub max_points: Option<i64>,
+    pub keys: Option<String>,
+}
 
 /// GET /api/jobs/:id/events — stream SSE de telemetria em tempo real (ADR-0021 D3).
 pub async fn stream_job_events(State(state): State<AppState>, Path(id): Path<String>) -> Response {
@@ -126,9 +141,30 @@ pub async fn stream_job_events(State(state): State<AppState>, Path(id): Path<Str
 }
 
 /// GET /api/jobs/:id/metrics — métricas de um job (re-mapeadas camelCase).
-pub async fn get_job_metrics(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+///
+/// Sem query params: shape legado pivotado por epoch/step (compat, removido
+/// na fatia 4a). Com `afterSeq`/`maxPoints`/`keys`: proxy puro dos pontos
+/// brutos do manager (`GET /internal/jobs/:id/metrics`), já camelCase.
+pub async fn get_job_metrics(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(q): Query<JobMetricsQuery>,
+) -> Response {
     if parse_uuid(&id).is_none() {
         return not_found();
+    }
+    let has_points_params = q.after_seq.is_some() || q.max_points.is_some() || q.keys.is_some();
+    if has_points_params {
+        return match state
+            .manager
+            .get_job_metric_points(&id, q.after_seq, q.max_points, q.keys.as_deref())
+            .await
+        {
+            Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
+            Err(ManagerError::NotFound) => not_found(),
+            Err(ManagerError::Unavailable(_)) => queue_unavailable(),
+            Err(_) => queue_unavailable(),
+        };
     }
     let job = match state.manager.get_job(&id).await {
         Ok(v) => v,

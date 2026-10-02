@@ -89,6 +89,16 @@ pub trait ManagerPort: Send + Sync {
     /// Lista artefatos de um job.
     async fn list_artifacts(&self, job_id: &str) -> Result<Vec<InternalArtifact>, ManagerError>;
 
+    /// Pontos brutos de métricas de um job (fatia 1a, §3.4).
+    /// `keys` CSV opcional; `after_seq`/`max_points` opcionais (downsampling).
+    async fn get_job_metric_points(
+        &self,
+        job_id: &str,
+        after_seq: Option<i64>,
+        max_points: Option<i64>,
+        keys: Option<&str>,
+    ) -> Result<heph_contracts::telemetry::MetricPointsResponse, ManagerError>;
+
     /// Telemetria do manager (cache de heartbeat).
     async fn get_telemetry(&self) -> Result<InternalTelemetry, ManagerError>;
 
@@ -329,6 +339,32 @@ impl ManagerPort for HttpManager {
 
     async fn get_job(&self, id: &str) -> Result<InternalJob, ManagerError> {
         self.get_json(&format!("/internal/jobs/{id}")).await
+    }
+
+    async fn get_job_metric_points(
+        &self,
+        job_id: &str,
+        after_seq: Option<i64>,
+        max_points: Option<i64>,
+        keys: Option<&str>,
+    ) -> Result<heph_contracts::telemetry::MetricPointsResponse, ManagerError> {
+        let mut params = Vec::new();
+        if let Some(s) = after_seq {
+            params.push(format!("afterSeq={s}"));
+        }
+        if let Some(m) = max_points {
+            params.push(format!("maxPoints={m}"));
+        }
+        if let Some(k) = keys {
+            params.push(format!("keys={k}"));
+        }
+        let qs = if params.is_empty() {
+            String::new()
+        } else {
+            format!("?{}", params.join("&"))
+        };
+        self.get_json(&format!("/internal/jobs/{job_id}/metrics{qs}"))
+            .await
     }
 
     async fn list_artifacts(&self, job_id: &str) -> Result<Vec<InternalArtifact>, ManagerError> {
@@ -879,6 +915,8 @@ pub struct MockManager {
     pub list_queue_result: Option<Vec<InternalQueueItem>>,
     pub get_job_result: Option<InternalJob>,
     pub list_artifacts_result: Option<Vec<InternalArtifact>>,
+    /// Resultado de `get_job_metric_points` (fatia 1a).
+    pub metric_points_result: Option<heph_contracts::telemetry::MetricPointsResponse>,
     pub get_telemetry_result: Option<InternalTelemetry>,
     pub create_job_result: Option<CreateJobResponse>,
     pub abort_job_result: Option<AbortJobResponse>,
@@ -1013,6 +1051,7 @@ impl Default for MockManager {
             list_queue_result: Some(vec![]),
             get_job_result: None,
             list_artifacts_result: Some(vec![]),
+            metric_points_result: None,
             get_telemetry_result: None,
             create_job_result: None,
             abort_job_result: None,
@@ -1094,6 +1133,21 @@ impl ManagerPort for MockManager {
             return Ok(arts.clone());
         }
         Ok(self.list_artifacts_result.clone().unwrap_or_default())
+    }
+
+    async fn get_job_metric_points(
+        &self,
+        _job_id: &str,
+        _after_seq: Option<i64>,
+        _max_points: Option<i64>,
+        _keys: Option<&str>,
+    ) -> Result<heph_contracts::telemetry::MetricPointsResponse, ManagerError> {
+        if self.fail {
+            return Err(ManagerError::Unavailable("mock fail".into()));
+        }
+        self.metric_points_result
+            .clone()
+            .ok_or(ManagerError::NotFound)
     }
 
     async fn get_telemetry(&self) -> Result<InternalTelemetry, ManagerError> {

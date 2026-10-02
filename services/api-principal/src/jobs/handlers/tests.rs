@@ -275,6 +275,7 @@ async fn get_job_metrics_200_empty() {
     let resp = get_job_metrics(
         axum::extract::State(state),
         Path("550e8400-e29b-41d4-a716-446655440000".to_string()),
+        axum::extract::Query(Default::default()),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -299,6 +300,7 @@ async fn get_job_metrics_200_with_data() {
     let resp = get_job_metrics(
         axum::extract::State(state),
         Path("550e8400-e29b-41d4-a716-446655440000".to_string()),
+        axum::extract::Query(Default::default()),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);

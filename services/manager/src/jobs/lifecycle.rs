@@ -8,6 +8,7 @@ use super::types::{
     ArtifactRow, JobRow, ListJobsResponse, PrepareCompleteRequest, PrepareFailRequest,
 };
 use crate::error::ManagerError;
+use crate::reporting::metrics::fetch_metrics_pivoted_batch;
 
 /// Valida md5: hex lowercase de 32 chars.
 pub fn is_valid_md5(s: &str) -> bool {
@@ -62,8 +63,18 @@ pub async fn list_jobs(
         .fetch_all(pool)
         .await
         .map_err(|e| ManagerError::Internal(format!("list jobs: {e}")))?;
+    let mut items: Vec<JobRow> = rows.iter().map(|r| row_to_job_row(r, &pos_map)).collect();
 
-    let items = rows.iter().map(|r| row_to_job_row(r, &pos_map)).collect();
+    let ids: Vec<Uuid> = items
+        .iter()
+        .filter_map(|j| j.id.parse::<Uuid>().ok())
+        .collect();
+    let metrics_by_job = fetch_metrics_pivoted_batch(pool, &ids).await?;
+    for item in &mut items {
+        if let Ok(id) = item.id.parse::<Uuid>() {
+            item.metrics = metrics_by_job.get(&id).cloned();
+        }
+    }
 
     Ok(ListJobsResponse {
         items,
@@ -83,7 +94,10 @@ pub async fn get_job(pool: &PgPool, id: Uuid) -> Result<JobRow, ManagerError> {
         .map_err(|e| ManagerError::Internal(format!("get job: {e}")))?;
 
     let r = row.ok_or(ManagerError::NotFound)?;
-    Ok(row_to_job_row(&r, &pos_map))
+    let mut job = row_to_job_row(&r, &pos_map);
+    let metrics_by_job = fetch_metrics_pivoted_batch(pool, &[id]).await?;
+    job.metrics = metrics_by_job.get(&id).cloned();
+    Ok(job)
 }
 
 /// Lista artefatos de um job.

@@ -23,6 +23,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/internal/jobs/cleanup", post(cleanup_jobs_handler))
         .route("/internal/jobs/:id/artifacts", get(list_artifacts_handler))
+        .route("/internal/jobs/:id/metrics", get(job_metric_points_handler))
         .route("/internal/jobs/:id/abort", post(abort_job_handler))
         .route("/internal/jobs/:id/report", post(report_job_handler))
         .route(

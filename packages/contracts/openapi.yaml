@@ -2103,16 +2103,44 @@ paths:
     get:
       operationId: getJobMetrics
       tags: [jobs]
-      summary: Métricas de treinamento por epoch
+      summary: Métricas de treinamento (pivot legado) ou pontos brutos (fatia 1a)
       description: |
-        Séries por epoch com re-mapeamento camelCase (ADR-0007 D7): `mAP50-95` → `map5095`.
-        Job existe mas sem métricas ⇒ 200 com `items: []`.
+        Fatia 1a (telemetria append-only, `telemetria-observabilidade.md` §3.4):
+        **sem nenhum dos três query params abaixo**, preserva o shape legado —
+        séries por epoch pivotadas a partir de `job_metric_points`, com
+        re-mapeamento camelCase (ADR-0007 D7: `mAP50-95` → `map5095`). Job
+        existe mas sem métricas ⇒ 200 com `items: []`.
+
+        **Com qualquer um** de `afterSeq`/`maxPoints`/`keys` presente, retorna
+        pontos brutos (`MetricPointsResponse`): cada ponto é `(seq, epoch,
+        step, key, value, ts)`; `epoch` é nullable (ponto sem epoch não é
+        descartado). `maxPoints` aciona downsampling server-side (min/max por
+        bucket, por key) — `downsampled:true` só quando reduziu.
+      parameters:
+        - name: afterSeq
+          in: query
+          required: false
+          schema: { type: integer, format: int64, minimum: 0 }
+          description: "Só pontos com seq > afterSeq. Ativa o shape de pontos brutos."
+        - name: maxPoints
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1 }
+          description: "Downsampling min/max por bucket, por key. Ativa o shape de pontos brutos."
+        - name: keys
+          in: query
+          required: false
+          schema: { type: string }
+          description: "CSV de keys para filtrar (ex.: `loss,lr`). Ativa o shape de pontos brutos."
       responses:
         "200":
-          description: Métricas do job.
+          description: "Métricas do job — `JobMetrics` (sem params) ou `MetricPointsResponse` (com algum param)."
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/JobMetrics" }
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/JobMetrics"
+                  - $ref: "#/components/schemas/MetricPointsResponse"
         "401":
           description: "Sem sessão válida (`code: unauthorized`)."
           content:
@@ -4846,6 +4874,51 @@ components:
           type: array
           items: { $ref: "#/components/schemas/MetricsItem" }
           description: "Série temporal por epoch (vazio se job existe mas sem métricas)."
+
+    MetricPointWithKey:
+      type: object
+      required: [seq, step, key, value, ts]
+      additionalProperties: false
+      description: |
+        Ponto bruto de série temporal de métricas (fatia 1a, append-only,
+        `job_metric_points`). `epoch` é nullable: um ponto sem epoch não é
+        descartado (ao contrário do `MetricsItem` legado, que exige epoch).
+      properties:
+        seq:
+          type: integer
+          format: int64
+          description: "Sequência monotônica por job (aloca em `jobs.metric_seq`)."
+        epoch:
+          type: integer
+          nullable: true
+        step:
+          type: integer
+          format: int64
+        key:
+          type: string
+          description: "Nome da métrica (ex.: loss, box_loss, mAP50-95)."
+        value:
+          type: number
+        ts:
+          type: string
+          format: date-time
+
+    MetricPointsResponse:
+      type: object
+      required: [items, maxSeq, downsampled]
+      additionalProperties: false
+      description: "Resposta de pontos brutos (fatia 1a §3.4) — ativada por afterSeq/maxPoints/keys."
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/MetricPointWithKey" }
+        maxSeq:
+          type: integer
+          format: int64
+          description: "Contador `jobs.metric_seq` do job, independente dos filtros aplicados."
+        downsampled:
+          type: boolean
+          description: "true somente quando maxPoints reduziu alguma série (min/max por bucket)."
 
     QueueItem:
       type: object

@@ -11,7 +11,7 @@ use crate::error::ManagerError;
 
 pub const SELECT_JOB_FIELDS: &str =
     "SELECT j.id, j.kind, j.engine, j.model, j.mode, j.dataset_id, j.status, j.queue_reason, \
-     j.progress, j.epoch, j.step, j.metrics, j.vram_min_gb, j.orchestrator_id, j.created_at, j.finished_at, j.params, \
+     j.progress, j.epoch, j.step, j.vram_min_gb, j.orchestrator_id, j.created_at, j.finished_at, j.params, \
      j.phase, j.message, \
      o.name AS orchestrator_name, o.kind AS orchestrator_kind, \
      COALESCE((j.params->>'orchestrator_fallback') = 'true', false) AS orchestrator_fallback, \
@@ -34,6 +34,9 @@ pub async fn fetch_queue_positions(pool: &PgPool) -> Result<HashMap<String, i32>
 }
 
 /// Mapeia uma linha PostgreSQL (PgRow) para o DTO JobRow com posições calculadas.
+/// `metrics` sai `None` aqui (fatia 1a: coluna `jobs.metrics` não é mais lida) —
+/// o chamador preenche via `reporting::metrics::fetch_metrics_pivoted_batch`
+/// (uma query em lote para todos os jobs retornados, evita N+1).
 pub fn row_to_job_row(r: &PgRow, pos_map: &HashMap<String, i32>) -> JobRow {
     let id: Uuid = r.get("id");
     let id_str = id.to_string();
@@ -60,7 +63,7 @@ pub fn row_to_job_row(r: &PgRow, pos_map: &HashMap<String, i32>) -> JobRow {
         progress: r.get("progress"),
         epoch: r.get("epoch"),
         step: r.get("step"),
-        metrics: r.get("metrics"),
+        metrics: None,
         vram_min_gb: r.get("vram_min_gb"),
         orchestrator_id: orchestrator_id.map(|u| u.to_string()),
         orchestrator_name: r.get("orchestrator_name"),

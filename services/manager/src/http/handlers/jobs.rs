@@ -31,6 +31,14 @@ pub struct CleanupJobsRequest {
     pub statuses: Option<Vec<String>>,
 }
 
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct JobMetricPointsQuery {
+    pub after_seq: Option<i64>,
+    pub max_points: Option<i64>,
+    pub keys: Option<String>,
+}
+
 /// POST /internal/jobs — cria job.
 pub async fn create_job_handler(
     State(state): State<AppState>,
@@ -82,6 +90,33 @@ pub async fn get_job_handler(State(state): State<AppState>, JobId(uuid): JobId) 
 pub async fn list_artifacts_handler(State(state): State<AppState>, JobId(uuid): JobId) -> Response {
     match crate::get_job_artifacts(&state.pool, uuid).await {
         Ok(arts) => (StatusCode::OK, Json(ArtifactsListResponse { items: arts })).into_response(),
+        Err(ManagerError::NotFound) => not_found(),
+        Err(ManagerError::Internal(e)) => internal_error(&e),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
+/// GET /internal/jobs/:id/metrics — pontos brutos de métricas (fatia 1a).
+/// `keys` CSV; `afterSeq`/`maxPoints` opcionais (downsampling min/max por bucket).
+pub async fn job_metric_points_handler(
+    State(state): State<AppState>,
+    JobId(uuid): JobId,
+    Query(q): Query<JobMetricPointsQuery>,
+) -> Response {
+    let keys: Option<Vec<String>> = q
+        .keys
+        .as_deref()
+        .map(|s| s.split(',').map(|k| k.trim().to_string()).collect());
+    match crate::get_job_metric_points(
+        &state.pool,
+        uuid,
+        q.after_seq,
+        keys.as_deref(),
+        q.max_points,
+    )
+    .await
+    {
+        Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
         Err(ManagerError::NotFound) => not_found(),
         Err(ManagerError::Internal(e)) => internal_error(&e),
         Err(e) => internal_error(&e.to_string()),

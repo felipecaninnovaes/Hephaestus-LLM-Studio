@@ -8,7 +8,7 @@ use super::artifacts::{
     ReportRequest,
 };
 use super::generations::hook_generations_on_done;
-use super::metrics::{upsert_metrics, upsert_metrics_conn};
+use super::metrics::{insert_metrics_points, insert_metrics_points_conn};
 use super::models::hook_models_on_done;
 use crate::error::ManagerError;
 
@@ -89,7 +89,7 @@ pub async fn report_job(
             .map_err(|e| ManagerError::Internal(format!("update job status: {e}")))?;
 
             if let Some(metrics) = &report.metrics {
-                upsert_metrics(pool, id, metrics).await?;
+                insert_metrics_points(pool, id, metrics).await?;
             }
 
             if let Some(artifacts) = &report.artifacts {
@@ -150,9 +150,9 @@ pub async fn report_job(
                 validate_and_save_done_artifacts(&mut tx, id, artifacts).await?;
             }
 
-            // Grava metrics.
+            // Grava pontos de métricas (append-only, job_metric_points).
             if let Some(metrics) = &report.metrics {
-                upsert_metrics_conn(&mut tx, id, metrics).await?;
+                insert_metrics_points_conn(&mut tx, id, metrics).await?;
             }
 
             // Hook: models.

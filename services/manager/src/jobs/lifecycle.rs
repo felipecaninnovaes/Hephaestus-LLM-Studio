@@ -235,6 +235,7 @@ pub async fn prepare_fail(
         }
         return Err(ManagerError::Conflict("job_not_preparing".into()));
     }
+    heph_contracts::request_context::forget_for_job(&id.to_string());
     Ok(())
 }
 
@@ -270,5 +271,6 @@ pub async fn prepare_cancel(pool: &PgPool, id: Uuid) -> Result<(), ManagerError>
         }
         return Err(ManagerError::Conflict("job_not_cancelling".into()));
     }
+    heph_contracts::request_context::forget_for_job(&id.to_string());
     Ok(())
 }

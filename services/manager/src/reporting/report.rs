@@ -32,6 +32,12 @@ pub async fn report_job(
 
     let current_status = current.ok_or(ManagerError::NotFound)?;
 
+    // Transição terminal (ou report redundante pra job já terminal, guarda
+    // abaixo): o job nunca mais será despachado, então o contexto de
+    // correlação lembrado (se houver) não serve mais pra nada.
+    if matches!(report.status.as_str(), "done" | "failed" | "cancelled") {
+        heph_contracts::request_context::forget_for_job(&id.to_string());
+    }
     // Guarda de transição: status terminais são imutáveis.
     if current_status == "done" || current_status == "failed" || current_status == "cancelled" {
         tracing::warn!(

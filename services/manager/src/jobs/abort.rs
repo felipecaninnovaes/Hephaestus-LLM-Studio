@@ -31,6 +31,7 @@ pub async fn abort_job(
                 .execute(pool)
                 .await
                 .map_err(|e| ManagerError::Internal(format!("cancel job: {e}")))?;
+            heph_contracts::request_context::forget_for_job(&id.to_string());
             Ok("cancelled".to_string())
         }
 

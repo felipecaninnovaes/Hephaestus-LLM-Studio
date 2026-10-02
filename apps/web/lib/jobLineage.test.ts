@@ -111,16 +111,19 @@ describe("buildLineageLayout", () => {
     expect(ancestorChain(layout.parentOf, "job:a")).toEqual(["job:a"]);
   });
 
-  it("nó órfão (sem produtor) aparece em orphanCheckpoints", () => {
+  it("nó órfão (sem produtor) aparece em orphanCheckpoints ou orphanGenerations", () => {
     const graph: LineageGraph = {
       nodes: [
         node("checkpoint:orphan-cp", "checkpoint", { label: "standalone.pt" }),
+        node("generation:orphan-gen", "generation", { label: "standalone prompt" }),
       ],
       edges: [],
     };
     const layout = buildLineageLayout(graph);
     expect(layout.orphanCheckpoints).toHaveLength(1);
     expect(layout.orphanCheckpoints[0].node.id).toBe("checkpoint:orphan-cp");
+    expect(layout.orphanGenerations).toHaveLength(1);
+    expect(layout.orphanGenerations[0].id).toBe("generation:orphan-gen");
   });
 
   it("ciclo defensivo não trava ancestorChain", () => {

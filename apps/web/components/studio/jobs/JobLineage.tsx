@@ -77,7 +77,7 @@ function CheckpointItem({
           <button
             type="button"
             onClick={() => onFocusArtifact(ownerJobId, rawId)}
-            className="truncate text-left text-xs font-medium text-zinc-200 hover:text-brand-300 focus-visible:outline-none focus-visible:underline"
+            className="truncate text-left text-xs font-medium text-zinc-200 hover:text-brand-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 rounded"
             title="Rolar até o artefato"
           >
             {node.label}
@@ -98,7 +98,7 @@ function CheckpointItem({
           <button
             type="button"
             onClick={() => onSelectJob(resumedByJobId)}
-            className="font-mono text-3xs text-brand-400 hover:underline focus-visible:outline-none"
+            className="font-mono text-3xs text-brand-400 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 rounded px-0.5"
             title={`Abrir job ${resumedByJobId}`}
           >
             #{resumedByJobId.slice(0, 8)}
@@ -112,7 +112,7 @@ function CheckpointItem({
           <button
             type="button"
             onClick={() => onSelectJob(usedByJobId)}
-            className="font-mono text-3xs text-amber-400 hover:underline focus-visible:outline-none"
+            className="font-mono text-3xs text-amber-400 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 rounded px-0.5"
             title={`Abrir job/geração ${usedByJobId}`}
           >
             #{usedByJobId.slice(0, 8)}
@@ -161,7 +161,7 @@ function JobGroupCard({
             <button
               type="button"
               onClick={() => onSelectJob(rawJobId)}
-              className="truncate text-xs font-semibold text-zinc-100 hover:text-brand-300 focus-visible:outline-none focus-visible:underline"
+              className="truncate text-xs font-semibold text-zinc-100 hover:text-brand-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 rounded"
               title={`Abrir job ${rawJobId}`}
             >
               {job.label}
@@ -205,7 +205,7 @@ function JobGroupCard({
                 <button
                   type="button"
                   onClick={() => onSelectJob(resumedFrom.parentJobId!)}
-                  className="font-mono text-3xs text-brand-300 hover:underline focus-visible:outline-none"
+                  className="font-mono text-3xs text-brand-300 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 rounded px-0.5"
                   title={`Ir para job pai ${resumedFrom.parentJobId}`}
                 >
                   #{resumedFrom.parentJobId.slice(0, 8)}
@@ -232,7 +232,7 @@ function JobGroupCard({
                 <button
                   type="button"
                   onClick={() => onSelectJob(usedFrom.parentJobId!)}
-                  className="font-mono text-3xs text-amber-300 hover:underline focus-visible:outline-none"
+                  className="font-mono text-3xs text-amber-300 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 rounded px-0.5"
                   title={`Ir para job pai ${usedFrom.parentJobId}`}
                 >
                   #{usedFrom.parentJobId.slice(0, 8)}
@@ -254,7 +254,7 @@ function JobGroupCard({
               <button
                 type="button"
                 onClick={() => setExpanded((v) => !v)}
-                className="font-mono text-3xs text-brand-400 hover:underline focus-visible:outline-none"
+                className="font-mono text-3xs text-brand-400 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 rounded px-0.5"
               >
                 {expanded ? "recolher" : `+${checkpoints.length - 5} mais`}
               </button>
@@ -318,21 +318,25 @@ export function JobLineage({
 
   useEffect(() => {
     if (!open) return;
-    let cancelled = false;
+    const ctrl = new AbortController();
+    setGraph(null);
     setLoading(true);
     setError(null);
-    getJobLineage(jobId)
+    getJobLineage(jobId, { signal: ctrl.signal })
       .then((data) => {
-        if (!cancelled) setGraph(data);
+        if (!ctrl.signal.aborted) setGraph(data);
       })
-      .catch(() => {
-        if (!cancelled) setError("Falha ao carregar a linhagem deste job.");
+      .catch((err: unknown) => {
+        if (!ctrl.signal.aborted) {
+          if (err instanceof DOMException && err.name === "AbortError") return;
+          setError("Falha ao carregar a linhagem deste job.");
+        }
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!ctrl.signal.aborted) setLoading(false);
       });
     return () => {
-      cancelled = true;
+      ctrl.abort();
     };
   }, [open, jobId]);
 
@@ -358,7 +362,7 @@ export function JobLineage({
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         aria-controls={`job-lineage-${jobId}`}
-        className="flex w-full items-center justify-between gap-2 rounded-lg px-1 py-1 text-left hover:bg-white/[0.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400/60"
+        className="flex min-h-[32px] w-full items-center justify-between gap-2 rounded-lg px-1 py-1 text-left hover:bg-white/[0.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70"
       >
         <span className="flex items-center gap-2 font-mono text-2xs font-semibold uppercase tracking-caps text-zinc-300">
           <IconNetwork className="size-3.5 text-brand-300" />
@@ -405,7 +409,7 @@ export function JobLineage({
                         key={ds.id}
                         type="button"
                         onClick={() => onSelectDataset(stripPrefix(ds.id))}
-                        className="group flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.02] px-3 py-2 text-left transition-colors hover:border-white/20 hover:bg-white/[0.05] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400/60"
+                        className="group flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.02] px-3 py-2 text-left transition-colors hover:border-white/20 hover:bg-white/[0.05] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70"
                         title={`Abrir dataset ${ds.label}`}
                       >
                         <IconDatabase className="size-3.5 text-brand-300 shrink-0" />
@@ -439,11 +443,12 @@ export function JobLineage({
                 </div>
               )}
 
-              {/* Checkpoints ou gerações órfãos */}
-              {layout.orphanCheckpoints.length > 0 && (
+              {/* Checkpoints ou gerações órfãos (Outros artefatos) */}
+              {(layout.orphanCheckpoints.length > 0 ||
+                layout.orphanGenerations.length > 0) && (
                 <div className="space-y-2 pt-2 border-t border-white/5">
                   <h4 className="font-mono text-3xs font-semibold uppercase tracking-caps text-zinc-500">
-                    Outros Checkpoints
+                    Outros Artefatos
                   </h4>
                   <div className="space-y-1.5">
                     {layout.orphanCheckpoints.map((cp) => (
@@ -452,6 +457,15 @@ export function JobLineage({
                         className="rounded-lg border border-white/5 bg-white/[0.02] p-2 text-xs text-zinc-300"
                       >
                         {cp.node.label}
+                      </div>
+                    ))}
+                    {layout.orphanGenerations.map((gen) => (
+                      <div
+                        key={gen.id}
+                        className="flex items-center gap-1.5 rounded-lg border border-white/5 bg-white/[0.02] p-2 text-2xs text-zinc-300"
+                      >
+                        <IconSparkles className="size-3.5 text-zinc-400 shrink-0" />
+                        <span className="truncate">{gen.label}</span>
                       </div>
                     ))}
                   </div>

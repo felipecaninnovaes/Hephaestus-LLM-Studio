@@ -154,8 +154,11 @@ export function getJobArtifacts(jobId: string): Promise<JobArtifactsResponse> {
 }
 
 /** GET /api/jobs/:id/lineage — grafo dataset→job→checkpoint→resume→geração (fatia 5b). */
-export function getJobLineage(jobId: string): Promise<LineageGraph> {
-  return apiFetch(`/api/jobs/${jobId}/lineage`);
+export function getJobLineage(
+  jobId: string,
+  init?: RequestInit,
+): Promise<LineageGraph> {
+  return apiFetch(`/api/jobs/${jobId}/lineage`, init);
 }
 
 /** GET /api/jobs/:id/artifacts/:artifactId/data — download de artefato via blob. */

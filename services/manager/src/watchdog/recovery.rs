@@ -22,8 +22,10 @@ pub async fn recover_jobs(pool: &PgPool) -> Result<u64, ManagerError> {
     .map_err(|e| ManagerError::Internal(format!("recover cancelling jobs: {e}")))?;
 
     // 2. Jobs em voo (dispatched ou running) no boot passam para queued (preparing segue intocado):
+    // Requeue: manual mantém gpu_device; automática (sem orchestrator_hint nos params) é limpa (NULL)
     let result = sqlx::query(
-        "UPDATE jobs SET status = 'queued', queue_reason = 'recovered', orchestrator_id = NULL \
+        "UPDATE jobs SET status = 'queued', queue_reason = 'recovered', orchestrator_id = NULL, \
+         gpu_device = CASE WHEN params->>'orchestrator_hint' IS NOT NULL THEN gpu_device ELSE NULL END \
          WHERE status IN ('dispatched', 'running')",
     )
     .execute(pool)

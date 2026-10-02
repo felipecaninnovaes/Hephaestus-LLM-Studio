@@ -25,15 +25,15 @@ pub struct GpuTelemetry {
 }
 
 /// Estado interno em cache para evitar invocações simultâneas/frequentes do nvidia-smi.
-struct GpuSamplerCache {
-    last_sampled: Option<Instant>,
-    telemetry: Option<GpuTelemetry>,
+pub struct GpuSamplerCache {
+    pub last_sampled: Option<Instant>,
+    pub telemetry: Option<GpuTelemetry>,
 }
 
 /// Sampler compartilhado de GPU com cache de ~2s.
 #[derive(Clone)]
 pub struct GpuSampler {
-    cache: Arc<RwLock<GpuSamplerCache>>,
+    pub cache: Arc<RwLock<GpuSamplerCache>>,
     ttl: Duration,
 }
 

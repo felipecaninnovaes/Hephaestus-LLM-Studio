@@ -99,13 +99,14 @@ async fn main() {
                 tracing::error!("watchdog disk alert error: {e}");
             }
 
-            match manager::dispatch_next(
+            match manager::dispatch_next_with_cache(
                 &dispatch_pool,
                 dispatch_client.as_ref(),
                 &dispatch_mode,
                 &dispatch_workdir,
                 &dispatch_image,
                 &dispatch_vram,
+                &dispatch_cache,
             )
             .await
             {

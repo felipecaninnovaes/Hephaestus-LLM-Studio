@@ -3286,7 +3286,7 @@ components:
       properties:
         code:
           type: string
-          enum: [invalid_request, invalid_credentials, unauthorized, setup_required, not_found, slug_conflict, storage_unavailable, classes_in_use, index_not_ready, embedding_unavailable, import_invalid, engine_unsupported, queue_unavailable, dataset_not_ready, job_not_abortable, job_not_done, job_not_terminal, pairing_invalid, model_download_failed, model_download_disabled, internal]
+          enum: [invalid_request, invalid_credentials, unauthorized, setup_required, not_found, slug_conflict, storage_unavailable, classes_in_use, index_not_ready, embedding_unavailable, import_invalid, engine_unsupported, queue_unavailable, dataset_not_ready, job_not_abortable, job_not_done, job_not_terminal, pairing_invalid, model_download_failed, model_download_disabled, invalid_gpu_device, gpu_device_requires_orchestrator, unknown_gpu_device, insufficient_gpu_vram, internal]
           description: "Código estável para máquina — a UI decide a mensagem por `code`, nunca por `message`; o cliente DEVE ter ramo default: o enum cresce por fatia (aditivo na 0.2.0: `not_found`, `slug_conflict`; na 0.3.0: `storage_unavailable`, ADR-0003 D10; na 0.3.0, fatia 3g.1: `classes_in_use`; na 0.5.0, fatia 3f.5: `index_not_ready`, `embedding_unavailable`, ADR-0004 D5; na 0.6.0, fatia 3e: `import_invalid`; na 0.7.0, fatia 4: `engine_unsupported`, `queue_unavailable`, `dataset_not_ready`, `job_not_abortable`; na 0.8.0, fatia 5: `job_not_done`; na 0.10.0, fatia H: `pairing_invalid`, ADR-0011 D5; na 0.11.0, fatia I: `model_download_failed`, `model_download_disabled`, ADR-0012 D4/E1)."
         message:
           type: string
@@ -3481,6 +3481,9 @@ components:
           type: [string, "null"]
           format: uuid
           description: "ID do orquestrador preferencial para execução (ADR-0015 D2). Opcional; ausente ou null = Automático. Não-UUID ⇒ 400 `invalid_request`."
+        gpuDevice:
+          type: [string, "null"]
+          description: "Identificador opcional da GPU (UUID ou índice). Exige orchestratorId. Opcional; ausente ou null = Automático."
         outputName:
           type: [string, "null"]
           maxLength: 100
@@ -3531,6 +3534,9 @@ components:
           type: [string, "null"]
           format: uuid
           description: "ID do orquestrador preferencial para execução (ADR-0015 D2). Opcional; ausente ou null = Automático. Não-UUID ⇒ 400 `invalid_request`."
+        gpuDevice:
+          type: [string, "null"]
+          description: "Identificador opcional da GPU (UUID ou índice). Exige orchestratorId. Opcional; ausente ou null = Automático."
 
     AutolabelJobRequest:
       type: object
@@ -3572,6 +3578,9 @@ components:
           type: [string, "null"]
           format: uuid
           description: "ID do orquestrador preferencial para execução (ADR-0015 D2). Opcional; ausente ou null = Automático. Não-UUID ⇒ 400 `invalid_request`."
+        gpuDevice:
+          type: [string, "null"]
+          description: "Identificador opcional da GPU (UUID ou índice). Exige orchestratorId. Opcional; ausente ou null = Automático."
         reasoningEffort:
           type: [string, "null"]
           enum: [none, low, medium, high, "null"]
@@ -3656,6 +3665,9 @@ components:
           type: [string, "null"]
           format: uuid
           description: "ID do orquestrador preferencial para execução (ADR-0015 D2). Opcional."
+        gpuDevice:
+          type: [string, "null"]
+          description: "Identificador opcional da GPU (UUID ou índice). Exige orchestratorId. Opcional; ausente ou null = Automático."
         samplePrompt:
           type: [string, "null"]
           maxLength: 500
@@ -3841,6 +3853,9 @@ components:
           type: [string, "null"]
           format: uuid
           description: "ID do orquestrador preferencial para execução (ADR-0015 D2). Opcional."
+        gpuDevice:
+          type: [string, "null"]
+          description: "Identificador opcional da GPU (UUID ou índice). Exige orchestratorId. Opcional; ausente ou null = Automático."
         initImageId:
           type: [string, "null"]
           format: uuid
@@ -4831,6 +4846,9 @@ components:
         orchestratorFallback:
           type: boolean
           description: "Indica se o job sofreu fallback automático após timeout no nó solicitado (ADR-0015 D3)."
+        gpuDevice:
+          type: [string, "null"]
+          description: "UUID efetivo da GPU em que o job executa ou executou (nullable se CPU/mock/legado)."
         createdAt: { type: string, format: date-time }
         finishedAt:
           type: [string, "null"]

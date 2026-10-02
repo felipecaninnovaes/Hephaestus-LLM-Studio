@@ -19,6 +19,7 @@ type QueuedJobRow = (
     Option<Uuid>,
     Option<serde_json::Value>,
     Option<String>,
+    Option<String>,
 );
 
 /// Despacha o próximo job queued para um orquestrador elegível.
@@ -38,6 +39,28 @@ pub async fn dispatch_next(
     image: &str,
     vram_table: &VramTable,
 ) -> Result<bool, ManagerError> {
+    let telemetry_cache = crate::nodes::new_telemetry_cache();
+    dispatch_next_with_cache(
+        pool,
+        orch_client,
+        exec_mode,
+        orch_workdir,
+        image,
+        vram_table,
+        &telemetry_cache,
+    )
+    .await
+}
+
+pub async fn dispatch_next_with_cache(
+    pool: &PgPool,
+    orch_client: &dyn OrchestratorClient,
+    exec_mode: &str,
+    orch_workdir: &str,
+    image: &str,
+    vram_table: &VramTable,
+    telemetry_cache: &crate::nodes::TelemetryCache,
+) -> Result<bool, ManagerError> {
     let span = tracing::info_span!(
         "dispatch",
         request_id = tracing::field::Empty,
@@ -52,7 +75,7 @@ pub async fn dispatch_next(
 
     // 1. Seleciona próximo job queued (FIFO) com lock exclusivo SKIP LOCKED.
     let row: Option<QueuedJobRow> = sqlx::query_as(
-        "SELECT id, kind, engine, model, mode, dataset_id, params, config_yaml \
+        "SELECT id, kind, engine, model, mode, dataset_id, params, config_yaml, gpu_device \
          FROM jobs WHERE status = 'queued' ORDER BY created_at LIMIT 1 \
          FOR UPDATE SKIP LOCKED",
     )
@@ -60,7 +83,7 @@ pub async fn dispatch_next(
     .await
     .map_err(|e| ManagerError::Internal(format!("select next job: {e}")))?;
 
-    let (job_id, kind, engine, model, mode, dataset_id, params, config_yaml) = match row {
+    let (job_id, kind, engine, model, mode, dataset_id, params, config_yaml, job_gpu_device) = match row {
         Some(r) => r,
         None => return Ok(false),
     };
@@ -89,7 +112,7 @@ pub async fn dispatch_next(
         .and_then(|h| h.as_str())
         .and_then(|s| s.parse().ok());
 
-    let orch = match select_eligible_orchestrator(&mut tx, job_id, hint, required_gb).await? {
+    let orch = match select_eligible_orchestrator(&mut tx, job_id, hint, required_gb, telemetry_cache, job_gpu_device.as_deref()).await? {
         Some(o) => o,
         None => {
             tx.commit()
@@ -99,26 +122,30 @@ pub async fn dispatch_next(
         }
     };
 
-    // 4. Marca dispatched e atualiza flag de fallback em params dentro da transação.
+    // 4. Marca dispatched, atualiza flag de fallback em params e grava gpu_device dentro da mesma transação.
     if orch.fallback_used {
         sqlx::query(
             "UPDATE jobs SET status = 'dispatched', queue_reason = NULL, orchestrator_id = $2, \
+             gpu_device = COALESCE($3, gpu_device), \
              params = jsonb_set(params, '{orchestrator_fallback}', 'true'::jsonb) \
              WHERE id = $1 AND status = 'queued'",
         )
         .bind(job_id)
         .bind(orch.id)
+        .bind(&orch.gpu_device)
         .execute(&mut *tx)
         .await
         .map_err(|e| ManagerError::Internal(format!("set dispatched (fallback): {e}")))?;
     } else {
         sqlx::query(
             "UPDATE jobs SET status = 'dispatched', queue_reason = NULL, orchestrator_id = $2, \
+             gpu_device = COALESCE($3, gpu_device), \
              params = params - 'orchestrator_fallback' \
              WHERE id = $1 AND status = 'queued'",
         )
         .bind(job_id)
         .bind(orch.id)
+        .bind(&orch.gpu_device)
         .execute(&mut *tx)
         .await
         .map_err(|e| ManagerError::Internal(format!("set dispatched: {e}")))?;
@@ -132,6 +159,7 @@ pub async fn dispatch_next(
         .map_err(|e| ManagerError::Internal(format!("commit dispatch tx: {e}")))?;
 
     // 5. Monta payload do dispatch tipado em snake_case.
+    let effective_gpu = orch.gpu_device.or(job_gpu_device);
     let payload = build_dispatch_payload(BuildPayloadInput {
         job_id,
         kind: kind.as_deref(),
@@ -144,6 +172,7 @@ pub async fn dispatch_next(
         exec_mode,
         orch_workdir,
         image,
+        gpu_device: effective_gpu.as_deref(),
     });
 
     let dispatch_body = serde_json::to_value(&payload)
@@ -163,13 +192,24 @@ pub async fn dispatch_next(
             .begin()
             .await
             .map_err(|e2| ManagerError::Internal(format!("begin revert tx: {e2}")))?;
-        sqlx::query(
-            "UPDATE jobs SET status = 'queued', queue_reason = 'waiting_slot', orchestrator_id = NULL WHERE id = $1",
-        )
-        .bind(job_id)
-        .execute(&mut *revert_tx)
-        .await
-        .map_err(|e2| ManagerError::Internal(format!("revert job: {e2}")))?;
+        let clear_gpu = hint.is_none();
+        if clear_gpu {
+            sqlx::query(
+                "UPDATE jobs SET status = 'queued', queue_reason = 'waiting_slot', orchestrator_id = NULL, gpu_device = NULL WHERE id = $1",
+            )
+            .bind(job_id)
+            .execute(&mut *revert_tx)
+            .await
+            .map_err(|e2| ManagerError::Internal(format!("revert job: {e2}")))?;
+        } else {
+            sqlx::query(
+                "UPDATE jobs SET status = 'queued', queue_reason = 'waiting_slot', orchestrator_id = NULL WHERE id = $1",
+            )
+            .bind(job_id)
+            .execute(&mut *revert_tx)
+            .await
+            .map_err(|e2| ManagerError::Internal(format!("revert job: {e2}")))?;
+        }
         crate::notify::notify_status_change(&mut *revert_tx, job_id).await?;
         revert_tx
             .commit()

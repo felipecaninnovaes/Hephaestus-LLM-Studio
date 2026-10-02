@@ -574,3 +574,132 @@ async fn ensure_daemon_ready_uses_new_client_from_launcher() {
         "mock server should have received at least 1 health call"
     );
 }
+
+#[tokio::test]
+async fn b2_preemption_lifecycle_same_gpu_different_gpu_unknown_gpu() {
+    let client = Arc::new(FakeDaemonClient::new());
+    let launcher = Arc::new(RecordingDaemonLauncher::new());
+
+    // 1. Daemon em GPU0 (UUID 3060)
+    let ds_3060 = DaemonState::with_gpu(
+        "img",
+        8766,
+        600,
+        client.clone(),
+        launcher.clone(),
+        Some("GPU-1c1e01c2-4192-8f38-1a8a-33fb78b06f17".to_string()),
+    );
+    ds_3060.set_running(true, Some("http://localhost:8766".to_string()));
+    *ds_3060.last_used.lock().unwrap() =
+        std::time::Instant::now() - std::time::Duration::from_secs(600);
+
+    // Job em GPU1 (UUID 1660S) -> NÃO deve derrubar
+    maybe_preempt_daemon_with_gpu(
+        &ds_3060,
+        Some("GPU-c83cc056-07f7-d31e-cc98-7486ddac0296"),
+        None,
+    )
+    .await;
+    assert!(
+        ds_3060.is_running(),
+        "Job em GPU diferente não deve derrubar daemon"
+    );
+
+    // Job na mesma GPU (GPU-1c1e01c2...) -> DEVE derrubar
+    maybe_preempt_daemon_with_gpu(
+        &ds_3060,
+        Some("GPU-1c1e01c2-4192-8f38-1a8a-33fb78b06f17"),
+        None,
+    )
+    .await;
+    assert!(
+        !ds_3060.is_running(),
+        "Job na mesma GPU deve derrubar daemon"
+    );
+
+    // 2. Qualquer uma desconhecida -> DEVE derrubar
+    let ds_unknown = DaemonState::with_gpu(
+        "img",
+        8766,
+        600,
+        client.clone(),
+        launcher.clone(),
+        None, // daemon em GPU desconhecida
+    );
+    ds_unknown.set_running(true, Some("http://localhost:8766".to_string()));
+    *ds_unknown.last_used.lock().unwrap() =
+        std::time::Instant::now() - std::time::Duration::from_secs(600);
+
+    maybe_preempt_daemon_with_gpu(
+        &ds_unknown,
+        Some("GPU-c83cc056-07f7-d31e-cc98-7486ddac0296"),
+        None,
+    )
+    .await;
+    assert!(
+        !ds_unknown.is_running(),
+        "Daemon com GPU desconhecida deve ser derrubado"
+    );
+
+    // Daemon conhecido, job com GPU desconhecida (None) -> DEVE derrubar
+    let ds_known = DaemonState::with_gpu(
+        "img",
+        8766,
+        600,
+        client.clone(),
+        launcher.clone(),
+        Some("GPU-1c1e01c2-4192-8f38-1a8a-33fb78b06f17".to_string()),
+    );
+    ds_known.set_running(true, Some("http://localhost:8766".to_string()));
+    *ds_known.last_used.lock().unwrap() =
+        std::time::Instant::now() - std::time::Duration::from_secs(600);
+
+    maybe_preempt_daemon_with_gpu(&ds_known, None, None).await;
+    assert!(
+        !ds_known.is_running(),
+        "Job com GPU desconhecida deve derrubar daemon"
+    );
+}
+
+#[tokio::test]
+async fn b2_preemption_index_to_uuid_via_sampler() {
+    let client = Arc::new(FakeDaemonClient::new());
+    let launcher = Arc::new(RecordingDaemonLauncher::new());
+    let sampler = crate::telemetry::gpu::GpuSampler::new();
+
+    // Injeta telemetria artificial no cache do sampler: GPU 0 -> 3060, GPU 1 -> 1660S
+    let csv = "0, GPU-1c1e01c2-4192-8f38-1a8a-33fb78b06f17, NVIDIA GeForce RTX 3060, 12288, 1024, 75.0, 10.0, 45\n1, GPU-c83cc056-07f7-d31e-cc98-7486ddac0296, NVIDIA GeForce GTX 1660 SUPER, 6144, 512, 60.0, 5.0, 40";
+    let telem = crate::telemetry::gpu::parse_nvidia_smi_csv(csv).expect("parse csv");
+    // Popula o cache interno
+    *sampler.cache.write().await = crate::telemetry::gpu::GpuSamplerCache {
+        last_sampled: Some(std::time::Instant::now()),
+        telemetry: Some(telem),
+    };
+
+    // Daemon configurado com índice "0" (que resolve para GPU-1c1e...)
+    let ds_idx0 = DaemonState::with_gpu(
+        "img",
+        8766,
+        600,
+        client.clone(),
+        launcher.clone(),
+        Some("0".to_string()),
+    );
+    ds_idx0.set_running(true, Some("http://localhost:8766".to_string()));
+    *ds_idx0.last_used.lock().unwrap() =
+        std::time::Instant::now() - std::time::Duration::from_secs(600);
+
+    // Job na GPU "1" (índice 1 -> 1660S) -> NÃO deve derrubar
+    maybe_preempt_daemon_with_gpu(&ds_idx0, Some("1"), Some(&sampler)).await;
+    assert!(
+        ds_idx0.is_running(),
+        "Job na GPU 1 não deve derrubar daemon na GPU 0"
+    );
+
+    // Job na GPU "0" (índice 0 -> 3060) -> DEVE derrubar
+    maybe_preempt_daemon_with_gpu(&ds_idx0, Some("0"), Some(&sampler)).await;
+    assert!(
+        !ds_idx0.is_running(),
+        "Job na mesma GPU 0 deve derrubar daemon"
+    );
+}

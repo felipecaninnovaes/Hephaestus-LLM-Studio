@@ -169,6 +169,7 @@ pub fn to_job_response(job: crate::jobs::manager_client::InternalJob) -> JobResp
         orchestrator_name: job.orchestrator_name,
         orchestrator_kind: job.orchestrator_kind,
         orchestrator_fallback: job.orchestrator_fallback,
+        gpu_device: job.gpu_device,
         created_at: job.created_at,
         finished_at: job.finished_at,
         error: job.error,

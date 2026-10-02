@@ -108,6 +108,7 @@ pub fn new_active_jobs() -> ActiveJobs {
 /// 9. Reporta `done` ou `failed`
 /// 10. Limpa tempdir
 #[tracing::instrument(skip_all, fields(job_id = %dispatch.job_id))]
+#[allow(clippy::too_many_arguments)]
 pub async fn run_job(
     dispatch: DispatchRequest,
     s3: Arc<dyn S3Port>,
@@ -118,9 +119,35 @@ pub async fn run_job(
     gpu_allow_mock: bool,
     daemon_state: Option<Arc<daemon::DaemonState>>,
 ) {
+    run_job_with_sampler(
+        dispatch,
+        s3,
+        report_client,
+        executor,
+        active_jobs,
+        gpu_devices,
+        gpu_allow_mock,
+        daemon_state,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn run_job_with_sampler(
+    dispatch: DispatchRequest,
+    s3: Arc<dyn S3Port>,
+    report_client: Arc<dyn ReportClient>,
+    executor: Arc<dyn TrainerExecutor>,
+    active_jobs: ActiveJobs,
+    gpu_devices: Option<String>,
+    gpu_allow_mock: bool,
+    daemon_state: Option<Arc<daemon::DaemonState>>,
+    gpu_sampler: Option<crate::telemetry::gpu::GpuSampler>,
+) {
     let job_id = dispatch.job_id.clone();
     let report_for_error = Arc::clone(&report_client);
-    let result = run_job_inner(
+    let result = run_job_inner_with_sampler(
         &dispatch,
         s3,
         report_client,
@@ -129,6 +156,7 @@ pub async fn run_job(
         gpu_devices.as_deref(),
         gpu_allow_mock,
         daemon_state.as_deref(),
+        gpu_sampler.as_ref(),
     )
     .await;
 
@@ -183,6 +211,7 @@ pub async fn run_job(
     active_jobs.remove(&job_id);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_job_inner(
     dispatch: &DispatchRequest,
     s3: Arc<dyn S3Port>,
@@ -192,6 +221,32 @@ pub async fn run_job_inner(
     gpu_devices: Option<&str>,
     gpu_allow_mock: bool,
     daemon_state: Option<&daemon::DaemonState>,
+) -> Result<(), PipelineError> {
+    run_job_inner_with_sampler(
+        dispatch,
+        s3,
+        report_client,
+        executor,
+        active_jobs,
+        gpu_devices,
+        gpu_allow_mock,
+        daemon_state,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn run_job_inner_with_sampler(
+    dispatch: &DispatchRequest,
+    s3: Arc<dyn S3Port>,
+    report_client: Arc<dyn ReportClient>,
+    executor: Arc<dyn TrainerExecutor>,
+    active_jobs: &ActiveJobs,
+    gpu_devices: Option<&str>,
+    gpu_allow_mock: bool,
+    daemon_state: Option<&daemon::DaemonState>,
+    gpu_sampler: Option<&crate::telemetry::gpu::GpuSampler>,
 ) -> Result<(), PipelineError> {
     let job_id = &dispatch.job_id;
     let job_workdir = PathBuf::from(&dispatch.workdir);
@@ -246,10 +301,11 @@ pub async fn run_job_inner(
         .await
         .map_err(|e| PipelineError::ReportFailed(format!("report preparing: {e}")))?;
 
-    // Preempção: ANTES de despachar treino, se daemon idle → kill (D1)
+    // Preempção: ANTES de despachar treino, se daemon idle → kill (D1 / fatia B2)
     if dispatch.mode != "generate" {
         if let Some(ds) = daemon_state {
-            daemon::maybe_preempt_daemon(ds).await;
+            let target_gpu = dispatch.gpu_device.as_deref().or(gpu_devices);
+            daemon::maybe_preempt_daemon_with_gpu(ds, target_gpu, gpu_sampler).await;
         }
     }
 
@@ -1047,6 +1103,7 @@ pub async fn run_job_inner(
         )
         .await;
 
+    let effective_gpu = dispatch.gpu_device.as_deref().or(gpu_devices);
     let (exit_code, logs) = executor
         .run(
             &dispatch.image,
@@ -1054,7 +1111,7 @@ pub async fn run_job_inner(
             &volumes,
             &subcommand_args,
             &exec_env,
-            gpu_devices,
+            effective_gpu,
             &run_log_path,
         )
         .await;

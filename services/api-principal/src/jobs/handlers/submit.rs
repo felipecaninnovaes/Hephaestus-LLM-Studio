@@ -42,6 +42,20 @@ pub async fn submit_yolo_job(
     // 2. Validação pura (models.rs).
     let req = match models::validate_yolo_request(req) {
         Ok(v) => v,
+        Err(e) if e == "invalid_gpu_device" => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "invalid_gpu_device",
+                "invalid gpu device",
+            )
+        }
+        Err(e) if e == "gpu_device_requires_orchestrator" => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "gpu_device_requires_orchestrator",
+                "gpu device requires orchestrator",
+            )
+        }
         Err(_) => return invalid_request(),
     };
 
@@ -143,6 +157,9 @@ pub async fn submit_yolo_job(
     if let Some(ref orch_id) = req.orchestrator_id {
         manager_body["orchestrator_hint"] = serde_json::json!(orch_id);
     }
+    if let Some(ref dev) = req.gpu_device {
+        manager_body["gpu_device"] = serde_json::json!(dev);
+    }
     // ADR-0022 D1: insere output_name nos params quando presente.
     if let Some(ref out_name) = req.output_name {
         manager_body["params"]["output_name"] = serde_json::json!(out_name);
@@ -167,6 +184,7 @@ pub async fn submit_yolo_job(
             "seed": req.seed,
             "weights": req.weights,
             "orchestratorId": req.orchestrator_id,
+            "gpuDevice": req.gpu_device,
             "outputName": req.output_name,
         }),
     };
@@ -198,6 +216,20 @@ pub async fn submit_autotracker_job(
     // 2. Validação pura (models.rs) — inclui UUID check do modelId.
     let req = match models::validate_autotrack_request(req) {
         Ok(v) => v,
+        Err(e) if e == "invalid_gpu_device" => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "invalid_gpu_device",
+                "invalid gpu device",
+            )
+        }
+        Err(e) if e == "gpu_device_requires_orchestrator" => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "gpu_device_requires_orchestrator",
+                "gpu device requires orchestrator",
+            )
+        }
         Err(_) => return invalid_request(),
     };
 
@@ -304,6 +336,9 @@ pub async fn submit_autotracker_job(
     if let Some(ref orch_id) = req.orchestrator_id {
         manager_body["orchestrator_hint"] = serde_json::json!(orch_id);
     }
+    if let Some(ref dev) = req.gpu_device {
+        manager_body["gpu_device"] = serde_json::json!(dev);
+    }
 
     // 9. Aceite assíncrono: dedupe → create → insert → spawn → 202.
     //    Mapeamento R6 preservado (NotFound→404, InvalidRequest→400,
@@ -320,6 +355,7 @@ pub async fn submit_autotracker_job(
             "conf": req.conf,
             "modelId": req.model_id,
             "orchestratorId": req.orchestrator_id,
+            "gpuDevice": req.gpu_device,
         }),
     };
     crate::jobs::prepare::accept_job_preparing(&state, spec, manager_body).await
@@ -350,6 +386,20 @@ pub async fn submit_autolabel_job(
     // 2. Validação pura.
     let mut req = match models::validate_autolabel_request(req) {
         Ok(v) => v,
+        Err(e) if e == "invalid_gpu_device" => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "invalid_gpu_device",
+                "invalid gpu device",
+            )
+        }
+        Err(e) if e == "gpu_device_requires_orchestrator" => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "gpu_device_requires_orchestrator",
+                "gpu device requires orchestrator",
+            )
+        }
         Err(_) => return invalid_request(),
     };
 
@@ -568,6 +618,9 @@ pub async fn submit_autolabel_job(
     if let Some(ref orch_id) = req.orchestrator_id {
         manager_body["orchestrator_hint"] = serde_json::json!(orch_id);
     }
+    if let Some(ref dev) = req.gpu_device {
+        manager_body["gpu_device"] = serde_json::json!(dev);
+    }
 
     // 8. Aceite assíncrono: dedupe → create → insert → spawn → 202.
     //    SEM apiKey no spec: o worker nunca regenera config (não há endpoint
@@ -586,6 +639,9 @@ pub async fn submit_autolabel_job(
     );
     if let Some(ref orch_id) = req.orchestrator_id {
         spec_params["orchestratorId"] = serde_json::json!(orch_id);
+    }
+    if let Some(ref dev) = req.gpu_device {
+        spec_params["gpuDevice"] = serde_json::json!(dev);
     }
     let spec = crate::jobs::prepare::PrepareSpec {
         kind: "autolabel".to_string(),
@@ -624,6 +680,20 @@ pub async fn submit_diffusion_job(
     // 2. Validação pura.
     let req = match models::validate_diffusion_request(req) {
         Ok(v) => v,
+        Err(e) if e == "invalid_gpu_device" => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "invalid_gpu_device",
+                "invalid gpu device",
+            )
+        }
+        Err(e) if e == "gpu_device_requires_orchestrator" => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "gpu_device_requires_orchestrator",
+                "gpu device requires orchestrator",
+            )
+        }
         Err(_) => return invalid_request(),
     };
 
@@ -961,6 +1031,9 @@ pub async fn submit_diffusion_job(
     if let Some(orch_id) = &req.orchestrator_id {
         manager_body["orchestrator_hint"] = serde_json::json!(orch_id);
     }
+    if let Some(ref dev) = req.gpu_device {
+        manager_body["gpu_device"] = serde_json::json!(dev);
+    }
 
     // 9. Aceite assíncrono: dedupe → create → insert → spawn → 202.
     //    `build_package_diffusion` grava `fingerprint` no manifest (igual a
@@ -998,6 +1071,7 @@ pub async fn submit_diffusion_job(
             "sampleSeed": req.sample_seed,
             "weights": req.weights,
             "orchestratorId": req.orchestrator_id,
+            "gpuDevice": req.gpu_device,
             "outputName": req.output_name,
             "controlDatasetId": req.control_dataset_id.map(|u| u.to_string()),
             "cacheTextEmbeddings": req.cache_text_embeddings,
@@ -1027,6 +1101,20 @@ pub async fn submit_diffusion_generate_job(
     // 2. Validação pura (ADR-0023 D2/D3/D4).
     let req = match models::validate_diffusion_generate_request(req) {
         Ok(v) => v,
+        Err(e) if e == "invalid_gpu_device" => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "invalid_gpu_device",
+                "invalid gpu device",
+            )
+        }
+        Err(e) if e == "gpu_device_requires_orchestrator" => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "gpu_device_requires_orchestrator",
+                "gpu device requires orchestrator",
+            )
+        }
         Err(_) => return invalid_request(),
     };
 
@@ -1181,6 +1269,9 @@ pub async fn submit_diffusion_generate_job(
     if let Some(ref orch_id) = req.orchestrator_id {
         manager_body["orchestrator_hint"] = serde_json::json!(orch_id);
     }
+    if let Some(ref dev) = req.gpu_device {
+        manager_body["gpu_device"] = serde_json::json!(dev);
+    }
 
     // img2img: encaminha o id que veio (`initImageId` OU `initGenerationId`) e
     // `initStrength` só quando há id — sem default local (ausente ⇒ null;
@@ -1211,6 +1302,28 @@ pub async fn submit_diffusion_generate_job(
             (StatusCode::ACCEPTED, Json(body)).into_response()
         }
         Err(ManagerError::NotFound) => not_found(),
+        Err(ManagerError::InvalidRequest(ref msg)) if msg == "unknown_gpu_device" => err(
+            StatusCode::BAD_REQUEST,
+            "unknown_gpu_device",
+            "unknown gpu device",
+        ),
+        Err(ManagerError::InvalidRequest(ref msg)) if msg == "insufficient_gpu_vram" => err(
+            StatusCode::BAD_REQUEST,
+            "insufficient_gpu_vram",
+            "insufficient gpu vram",
+        ),
+        Err(ManagerError::InvalidRequest(ref msg)) if msg == "invalid_gpu_device" => err(
+            StatusCode::BAD_REQUEST,
+            "invalid_gpu_device",
+            "invalid gpu device",
+        ),
+        Err(ManagerError::InvalidRequest(ref msg)) if msg == "gpu_device_requires_orchestrator" => {
+            err(
+                StatusCode::BAD_REQUEST,
+                "gpu_device_requires_orchestrator",
+                "gpu device requires orchestrator",
+            )
+        }
         Err(ManagerError::InvalidRequest(_)) => invalid_request(),
         Err(ManagerError::Unavailable(_)) => queue_unavailable(),
         Err(_) => queue_unavailable(),

@@ -20,6 +20,9 @@ pub struct CreateJobRequest {
     /// Hint opcional de orquestrador para despacho (ADR-0015 D2).
     #[serde(default)]
     pub orchestrator_hint: Option<String>,
+    /// GPU opcional (UUID ou índice) (fatia B2).
+    #[serde(default)]
+    pub gpu_device: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -88,6 +91,8 @@ pub struct JobRow {
     pub orchestrator_kind: Option<String>,
     #[serde(default)]
     pub orchestrator_fallback: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_device: Option<String>,
     pub created_at: String,
     pub finished_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

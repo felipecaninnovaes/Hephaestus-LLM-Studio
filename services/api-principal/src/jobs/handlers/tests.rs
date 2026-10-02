@@ -95,6 +95,7 @@ fn to_job_response_snake_to_camel() {
         params: None,
         phase: None,
         message: None,
+        gpu_device: None,
     };
     let resp = to_job_response(job);
     assert_eq!(resp.id, "550e8400-e29b-41d4-a716-446655440000");
@@ -1074,6 +1075,7 @@ fn autotracker_job_done() -> InternalJob {
         params: None,
         phase: None,
         message: None,
+        gpu_device: None,
     }
 }
 
@@ -1434,6 +1436,7 @@ fn mock_job() -> InternalJob {
         params: None,
         phase: None,
         message: None,
+        gpu_device: None,
     }
 }
 

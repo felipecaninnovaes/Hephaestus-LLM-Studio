@@ -68,6 +68,8 @@ pub struct OrchestratorConfig {
 pub struct DaemonConfig {
     /// `DIFFUSION_DAEMON_ENABLED` — só `"1"` habilita (default `false`).
     pub enabled: bool,
+    /// `DIFFUSION_DAEMON_GPU_DEVICE` — UUID ou índice da GPU dedicada ao daemon.
+    pub gpu_device: Option<String>,
     /// `DIFFUSION_DAEMON_PORT` — default `8766`; valor inválido cai no default.
     pub port: u16,
     /// `DIFFUSION_DAEMON_IDLE_TTL_S` — default `600`; inválido cai no default.
@@ -159,6 +161,8 @@ impl DaemonConfig {
     fn from_get(get: &impl Fn(&str) -> Option<String>) -> Self {
         Self {
             enabled: get_trimmed(get, "DIFFUSION_DAEMON_ENABLED").as_deref() == Some("1"),
+            gpu_device: get_trimmed(get, "DIFFUSION_DAEMON_GPU_DEVICE")
+                .or_else(|| get_trimmed(get, "ORCH_GPU_DEVICES")),
             port: get_trimmed(get, "DIFFUSION_DAEMON_PORT")
                 .unwrap_or_else(|| "8766".to_string())
                 .parse()

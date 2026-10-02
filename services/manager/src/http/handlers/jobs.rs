@@ -44,13 +44,28 @@ pub async fn create_job_handler(
     State(state): State<AppState>,
     AppJson(req): AppJson<CreateJobRequest>,
 ) -> Response {
-    match &crate::create_job(&state.pool, req).await {
+    match &crate::create_job_with_context(
+        &state.pool,
+        &state.telemetry_cache,
+        &state.vram_table,
+        req,
+    )
+    .await
+    {
         Ok(resp) => {
             tracing::Span::current().record("job_id", tracing::field::display(&resp.job_id));
             heph_contracts::request_context::remember_for_job(&resp.job_id);
             (StatusCode::ACCEPTED, Json(resp)).into_response()
         }
         Err(ManagerError::NotFound) => not_found(),
+        Err(ManagerError::InvalidRequest(ref msg))
+            if msg == "unknown_gpu_device"
+                || msg == "insufficient_gpu_vram"
+                || msg == "invalid_gpu_device"
+                || msg == "gpu_device_requires_orchestrator" =>
+        {
+            crate::error::error_response(StatusCode::BAD_REQUEST, msg, msg)
+        }
         Err(ManagerError::InvalidRequest(msg)) => bad_request(msg),
         Err(ManagerError::Conflict(code)) => conflict(code, "conflict"),
         Err(ManagerError::Internal(e)) => internal_error(e),
@@ -209,13 +224,14 @@ pub async fn prepare_complete_handler(
     match crate::prepare_complete(&state.pool, uuid, req).await {
         Ok(()) => {
             // Disparo normal de dispatch (best-effort: falha não desfaz o complete).
-            match crate::dispatch_next(
+            match crate::dispatch_next_with_cache(
                 &state.pool,
                 state.orch_client.as_ref(),
                 &state.exec_mode,
                 &state.orch_workdir,
                 &state.trainer_image,
                 &state.vram_table,
+                &state.telemetry_cache,
             )
             .await
             {

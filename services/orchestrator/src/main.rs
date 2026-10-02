@@ -187,16 +187,25 @@ async fn main() {
                 "diffusion-daemon",
                 daemon_volumes,
                 cfg.daemon.port,
-                cfg.gpu_devices.clone(),
+                cfg.daemon
+                    .gpu_device
+                    .clone()
+                    .or_else(|| cfg.gpu_devices.clone()),
                 daemon_env,
                 cfg.daemon.network.clone(),
             ));
-        let ds = Arc::new(orchestrator::daemon::DaemonState::new(
+        let daemon_gpu = cfg
+            .daemon
+            .gpu_device
+            .clone()
+            .or_else(|| cfg.gpu_devices.clone());
+        let ds = Arc::new(orchestrator::daemon::DaemonState::with_gpu(
             &image,
             cfg.daemon.port,
             cfg.daemon.idle_ttl,
             client,
             launcher,
+            daemon_gpu,
         ));
         tracing::info!(
             "diffusion daemon habilitado: port={}, idle_ttl={}s",

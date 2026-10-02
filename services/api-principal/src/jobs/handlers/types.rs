@@ -134,6 +134,8 @@ pub struct JobResponse {
     pub orchestrator_name: Option<String>,
     pub orchestrator_kind: Option<String>,
     pub orchestrator_fallback: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_device: Option<String>,
     pub created_at: String,
     pub finished_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

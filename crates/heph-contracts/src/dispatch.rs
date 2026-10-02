@@ -78,4 +78,6 @@ pub struct DispatchRequest {
     pub init_image_ref: Option<InitImageRef>,
     #[serde(default)]
     pub control_package_ref: Option<PackageRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_device: Option<String>,
 }

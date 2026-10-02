@@ -23,6 +23,7 @@ pub struct DaemonState {
     pub idle_ttl: Duration,
     pub client: std::sync::RwLock<Arc<dyn DaemonClient>>,
     pub launcher: Arc<dyn DaemonLauncher>,
+    pub gpu_device: Option<String>,
 }
 
 impl DaemonState {
@@ -32,6 +33,17 @@ impl DaemonState {
         idle_ttl_secs: u64,
         client: Arc<dyn DaemonClient>,
         launcher: Arc<dyn DaemonLauncher>,
+    ) -> Self {
+        Self::with_gpu(image, port, idle_ttl_secs, client, launcher, None)
+    }
+
+    pub fn with_gpu(
+        image: &str,
+        port: u16,
+        idle_ttl_secs: u64,
+        client: Arc<dyn DaemonClient>,
+        launcher: Arc<dyn DaemonLauncher>,
+        gpu_device: Option<String>,
     ) -> Self {
         Self {
             running: std::sync::Mutex::new(false),
@@ -44,6 +56,7 @@ impl DaemonState {
             idle_ttl: Duration::from_secs(idle_ttl_secs),
             client: std::sync::RwLock::new(client),
             launcher,
+            gpu_device,
         }
     }
 

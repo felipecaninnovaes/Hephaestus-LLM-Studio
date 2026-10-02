@@ -15,8 +15,7 @@ use axum::{
 use super::middleware::{bad_request, conflict, error_response};
 use super::state::AppState;
 use crate::{
-    run_job, ActiveJobState, DispatchRequest, PairingVerifyRequest, PairingVerifyResponse,
-    ReportBody,
+    ActiveJobState, DispatchRequest, PairingVerifyRequest, PairingVerifyResponse, ReportBody,
 };
 
 pub(crate) async fn health() -> Json<serde_json::Value> {
@@ -132,6 +131,7 @@ pub(crate) async fn dispatch_handler(State(state): State<AppState>, body: Bytes)
     let gpu_devices = state.gpu_devices.clone();
     let gpu_allow_mock = state.gpu_allow_mock;
     let daemon_state = state.daemon_state.clone();
+    let gpu_sampler = Some(state.gpu_sampler.clone());
 
     // Captura o contexto de correlação da requisição de dispatch ANTES do
     // spawn — `tokio::spawn` cria uma task nova, o `task_local` da requisição
@@ -140,7 +140,7 @@ pub(crate) async fn dispatch_handler(State(state): State<AppState>, body: Bytes)
 
     // Spawna pipeline assíncrono (D5/D6/D8)
     tokio::spawn(ctx.scope(async move {
-        run_job(
+        crate::app::run_job_with_sampler(
             req,
             s3,
             report_client,
@@ -149,6 +149,7 @@ pub(crate) async fn dispatch_handler(State(state): State<AppState>, body: Bytes)
             gpu_devices,
             gpu_allow_mock,
             daemon_state,
+            gpu_sampler,
         )
         .await;
     }));

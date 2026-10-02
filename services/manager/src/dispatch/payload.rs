@@ -75,6 +75,8 @@ pub struct DispatchPayload {
     pub init_image_ref: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub control_package_ref: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_device: Option<String>,
 }
 
 /// Parâmetros de entrada para montagem do payload.
@@ -91,6 +93,7 @@ pub struct BuildPayloadInput<'a> {
     pub exec_mode: &'a str,
     pub orch_workdir: &'a str,
     pub image: &'a str,
+    pub gpu_device: Option<&'a str>,
 }
 
 /// Constrói o `DispatchPayload` tipado a partir dos metadados e parâmetros do job.
@@ -167,6 +170,7 @@ pub fn build_dispatch_payload(input: BuildPayloadInput<'_>) -> DispatchPayload {
         text_encoder_ref,
         init_image_ref,
         control_package_ref,
+        gpu_device: input.gpu_device.map(|s| s.to_string()),
     }
 }
 
@@ -245,6 +249,7 @@ mod tests {
             exec_mode: "docker",
             orch_workdir: "/data",
             image: "hephaestus/trainer-yolo:local",
+            gpu_device: None,
         };
 
         let payload = build_dispatch_payload(input);
@@ -280,6 +285,7 @@ mod tests {
             exec_mode: "docker",
             orch_workdir: "/data",
             image: "hephaestus/trainer-difusao:local",
+            gpu_device: None,
         };
 
         let payload = build_dispatch_payload(input);

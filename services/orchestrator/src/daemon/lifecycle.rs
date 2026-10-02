@@ -65,9 +65,57 @@ pub async fn ensure_daemon_ready(
     Ok(url)
 }
 
-/// Preempção: ANTES de despachar um job de TREINO, se daemon idle → kill.
+async fn resolve_gpu_uuid(
+    dev_str: &str,
+    sampler: Option<&crate::telemetry::gpu::GpuSampler>,
+) -> Option<String> {
+    if dev_str.starts_with("GPU-") {
+        return Some(dev_str.to_string());
+    }
+    if let Ok(idx) = dev_str.parse::<u32>() {
+        if let Some(s) = sampler {
+            if let Some(sample) = s.sample().await {
+                if let Some(dev) = sample.devices.iter().find(|d| d.index == idx) {
+                    return Some(dev.uuid.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Preempção: ANTES de despachar um job de TREINO, se daemon idle na mesma GPU (ou GPU desconhecida) → kill.
+/// Se job e daemon estiverem em GPUs diferentes conhecidas (UUIDs distintos), o daemon NÃO é derrubado.
 /// busy → NÃO mata; o roteamento de VRAM do manager já protege (D1).
 pub async fn maybe_preempt_daemon(daemon_state: &DaemonState) {
+    maybe_preempt_daemon_with_gpu(daemon_state, None, None).await;
+}
+
+pub async fn maybe_preempt_daemon_with_gpu(
+    daemon_state: &DaemonState,
+    job_gpu: Option<&str>,
+    sampler: Option<&crate::telemetry::gpu::GpuSampler>,
+) {
+    let daemon_gpu_resolved = match daemon_state.gpu_device.as_deref() {
+        Some(d_gpu) => resolve_gpu_uuid(d_gpu, sampler).await,
+        None => None,
+    };
+
+    let job_gpu_resolved = match job_gpu {
+        Some(j_gpu) => resolve_gpu_uuid(j_gpu, sampler).await,
+        None => None,
+    };
+
+    // "só derruba o daemon quando for a mesma placa ou quando qualquer das duas for desconhecida"
+    let should_preempt = match (daemon_gpu_resolved, job_gpu_resolved) {
+        (Some(d_uuid), Some(j_uuid)) => d_uuid == j_uuid,
+        _ => true, // Se qualquer uma for desconhecida, fallback seguro: derruba
+    };
+
+    if !should_preempt {
+        tracing::info!("diffusion daemon mantido ativo em GPU diferente da do job");
+        return;
+    }
     if !daemon_state.is_running() {
         return;
     }

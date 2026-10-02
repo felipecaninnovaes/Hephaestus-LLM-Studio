@@ -34,6 +34,8 @@ pub struct JobRow {
     /// AC-006-A D3: última mensagem de status do job (coluna jobs.message).
     #[serde(default)]
     pub message: Option<String>,
+    #[serde(default)]
+    pub gpu_device: Option<String>,
 }
 
 /// Item da fila de execução (snake_case interno).

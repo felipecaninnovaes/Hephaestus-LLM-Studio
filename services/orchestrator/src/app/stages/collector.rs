@@ -304,10 +304,13 @@ pub async fn stream_metrics_and_samples(
     let mut telemetry_uploaded_bytes: i64 = 0;
     // Fatia 1c: idem para logs/run.log.
     let mut run_log_uploaded_bytes: i64 = 0;
+    // Artefatos cujo report falhou num tick anterior: reenviados no próximo
+    // tick junto com os novos (o manager deduplica report por path, idempotente).
+    let mut pending_artifacts: Vec<ArtifactReport> = Vec::new();
     loop {
         interval.tick().await;
 
-        let mut new_live_artifacts: Vec<ArtifactReport> = Vec::new();
+        let mut new_live_artifacts: Vec<ArtifactReport> = std::mem::take(&mut pending_artifacts);
 
         // 1a. Escaneia novas amostras de difusão em tempo real
         if is_diffusion && samples_dir.exists() {
@@ -471,7 +474,6 @@ pub async fn stream_metrics_and_samples(
             &metrics_path_clone
         };
         let (new_metrics, new_lines_read) = tail_jsonl_lines(active_path, lines_read);
-        lines_read = new_lines_read;
 
         // C2a: re-upload do snapshot do telemetry.jsonl quando ele cresce —
         // logs de treino ficam persistidos em S3 DURANTE a execução (o report
@@ -507,10 +509,11 @@ pub async fn stream_metrics_and_samples(
 
         // 3. Envia report se houver novas métricas OU novos artefatos (amostras/checkpoints)
         if !new_metrics.is_empty() {
+            let mut report_failed = false;
             for m in new_metrics {
                 let progress = compute_progress(&m, total_epochs);
                 let is_metric = m.is_training_metric();
-                if let Some(ref msg) = m.message {
+                if let Some(msg) = &m.message {
                     tracing::info!(
                         job_id = %job_id,
                         phase = ?m.phase,
@@ -518,7 +521,12 @@ pub async fn stream_metrics_and_samples(
                         "{msg}"
                     );
                 }
-                let _ = report_client
+                let artifacts_for_report = if new_live_artifacts.is_empty() {
+                    None
+                } else {
+                    Some(std::mem::take(&mut new_live_artifacts))
+                };
+                let result = report_client
                     .report(
                         &job_id,
                         &ReportBody {
@@ -532,17 +540,31 @@ pub async fn stream_metrics_and_samples(
                                 None
                             },
                             error: None,
-                            artifacts: if new_live_artifacts.is_empty() {
-                                None
-                            } else {
-                                Some(std::mem::take(&mut new_live_artifacts))
-                            },
+                            artifacts: artifacts_for_report.clone(),
                             meta_content: None,
                             phase: m.phase.clone(),
                             message: m.message.clone(),
                         },
                     )
                     .await;
+                if let Err(e) = result {
+                    tracing::warn!(
+                        job_id = %job_id,
+                        error = %e,
+                        "falha ao reportar métricas ao manager; reenviando no próximo tick"
+                    );
+                    report_failed = true;
+                    if let Some(arts) = artifacts_for_report {
+                        pending_artifacts.extend(arts);
+                    }
+                    break;
+                }
+            }
+            // Escrita do manager é idempotente por (job_id, key, epoch, step): só
+            // avança o offset de leitura quando TODO o lote deste tick foi
+            // reportado com sucesso; falha reenvia o lote inteiro no próximo tick.
+            if !report_failed {
+                lines_read = new_lines_read;
             }
         } else if !new_live_artifacts.is_empty() {
             for art in &new_live_artifacts {
@@ -552,7 +574,8 @@ pub async fn stream_metrics_and_samples(
                     "Artefato intermediário gerado e sincronizado"
                 );
             }
-            let _ = report_client
+            let arts = std::mem::take(&mut new_live_artifacts);
+            let result = report_client
                 .report(
                     &job_id,
                     &ReportBody {
@@ -562,13 +585,21 @@ pub async fn stream_metrics_and_samples(
                         step: None,
                         metrics: None,
                         error: None,
-                        artifacts: Some(new_live_artifacts),
+                        artifacts: Some(arts.clone()),
                         meta_content: None,
                         phase: None,
                         message: None,
                     },
                 )
                 .await;
+            if let Err(e) = result {
+                tracing::warn!(
+                    job_id = %job_id,
+                    error = %e,
+                    "falha ao reportar artefatos intermediários ao manager; reenviando no próximo tick"
+                );
+                pending_artifacts.extend(arts);
+            }
         }
     }
 }

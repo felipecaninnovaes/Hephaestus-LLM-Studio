@@ -6212,3 +6212,69 @@ async fn output_purge_sweeps_due_jobs_keeps_keepers_and_unlisted() {
         "job sem marcador terminal nunca é purgado"
     );
 }
+
+// ===========================================================================
+// Fatia 1a (telemetria append-only) — collector não perde report em falha
+// ===========================================================================
+
+/// `stream_metrics_and_samples`: se o report falhar, NÃO avança `lines_read`
+/// (warn + reenvio no próximo tick). Como a escrita do manager é idempotente
+/// por (job_id, key, epoch, step), reenviar a mesma linha é seguro — a prova
+/// aqui é que o 2º tick (com o inner já saudável) reporta a MESMA métrica,
+/// não a próxima (não houve perda nem pulo de linha).
+#[tokio::test]
+async fn stream_metrics_and_samples_retries_apos_falha_de_report() {
+    let tmp = tempfile::tempdir().unwrap();
+    let metrics_path = tmp.path().join("metrics.jsonl");
+    std::fs::write(
+        &metrics_path,
+        "{\"box_loss\":0.1,\"cls_loss\":0.1,\"dfl_loss\":0.1,\"mAP50\":0.5,\"mAP50-95\":0.4,\"epoch\":1}\n",
+    )
+    .unwrap();
+    let samples_dir = tmp.path().join("samples");
+    let checkpoints_dir = tmp.path().join("checkpoints");
+
+    let report_client = Arc::new(ControllableReportClient::new(Err(
+        "report request: connection refused".to_string(),
+    )));
+    let s3: Arc<dyn S3Port> = Arc::new(FakeS3::new());
+
+    let handle = tokio::spawn(crate::app::stages::collector::stream_metrics_and_samples(
+        s3,
+        report_client.clone(),
+        "job-retry-1".to_string(),
+        metrics_path,
+        samples_dir,
+        checkpoints_dir,
+        10,
+        false,
+    ));
+
+    // 1º tick (dispara quase imediatamente — tokio::interval tica no t=0):
+    // report falha → warn, lines_read NÃO avança.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        report_client.calls_count(),
+        1,
+        "1º tick (imediato) deve ter tentado reportar 1x (e falhado)"
+    );
+
+    // Inner volta a saudável: o próximo tick deve reenviar a MESMA métrica
+    // (epoch 1), prova de que a linha não foi descartada.
+    report_client.set_behavior(Ok(()));
+    tokio::time::sleep(Duration::from_millis(2300)).await;
+    assert_eq!(
+        report_client.calls_count(),
+        2,
+        "2º tick deve ter reenviado o lote que falhou"
+    );
+    let calls = report_client.calls.lock().unwrap();
+    assert_eq!(
+        calls[0].1.epoch, calls[1].1.epoch,
+        "reenvio é da MESMA linha (epoch 1), não perdida nem pulada"
+    );
+    assert_eq!(calls[1].1.epoch, Some(1));
+    drop(calls);
+
+    handle.abort();
+}

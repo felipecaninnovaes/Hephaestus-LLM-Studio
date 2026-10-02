@@ -66,6 +66,12 @@ services:
       DATASET_CACHE_MAX_GB: ${DATASET_CACHE_MAX_GB:-15}
       OUTPUT_PURGE_TTL_SECS: ${OUTPUT_PURGE_TTL_SECS:-86400}
       TEXT_EMBEDS_CACHE_MAX_GB: ${TEXT_EMBEDS_CACHE_MAX_GB:-10}
+      # Fatia 2a (telemetria-observabilidade): orchestrator-gpu NÃO exporta
+      # OTel nesta fase — sem rota garantida ao otel-collector do dev host
+      # (10.15.10.3) a partir do nó GPU remoto. OTEL_EXPORTER_OTLP_ENDPOINT
+      # fica indefinida de propósito (sem a env, o exporter não inicializa
+      # e o serviço sobe normal). Revisitar na 2c se o Tempo remoto ganhar
+      # uma rota/túnel dedicada.
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - gpu_datasets:/data/datasets

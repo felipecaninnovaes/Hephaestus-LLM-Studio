@@ -57,6 +57,11 @@ services:
       EMBEDDER_URL: ${EMBEDDER_URL:-http://embedder:8090}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-ViT-B-32}
       MODEL_DOWNLOAD_ALLOWED_HOSTS: ${MODEL_DOWNLOAD_ALLOWED_HOSTS:-}
+      # Fatia 2a (telemetria-observabilidade): sem a env o exporter OTel não
+      # inicializa e o serviço sobe normal (contrato fixado no context).
+      # Default LIGADO em dev: o otel-collector sobe junto no mesmo compose.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+      OTEL_SERVICE_NAME: api-principal
     depends_on:
       db:
         condition: service_healthy
@@ -166,6 +171,37 @@ services:
     networks:
       - backend_net
 
+  # OTel Collector (fatia 2a — telemetria-observabilidade §4 Onda 2):
+  # recebe OTLP gRPC/HTTP dos 3 serviços Rust e exporta via `debug` (a 2c
+  # troca por Tempo/Loki). Imagem upstream é "distroless" (sem shell/wget) —
+  # Dockerfile.otel-collector reempacota o binário numa base Alpine só para
+  # o healthcheck funcionar. Sem publicar fora do loopback: tráfego interno
+  # da rede backend_net; debug local via OTEL_COLLECTOR_PUBLISH se precisar.
+  otel-collector:
+    build:
+      context: .
+      dockerfile: Dockerfile.otel-collector
+    volumes:
+      - ./otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - '${OTEL_COLLECTOR_PUBLISH:-127.0.0.1}:4317:4317'
+      - '${OTEL_COLLECTOR_PUBLISH:-127.0.0.1}:4318:4318'
+    restart: unless-stopped
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:13133/"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
+    networks:
+      - backend_net
+
   manager:
     build:
       context: ..
@@ -181,6 +217,8 @@ services:
       DIFFUSION_TRAINER_IMAGE: ${DIFFUSION_TRAINER_IMAGE:-hephaestus/trainer-difusao:local}
       AUTO_ADOPT_LOCAL: ${AUTO_ADOPT_LOCAL:-1}
       VRAM_TABLE_PATH: /etc/hephaestus/vram-table.yaml
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+      OTEL_SERVICE_NAME: manager
     volumes:
       - ../packages/policies/vram-table.yaml:/etc/hephaestus/vram-table.yaml:ro
     depends_on:
@@ -236,6 +274,10 @@ services:
       DATASET_CACHE_MAX_GB: ${DATASET_CACHE_MAX_GB:-15}
       OUTPUT_PURGE_TTL_SECS: ${OUTPUT_PURGE_TTL_SECS:-86400}
       TEXT_EMBEDS_CACHE_MAX_GB: ${TEXT_EMBEDS_CACHE_MAX_GB:-10}
+      # orchestrator-local é dual-homed (backend_net/engine_net); o
+      # otel-collector está em backend_net, rota garantida.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+      OTEL_SERVICE_NAME: orchestrator
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - datasets:/data/datasets

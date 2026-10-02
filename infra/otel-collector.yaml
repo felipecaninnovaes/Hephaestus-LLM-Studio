@@ -1,0 +1,48 @@
+# infra/otel-collector.yaml — Fatia 2a (telemetria-observabilidade §4 Onda 2)
+#
+# Recebe OTLP (gRPC 4317 / HTTP 4318) dos 3 serviços Rust (api-principal,
+# manager, orchestrator-local) e imprime no `debug` exporter por enquanto.
+# A 2c troca o exporter de traces por Tempo (e adiciona um pipeline de logs
+# para Loki) — NÃO duplicar trace_id: o span raiz de cada request herda o
+# contexto W3C (`traceparent`) já propagado pela 2b, então um submit gera
+# UM trace com spans dos 3 serviços.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 150
+    spike_limit_mib: 30
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+
+exporters:
+  debug:
+    verbosity: normal
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]
+    # Logs via OTLP são opcionais nesta fatia (2b já cobre log estruturado
+    # com request_id/trace_id via tracing); pipeline pronto caso o @backend
+    # decida também exportar logs pelo mesmo bridge, sem duplicar coletor.
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]

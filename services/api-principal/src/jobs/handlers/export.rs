@@ -5,7 +5,7 @@
 //! Ordenado por seq crescente.
 //!
 //! Memória limitada:
-//! - CSV: streaming em chunks paginando por `afterSeq`.
+//! - CSV: streaming em chunks paginando por `afterSeq`. Escape RFC 4180.
 //! - Parquet: paginação por `afterSeq` montando RecordBatch com teto de 2M pontos (413).
 
 use std::sync::Arc;
@@ -31,7 +31,7 @@ use crate::error::err;
 use crate::jobs::manager_client::ManagerError;
 use crate::state::AppState;
 
-pub const MAX_PARQUET_POINTS: usize = 2_000_000;
+pub const DEFAULT_MAX_PARQUET_POINTS: usize = 2_000_000;
 pub const EXPORT_PAGE_SIZE: i64 = 10_000;
 
 #[derive(Debug, Deserialize)]
@@ -55,11 +55,31 @@ impl ExportFormat {
     }
 }
 
+/// Escapa um valor de texto para CSV segundo a RFC 4180.
+/// Se contiver vírgula, aspas duplas, \r ou \n, envolve em aspas e duplica aspas internas.
+pub fn escape_csv_field(val: &str) -> String {
+    if val.contains([',', '"', '\r', '\n']) {
+        let escaped = val.replace('"', "\"\"");
+        format!("\"{escaped}\"")
+    } else {
+        val.to_string()
+    }
+}
+
 /// GET /api/jobs/:id/export?format=csv|parquet
 pub async fn export_job_metrics(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Query(q): Query<JobExportQuery>,
+) -> Response {
+    export_job_metrics_with_ceiling(state, id, q, DEFAULT_MAX_PARQUET_POINTS).await
+}
+
+pub async fn export_job_metrics_with_ceiling(
+    state: AppState,
+    id: String,
+    q: JobExportQuery,
+    max_parquet_points: usize,
 ) -> Response {
     if parse_uuid(&id).is_none() {
         return not_found();
@@ -101,7 +121,7 @@ pub async fn export_job_metrics(
 
     match format {
         ExportFormat::Csv => export_csv_stream(state, id, first_page),
-        ExportFormat::Parquet => export_parquet(state, id, first_page).await,
+        ExportFormat::Parquet => export_parquet(state, id, first_page, max_parquet_points).await,
     }
 }
 
@@ -166,13 +186,15 @@ fn export_csv_stream(
             for p in &items {
                 last_seq = p.seq;
                 let epoch_str = p.epoch.map(|e| e.to_string()).unwrap_or_default();
+                let escaped_key = escape_csv_field(&p.key);
+                let escaped_ts = escape_csv_field(&p.ts);
                 out.push_str(&format!(
                     "{},{},{},{},{},{}\n",
-                    p.seq, epoch_str, p.step, p.key, p.value, p.ts
+                    p.seq, epoch_str, p.step, escaped_key, p.value, escaped_ts
                 ));
             }
 
-            if items.len() < EXPORT_PAGE_SIZE as usize || last_seq >= max_seq {
+            if last_seq >= max_seq {
                 finished = true;
             }
 
@@ -201,16 +223,22 @@ async fn export_parquet(
     state: AppState,
     id: String,
     first_page: heph_contracts::telemetry::MetricPointsResponse,
+    max_parquet_points: usize,
 ) -> Response {
     let filename = format!("job-{id}-metrics.parquet");
     let max_seq = first_page.max_seq;
     let mut all_points = first_page.items;
     let mut last_seq = all_points.last().map(|p| p.seq).unwrap_or(0);
 
-    while all_points.len() < MAX_PARQUET_POINTS
-        && last_seq < max_seq
-        && all_points.len() % (EXPORT_PAGE_SIZE as usize) == 0
-    {
+    if all_points.len() > max_parquet_points {
+        return err(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "export_too_large",
+            "job excede o teto de pontos para exportação em parquet",
+        );
+    }
+
+    while last_seq < max_seq {
         match state
             .manager
             .get_job_metric_points(&id, Some(last_seq), Some(EXPORT_PAGE_SIZE), None)
@@ -223,8 +251,12 @@ async fn export_parquet(
                 for p in resp.items {
                     last_seq = p.seq;
                     all_points.push(p);
-                    if all_points.len() > MAX_PARQUET_POINTS {
-                        break;
+                    if all_points.len() > max_parquet_points {
+                        return err(
+                            StatusCode::PAYLOAD_TOO_LARGE,
+                            "export_too_large",
+                            "job excede o teto de pontos para exportação em parquet",
+                        );
                     }
                 }
             }
@@ -235,13 +267,6 @@ async fn export_parquet(
         }
     }
 
-    if all_points.len() > MAX_PARQUET_POINTS {
-        return err(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "export_too_large",
-            "job excede o teto de 2.000.000 pontos para exportação em parquet",
-        );
-    }
     let bytes = match tokio::task::spawn_blocking(move || build_parquet_bytes(&all_points)).await {
         Ok(Ok(b)) => b,
         Ok(Err(e)) => {

@@ -943,6 +943,8 @@ pub struct MockManager {
             >,
         >,
     >,
+    /// Lista completa de pontos para simular paginação no mock.
+    pub metric_points_all: Option<Vec<heph_contracts::telemetry::MetricPointWithKey>>,
     pub get_telemetry_result: Option<InternalTelemetry>,
     pub create_job_result: Option<CreateJobResponse>,
     pub abort_job_result: Option<AbortJobResponse>,
@@ -1084,6 +1086,7 @@ impl Default for MockManager {
             list_artifacts_result: Some(vec![]),
             metric_points_result: None,
             dynamic_metric_points: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            metric_points_all: None,
             get_telemetry_result: None,
             create_job_result: None,
             abort_job_result: None,
@@ -1182,6 +1185,22 @@ impl ManagerPort for MockManager {
         }
         if let Some(cb) = &*self.dynamic_metric_points.lock().unwrap() {
             return cb(_after_seq);
+        }
+        if let Some(all) = &self.metric_points_all {
+            let after = _after_seq.unwrap_or(0);
+            let limit = _max_points.unwrap_or(i64::MAX) as usize;
+            let filtered: Vec<_> = all
+                .iter()
+                .filter(|p| p.seq > after)
+                .take(limit)
+                .cloned()
+                .collect();
+            let max_seq = all.last().map(|p| p.seq).unwrap_or(0);
+            return Ok(heph_contracts::telemetry::MetricPointsResponse {
+                items: filtered,
+                max_seq,
+                downsampled: false,
+            });
         }
         self.metric_points_result
             .clone()

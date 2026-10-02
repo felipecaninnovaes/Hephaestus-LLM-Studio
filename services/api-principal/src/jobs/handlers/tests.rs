@@ -2893,3 +2893,261 @@ async fn export_job_metrics_handler_200_parquet_roundtrip() {
     assert_eq!(val_col.value(0), 0.5432);
     assert_eq!(val_col.value(1), 0.001);
 }
+
+#[tokio::test]
+async fn export_job_metrics_handler_413_teto_injetavel() {
+    use crate::jobs::handlers::export::{export_job_metrics_with_ceiling, JobExportQuery};
+    use heph_contracts::telemetry::{MetricPointWithKey, MetricPointsResponse};
+
+    let job_id = "550e8400-e29b-41d4-a716-446655440000";
+    let mut mock = MockManager::default();
+    mock.metric_points_result = Some(MetricPointsResponse {
+        items: vec![
+            MetricPointWithKey {
+                seq: 1,
+                epoch: Some(1),
+                step: 1,
+                key: "loss".to_string(),
+                value: 1.0,
+                ts: "2026-10-02T10:00:00Z".to_string(),
+            },
+            MetricPointWithKey {
+                seq: 2,
+                epoch: Some(1),
+                step: 2,
+                key: "loss".to_string(),
+                value: 2.0,
+                ts: "2026-10-02T10:00:01Z".to_string(),
+            },
+            MetricPointWithKey {
+                seq: 3,
+                epoch: Some(1),
+                step: 3,
+                key: "loss".to_string(),
+                value: 3.0,
+                ts: "2026-10-02T10:00:02Z".to_string(),
+            },
+        ],
+        max_seq: 3,
+        downsampled: false,
+    });
+
+    let state = test_state(mock);
+    // Teto = 2 pontos, job tem 3 pontos ⇒ 413
+    let resp = export_job_metrics_with_ceiling(
+        state,
+        job_id.to_string(),
+        JobExportQuery {
+            format: Some("parquet".to_string()),
+        },
+        2,
+    )
+    .await;
+
+    assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn export_job_metrics_handler_job_sem_metricas_zero_linhas() {
+    use crate::jobs::handlers::export::{export_job_metrics, JobExportQuery};
+    use heph_contracts::telemetry::MetricPointsResponse;
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+    let job_id = "550e8400-e29b-41d4-a716-446655440000";
+    let mut mock = MockManager::default();
+    mock.metric_points_result = Some(MetricPointsResponse {
+        items: vec![],
+        max_seq: 0,
+        downsampled: false,
+    });
+    let state = test_state(mock);
+
+    // CSV: só o cabeçalho exato
+    let resp_csv = export_job_metrics(
+        axum::extract::State(state.clone()),
+        Path(job_id.to_string()),
+        Query(JobExportQuery {
+            format: Some("csv".to_string()),
+        }),
+    )
+    .await;
+    assert_eq!(resp_csv.status(), StatusCode::OK);
+    let body_csv = axum::body::to_bytes(resp_csv.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text_csv = String::from_utf8(body_csv.to_vec()).unwrap();
+    let lines: Vec<&str> = text_csv.lines().collect();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0], "seq,epoch,step,key,value,ts");
+
+    // Parquet: arquivo válido lido de volta com 0 linhas
+    let resp_parquet = export_job_metrics(
+        axum::extract::State(state),
+        Path(job_id.to_string()),
+        Query(JobExportQuery {
+            format: Some("parquet".to_string()),
+        }),
+    )
+    .await;
+    assert_eq!(resp_parquet.status(), StatusCode::OK);
+    let body_parquet = axum::body::to_bytes(resp_parquet.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let reader_builder = ParquetRecordBatchReaderBuilder::try_new(body_parquet).unwrap();
+    let mut reader = reader_builder.build().unwrap();
+    let batch = reader.next();
+    // RecordBatch pode ser None ou ter num_rows == 0
+    let num_rows = batch.map(|b| b.unwrap().num_rows()).unwrap_or(0);
+    assert_eq!(num_rows, 0);
+}
+
+#[tokio::test]
+async fn export_job_metrics_handler_escape_rfc4180_and_unicode() {
+    use crate::jobs::handlers::export::{export_job_metrics, JobExportQuery};
+    use heph_contracts::telemetry::{MetricPointWithKey, MetricPointsResponse};
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+    let job_id = "550e8400-e29b-41d4-a716-446655440000";
+    let tricky_key = "loss, \"special\"\nand \r unicode 🎯";
+    let mut mock = MockManager::default();
+    mock.metric_points_result = Some(MetricPointsResponse {
+        items: vec![MetricPointWithKey {
+            seq: 1,
+            epoch: Some(1),
+            step: 10,
+            key: tricky_key.to_string(),
+            value: 0.123,
+            ts: "2026-10-02T10:00:00Z".to_string(),
+        }],
+        max_seq: 1,
+        downsampled: false,
+    });
+    let state = test_state(mock);
+
+    // CSV: checa RFC 4180
+    let resp_csv = export_job_metrics(
+        axum::extract::State(state.clone()),
+        Path(job_id.to_string()),
+        Query(JobExportQuery {
+            format: Some("csv".to_string()),
+        }),
+    )
+    .await;
+    assert_eq!(resp_csv.status(), StatusCode::OK);
+    let body_csv = axum::body::to_bytes(resp_csv.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text_csv = String::from_utf8(body_csv.to_vec()).unwrap();
+    // Aspas duplicadas e envolto em aspas
+    assert!(text_csv.contains("\"loss, \"\"special\"\"\nand \r unicode 🎯\""));
+
+    // Parquet: roundtrip com a string unicode intacta
+    let resp_parquet = export_job_metrics(
+        axum::extract::State(state),
+        Path(job_id.to_string()),
+        Query(JobExportQuery {
+            format: Some("parquet".to_string()),
+        }),
+    )
+    .await;
+    assert_eq!(resp_parquet.status(), StatusCode::OK);
+    let body_parquet = axum::body::to_bytes(resp_parquet.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let reader_builder = ParquetRecordBatchReaderBuilder::try_new(body_parquet).unwrap();
+    let mut reader = reader_builder.build().unwrap();
+    let batch = reader.next().unwrap().unwrap();
+    assert_eq!(batch.num_rows(), 1);
+    use arrow_array::cast::AsArray;
+    let key_col = batch.column(3).as_string::<i32>();
+    assert_eq!(key_col.value(0), tricky_key);
+}
+
+#[tokio::test]
+async fn export_job_metrics_handler_paginacao_pagina_intermediaria_menor() {
+    use crate::jobs::handlers::export::{export_job_metrics, JobExportQuery};
+    use heph_contracts::telemetry::MetricPointWithKey;
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+    let job_id = "550e8400-e29b-41d4-a716-446655440000";
+    let mut mock = MockManager::default();
+    // Simula 5 pontos com seqs: 1, 2, 5, 8, 12 (com buracos)
+    mock.metric_points_all = Some(vec![
+        MetricPointWithKey {
+            seq: 1,
+            epoch: Some(1),
+            step: 1,
+            key: "loss".to_string(),
+            value: 0.1,
+            ts: "2026-10-02T10:00:00Z".to_string(),
+        },
+        MetricPointWithKey {
+            seq: 2,
+            epoch: Some(1),
+            step: 2,
+            key: "loss".to_string(),
+            value: 0.2,
+            ts: "2026-10-02T10:00:01Z".to_string(),
+        },
+        MetricPointWithKey {
+            seq: 5,
+            epoch: Some(1),
+            step: 3,
+            key: "loss".to_string(),
+            value: 0.3,
+            ts: "2026-10-02T10:00:02Z".to_string(),
+        },
+        MetricPointWithKey {
+            seq: 8,
+            epoch: Some(1),
+            step: 4,
+            key: "loss".to_string(),
+            value: 0.4,
+            ts: "2026-10-02T10:00:03Z".to_string(),
+        },
+        MetricPointWithKey {
+            seq: 12,
+            epoch: Some(1),
+            step: 5,
+            key: "loss".to_string(),
+            value: 0.5,
+            ts: "2026-10-02T10:00:04Z".to_string(),
+        },
+    ]);
+    let state = test_state(mock);
+
+    // CSV: lê todos os 5 pontos
+    let resp_csv = export_job_metrics(
+        axum::extract::State(state.clone()),
+        Path(job_id.to_string()),
+        Query(JobExportQuery {
+            format: Some("csv".to_string()),
+        }),
+    )
+    .await;
+    assert_eq!(resp_csv.status(), StatusCode::OK);
+    let body_csv = axum::body::to_bytes(resp_csv.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text_csv = String::from_utf8(body_csv.to_vec()).unwrap();
+    let lines: Vec<&str> = text_csv.lines().collect();
+    assert_eq!(lines.len(), 6); // header + 5 linhas
+
+    // Parquet: lê todos os 5 pontos
+    let resp_parquet = export_job_metrics(
+        axum::extract::State(state),
+        Path(job_id.to_string()),
+        Query(JobExportQuery {
+            format: Some("parquet".to_string()),
+        }),
+    )
+    .await;
+    assert_eq!(resp_parquet.status(), StatusCode::OK);
+    let body_parquet = axum::body::to_bytes(resp_parquet.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let reader_builder = ParquetRecordBatchReaderBuilder::try_new(body_parquet).unwrap();
+    let mut reader = reader_builder.build().unwrap();
+    let batch = reader.next().unwrap().unwrap();
+    assert_eq!(batch.num_rows(), 5);
+}

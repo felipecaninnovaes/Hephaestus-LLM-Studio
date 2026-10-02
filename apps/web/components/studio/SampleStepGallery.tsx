@@ -107,15 +107,17 @@ export function SampleStepGallery({ jobId, steps, onZoom, onDownload }: SampleSt
       </div>
 
       {!compare && (
-        <StepPane
-          jobId={jobId}
-          steps={steps}
-          position={posA}
-          onPositionChange={setPosA}
-          label="Posição"
-          onZoom={onZoom}
-          onDownload={onDownload}
-        />
+        <div className="mx-auto w-full max-w-md">
+          <StepPane
+            jobId={jobId}
+            steps={steps}
+            position={posA}
+            onPositionChange={setPosA}
+            label="Posição"
+            onZoom={onZoom}
+            onDownload={onDownload}
+          />
+        </div>
       )}
 
       {compare && (

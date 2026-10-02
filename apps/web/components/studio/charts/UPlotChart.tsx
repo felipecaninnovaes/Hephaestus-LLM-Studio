@@ -3,12 +3,15 @@
 import { useEffect, useRef } from "react";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
+import { nextXRange, type XRange } from "@/lib/metricMath";
 
 export interface UPlotChartProps {
 	options: uPlot.Options;
 	data: uPlot.AlignedData;
-	/** Força redefinição dos limites do eixo X quando mudam (ex.: troca de modo Step / Época / Tempo) */
-	xRange?: { min: number; max: number };
+	/** Range X completo dos dados atuais (auto-follow quando o usuário não está com zoom) */
+	xRange?: XRange;
+	/** Mudança de valor descarta o zoom (ex.: modo Step / Época / Tempo) */
+	resetKey?: string;
 	className?: string;
 	onInit?: (u: uPlot) => void;
 	onDestroy?: () => void;
@@ -27,6 +30,7 @@ export function UPlotChart({
 	options,
 	data,
 	xRange,
+	resetKey,
 	className,
 	onInit,
 	onDestroy,
@@ -107,21 +111,34 @@ export function UPlotChart({
 		};
 	}, [options]);
 
-	// Atualiza dados de forma imperativa. Quando `xRange` muda (troca de modo
-	// Step / Época / Tempo), o zoom é descartado: auto-range de todas as
-	// escalas e X fixado no range completo dos novos dados.
+	// Atualiza dados de forma imperativa. Troca de `resetKey` ou instância nova
+	// descarta o zoom; com dados novos, o X acompanha o range completo só se o
+	// usuário já estava nele (zoom preservado caso contrário).
+	const syncRef = useRef<{ chart: uPlot | null; key?: string; full: XRange | null }>(
+		{ chart: null, full: null },
+	);
 	useEffect(() => {
 		const chart = chartRef.current;
 		if (!chart) return;
+		const prev = syncRef.current;
+		syncRef.current = { chart, key: resetKey, full: xRange ?? null };
 		if (!xRange) {
+			chart.setData(data, false);
+			return;
+		}
+		const { min, max } = chart.scales.x;
+		const current = min != null && max != null ? { min, max } : null;
+		const reset = prev.chart !== chart || prev.key !== resetKey;
+		const target = nextXRange(current, prev.full, xRange, reset);
+		if (!target) {
 			chart.setData(data, false);
 			return;
 		}
 		chart.batch(() => {
 			chart.setData(data, true);
-			chart.setScale("x", { min: xRange.min, max: xRange.max });
+			chart.setScale("x", target);
 		});
-	}, [data, xRange]);
+	}, [data, xRange, resetKey]);
 
 	// ResizeObserver para manter o gráfico esticado na largura do card
 	useEffect(() => {

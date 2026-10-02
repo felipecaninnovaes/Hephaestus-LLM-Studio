@@ -153,11 +153,84 @@ export interface PivotSeriesResult {
 	seriesKeys: string[];
 	seriesData: Record<string, (number | null)[]>;
 	xIndexMap: { epoch: number | null; step: number; ts: number }[];
+	xRange: { min: number; max: number };
 }
 
 export interface PivotOptions {
 	jobKind?: string;
 	allowedKeys?: string[];
+}
+
+/**
+ * Retorna os limites mínimo e máximo padrão para a escala X a partir dos valores de xValues.
+ */
+export function computeXScaleRange(
+	xValues: number[],
+	mode: XAxisMode = "global_step",
+): { min: number; max: number } {
+	if (xValues.length === 0) return { min: 0, max: 1 };
+	const min = xValues[0];
+	const max = xValues[xValues.length - 1];
+
+	if (min === max) {
+		if (mode === "epoch") return { min: Math.max(0, min - 1), max: max + 1 };
+		if (mode === "ts") return { min: min - 60, max: max + 60 };
+		return { min: Math.max(0, min - 1), max: max + 1 };
+	}
+
+	return { min, max };
+}
+
+export type XRange = { min: number; max: number };
+
+/**
+ * Decide o range X a aplicar quando os dados mudam.
+ * - `reset` (troca de modo / Reset) ou sem range atual → range completo novo.
+ * - Usuário no range completo anterior → acompanha os dados novos (auto-follow).
+ * - Usuário com zoom → `null` (preserva o zoom atual).
+ */
+export function nextXRange(
+	current: XRange | null,
+	prevFull: XRange | null,
+	nextFull: XRange,
+	reset: boolean,
+): XRange | null {
+	if (reset || !current || !prevFull) return nextFull;
+	const eps = Math.max(Math.abs(prevFull.max - prevFull.min), 1) * 1e-9;
+	const atFull =
+		Math.abs(current.min - prevFull.min) <= eps &&
+		Math.abs(current.max - prevFull.max) <= eps;
+	return atFull ? nextFull : null;
+}
+
+/**
+ * Posição fracionária de cada ponto no modo Época: x = epoch + (step − min) /
+ * (max − min + 1), com min/max do step dentro da mesma época. A época N ocupa
+ * [N, N+1); funciona com step global ou reiniciando a cada época. Uma época
+ * com um único step fica em x = N.
+ */
+export function epochStepBounds(
+	points: { epoch: number | null; step: number }[],
+): Map<number, XRange> {
+	const bounds = new Map<number, XRange>();
+	for (const pt of points) {
+		if (pt.epoch == null) continue;
+		const b = bounds.get(pt.epoch);
+		if (!b) bounds.set(pt.epoch, { min: pt.step, max: pt.step });
+		else {
+			if (pt.step < b.min) b.min = pt.step;
+			if (pt.step > b.max) b.max = pt.step;
+		}
+	}
+	return bounds;
+}
+
+export function fractionalEpoch(
+	epoch: number,
+	step: number,
+	bounds: XRange,
+): number {
+	return epoch + (step - bounds.min) / (bounds.max - bounds.min + 1);
 }
 
 /**
@@ -178,6 +251,7 @@ export function pivotMetricPoints(
 			seriesKeys: [],
 			seriesData: {},
 			xIndexMap: [],
+			xRange: { min: 0, max: 1 },
 		};
 	}
 
@@ -205,10 +279,12 @@ export function pivotMetricPoints(
 			seriesKeys: [],
 			seriesData: {},
 			xIndexMap: [],
+			xRange: { min: 0, max: 1 },
 		};
 	}
 
 	const globalStepMap = computeGlobalSteps(validPoints);
+	const epochBounds = xMode === "epoch" ? epochStepBounds(validPoints) : null;
 
 	interface SampleBin {
 		xVal: number;
@@ -230,10 +306,12 @@ export function pivotMetricPoints(
 		let binKey = stepKey;
 		let xVal = 0;
 
-		if (xMode === "epoch") {
-			const ep = pt.epoch ?? 0;
-			xVal = ep;
-			binKey = `${ep}:${pt.step}`;
+		if (epochBounds) {
+			// Pontos sem época ficam fora do modo Época
+			const bounds = pt.epoch == null ? undefined : epochBounds.get(pt.epoch);
+			if (pt.epoch == null || !bounds) continue;
+			xVal = fractionalEpoch(pt.epoch, pt.step, bounds);
+			binKey = stepKey;
 		} else if (xMode === "ts") {
 			xVal = tsSec;
 			binKey = `${tsSec}:${pt.step}`;
@@ -305,5 +383,6 @@ export function pivotMetricPoints(
 		seriesKeys: filteredKeys,
 		seriesData,
 		xIndexMap,
+		xRange: computeXScaleRange(xValues, xMode),
 	};
 }

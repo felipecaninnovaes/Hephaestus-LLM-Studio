@@ -251,10 +251,13 @@ export function ConvergenceChart({
 				stroke: "#756d82",
 				grid: { stroke: "rgba(131, 80, 242, 0.08)", width: 1 },
 				ticks: { stroke: "#3e3749", width: 1 },
-				// Espaço mínimo entre ticks por modo: rótulos de hora são largos
-				space: xMode === "ts" ? 110 : 50,
-				// Épocas são inteiras: só incrementos inteiros
-				...(xMode === "epoch" ? { incrs: [1, 2, 5, 10, 20, 50, 100, 200, 500] } : {}),
+				// Espaço mínimo entre ticks por modo: rótulos de hora são largos;
+				// em Época garante ticks inteiros no range completo
+				space: xMode === "ts" ? 110 : xMode === "epoch" ? 120 : 50,
+				// Época: inteiros no range completo; frações só quando o zoom pede
+				...(xMode === "epoch"
+					? { incrs: [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500] }
+					: {}),
 				values: (_self, splits) => {
 					return splits.map((val) => {
 						if (xMode === "ts") {
@@ -264,6 +267,9 @@ export function ConvergenceChart({
 								minute: "2-digit",
 								second: "2-digit",
 							});
+						}
+						if (xMode === "epoch" && !Number.isInteger(val)) {
+							return `${Number(val.toFixed(2))}`;
 						}
 						return `${Math.round(val)}`;
 					});
@@ -561,6 +567,7 @@ export function ConvergenceChart({
 					options={uPlotOptions}
 					data={uPlotData}
 					xRange={pivoted.xRange}
+					resetKey={xMode}
 					onInit={(u) => {
 						uPlotInstanceRef.current = u;
 					}}

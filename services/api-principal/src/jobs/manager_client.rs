@@ -437,11 +437,20 @@ impl ManagerPort for HttpManager {
                 return Err(ManagerError::NotFound);
             }
             if status == reqwest::StatusCode::BAD_REQUEST {
-                let msg = resp
+                let text = resp
                     .text()
                     .await
                     .unwrap_or_else(|_| "invalid request".into());
-                return Err(ManagerError::InvalidRequest(msg));
+                let code_or_msg = if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text)
+                {
+                    val.get("code")
+                        .and_then(|c| c.as_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or(text)
+                } else {
+                    text
+                };
+                return Err(ManagerError::InvalidRequest(code_or_msg));
             }
             if !status.is_success() {
                 last_err = ManagerError::Unavailable(format!("manager status: {status}"));

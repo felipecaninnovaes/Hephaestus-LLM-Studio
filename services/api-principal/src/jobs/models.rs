@@ -59,8 +59,40 @@ pub struct YoloJobRequest {
     /// UUID de orquestrador preferencial (ADR-0015 D2).
     /// Validação: string não-UUID ⇒ 400 `invalid_request`.
     pub orchestrator_id: Option<String>,
+    /// Identificador opcional da GPU (UUID `GPU-...` ou índice `0..99`).
+    pub gpu_device: Option<String>,
     /// Nome customizado opcional do modelo gerado (ADR-0022 D1).
     pub output_name: Option<String>,
+}
+
+/// Valida `gpuDevice` opcional e seu vínculo com `orchestratorId` (fatia B2).
+/// Regras:
+/// - Sem `orchestratorId` e com `gpuDevice` => Err("gpu_device_requires_orchestrator")
+/// - Formato inválido (>64 chars, ou não bate com ^GPU-[0-9a-fA-F-]{8,60}$ ou ^[0-9]{1,2}$) => Err("invalid_gpu_device")
+pub fn validate_gpu_device(
+    gpu_device: Option<&str>,
+    orchestrator_id: Option<&str>,
+) -> Result<(), &'static str> {
+    if let Some(dev) = gpu_device {
+        if orchestrator_id.is_none() {
+            return Err("gpu_device_requires_orchestrator");
+        }
+        if dev.is_empty() || dev.len() > 64 {
+            return Err("invalid_gpu_device");
+        }
+        let is_index = dev.len() <= 2 && dev.chars().all(|c| c.is_ascii_digit());
+        let is_uuid = if let Some(rest) = dev.strip_prefix("GPU-") {
+            rest.len() >= 8
+                && rest.len() <= 60
+                && rest.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+        } else {
+            false
+        };
+        if !is_index && !is_uuid {
+            return Err("invalid_gpu_device");
+        }
+    }
+    Ok(())
 }
 
 /// Valida outputName customizado (ADR-0022 D1).
@@ -134,6 +166,8 @@ pub struct AutotrackerJobRequest {
     /// UUID de orquestrador preferencial (ADR-0015 D2).
     /// Validação: string não-UUID ⇒ 400 `invalid_request`.
     pub orchestrator_id: Option<String>,
+    /// Identificador opcional da GPU (UUID `GPU-...` ou índice `0..99`).
+    pub gpu_device: Option<String>,
 }
 
 fn default_autotrack_model() -> String {
@@ -171,6 +205,11 @@ pub fn validate_autotrack_request(
         if uuid::Uuid::parse_str(oid).is_err() {
             return Err("orchestratorId must be a valid UUID".to_string());
         }
+    }
+    if let Err(code) =
+        validate_gpu_device(req.gpu_device.as_deref(), req.orchestrator_id.as_deref())
+    {
+        return Err(code.to_string());
     }
     Ok(req)
 }
@@ -498,6 +537,11 @@ pub fn validate_yolo_request(req: YoloJobRequest) -> Result<YoloJobRequest, Stri
     if let Some(ref out_name) = req.output_name {
         validate_output_name(out_name)?;
     }
+    if let Err(code) =
+        validate_gpu_device(req.gpu_device.as_deref(), req.orchestrator_id.as_deref())
+    {
+        return Err(code.to_string());
+    }
     Ok(req)
 }
 
@@ -582,6 +626,8 @@ pub struct AutolabelJobRequest {
     #[serde(default)]
     pub orchestrator_id: Option<String>,
     #[serde(default)]
+    pub gpu_device: Option<String>,
+    #[serde(default)]
     pub reasoning_effort: Option<String>,
     #[serde(default)]
     pub filter_class_id: Option<String>,
@@ -665,6 +711,11 @@ pub fn validate_autolabel_request(
                 return Err(format!("imageId '{id}' must be a valid UUID"));
             }
         }
+    }
+    if let Err(code) =
+        validate_gpu_device(req.gpu_device.as_deref(), req.orchestrator_id.as_deref())
+    {
+        return Err(code.to_string());
     }
     Ok(req)
 }
@@ -799,6 +850,8 @@ pub struct DiffusionJobRequest {
     pub weights: Option<String>,
     #[serde(default)]
     pub orchestrator_id: Option<String>,
+    #[serde(default)]
+    pub gpu_device: Option<String>,
     #[serde(default)]
     pub sample_prompt: Option<String>,
     #[serde(default = "default_diffusion_sample_interval")]
@@ -1041,6 +1094,11 @@ pub fn validate_diffusion_request(
             }
         }
     }
+    if let Err(code) =
+        validate_gpu_device(req.gpu_device.as_deref(), req.orchestrator_id.as_deref())
+    {
+        return Err(code.to_string());
+    }
     Ok(req)
 }
 
@@ -1232,6 +1290,8 @@ pub struct DiffusionGenerateJobRequest {
     #[serde(default = "default_diffusion_lora_scale")]
     pub lora_scale: f64,
     pub orchestrator_id: Option<String>,
+    #[serde(default)]
+    pub gpu_device: Option<String>,
     /// Batch size (1..8, default 1 — D2).
     #[serde(default = "default_diffusion_generate_batch_size")]
     pub batch_size: i64,
@@ -1521,6 +1581,12 @@ pub fn validate_diffusion_generate_request(
                 up.scale
             ));
         }
+    }
+
+    if let Err(code) =
+        validate_gpu_device(req.gpu_device.as_deref(), req.orchestrator_id.as_deref())
+    {
+        return Err(code.to_string());
     }
 
     Ok(req)
@@ -2517,6 +2583,80 @@ mod tests {
         assert!(yaml.contains("engine: \"yolo\""));
         assert!(yaml.contains("mode: \"predict\""));
         assert!(yaml.contains("weights_path: \"{weights_path}\""));
+    }
+
+    // -----------------------------------------------------------------------
+    // Testes de validação B2: gpuDevice + orchestratorId
+    // -----------------------------------------------------------------------
+    #[test]
+    fn b2_gpu_device_requires_orchestrator_in_all_5_submits() {
+        // Yolo
+        let raw = r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001","gpuDevice":"0"}"#;
+        let req: YoloJobRequest = serde_json::from_str(raw).unwrap();
+        assert_eq!(
+            validate_yolo_request(req).unwrap_err(),
+            "gpu_device_requires_orchestrator"
+        );
+
+        // Autotracker
+        let raw = r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001","gpuDevice":"0"}"#;
+        let req: AutotrackerJobRequest = serde_json::from_str(raw).unwrap();
+        assert_eq!(
+            validate_autotrack_request(req).unwrap_err(),
+            "gpu_device_requires_orchestrator"
+        );
+
+        // Autolabel
+        let raw = r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001","gpuDevice":"0"}"#;
+        let req: AutolabelJobRequest = serde_json::from_str(raw).unwrap();
+        assert_eq!(
+            validate_autolabel_request(req).unwrap_err(),
+            "gpu_device_requires_orchestrator"
+        );
+
+        // Diffusion
+        let raw = r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001","gpuDevice":"0"}"#;
+        let req: DiffusionJobRequest = serde_json::from_str(raw).unwrap();
+        assert_eq!(
+            validate_diffusion_request(req).unwrap_err(),
+            "gpu_device_requires_orchestrator"
+        );
+
+        // DiffusionGenerate
+        let raw = r#"{"prompt":"a test","gpuDevice":"0"}"#;
+        let req: DiffusionGenerateJobRequest = serde_json::from_str(raw).unwrap();
+        assert_eq!(
+            validate_diffusion_generate_request(req).unwrap_err(),
+            "gpu_device_requires_orchestrator"
+        );
+    }
+
+    #[test]
+    fn b2_gpu_device_format_validation() {
+        let valid_oid = "550e8400-e29b-41d4-a716-446655440002";
+        // Válidos: índice ("0", "1", "99") ou UUID ("GPU-1c1e01c2-4192-8f38-1a8a-33fb78b06f17")
+        for dev in [
+            "0",
+            "1",
+            "99",
+            "GPU-1c1e01c2-4192-8f38-1a8a-33fb78b06f17",
+            "GPU-c83cc056-07f7-d31e-cc98-7486ddac0296",
+        ] {
+            let raw = format!(
+                r#"{{"datasetId":"550e8400-e29b-41d4-a716-446655440001","orchestratorId":"{valid_oid}","gpuDevice":"{dev}"}}"#
+            );
+            let req: YoloJobRequest = serde_json::from_str(&raw).unwrap();
+            assert!(validate_yolo_request(req).is_ok(), "dev={dev}");
+        }
+
+        // Inválidos: >64 chars, caracteres especiais, UUID sem prefixo GPU-, etc.
+        for dev in ["", "abc", "100", "gpu-0", "GPU-short", "GPU-!@#$%", "GPU-1c1e01c2-4192-8f38-1a8a-33fb78b06f17-very-long-exceeding-sixty-four-characters-limit-which-is-invalid"] {
+            let raw = format!(
+                r#"{{"datasetId":"550e8400-e29b-41d4-a716-446655440001","orchestratorId":"{valid_oid}","gpuDevice":"{dev}"}}"#
+            );
+            let req: YoloJobRequest = serde_json::from_str(&raw).unwrap();
+            assert_eq!(validate_yolo_request(req).unwrap_err(), "invalid_gpu_device", "dev={dev}");
+        }
     }
 
     #[test]

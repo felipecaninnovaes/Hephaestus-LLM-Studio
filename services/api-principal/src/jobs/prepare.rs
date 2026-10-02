@@ -320,6 +320,34 @@ pub async fn accept_job_preparing(
     let created = match state.manager.create_job(&manager_body).await {
         Ok(r) => r,
         Err(ManagerError::NotFound) => return not_found(),
+        Err(ManagerError::InvalidRequest(ref msg)) if msg == "unknown_gpu_device" => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "unknown_gpu_device",
+                "unknown gpu device",
+            );
+        }
+        Err(ManagerError::InvalidRequest(ref msg)) if msg == "insufficient_gpu_vram" => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "insufficient_gpu_vram",
+                "insufficient gpu vram",
+            );
+        }
+        Err(ManagerError::InvalidRequest(ref msg)) if msg == "invalid_gpu_device" => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "invalid_gpu_device",
+                "invalid gpu device",
+            );
+        }
+        Err(ManagerError::InvalidRequest(ref msg)) if msg == "gpu_device_requires_orchestrator" => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "gpu_device_requires_orchestrator",
+                "gpu device requires orchestrator",
+            );
+        }
         Err(ManagerError::InvalidRequest(_)) => return invalid_request(),
         // Sem pacote no request, não há nada a compensar (D4).
         Err(ManagerError::Unavailable(_)) => return queue_unavailable(),

@@ -6075,6 +6075,7 @@ fn setup_autotracker_mock(
         params: None,
         phase: None,
         message: None,
+        gpu_device: None,
     };
 
     let mut mock = api_principal::jobs::manager_client::MockManager::default();
@@ -6620,6 +6621,7 @@ async fn t5_autotrack_08_dataset_null_409() {
         params: None,
         phase: None,
         message: None,
+        gpu_device: None,
     };
     let mut mock = api_principal::jobs::manager_client::MockManager::default();
     mock.jobs_by_id.insert(job_id.clone(), job);
@@ -6671,6 +6673,7 @@ async fn t5_autotrack_09_job_not_done() {
         params: None,
         phase: None,
         message: None,
+        gpu_device: None,
     };
     let mut mock = api_principal::jobs::manager_client::MockManager::default();
     mock.jobs_by_id.insert(job_id.clone(), job);
@@ -7189,6 +7192,7 @@ fn setup_autolabel_mock(
         params: None,
         phase: None,
         message: None,
+        gpu_device: None,
     };
 
     let mut mock = api_principal::jobs::manager_client::MockManager::default();
@@ -7469,6 +7473,7 @@ fn preparing_internal_job(
         params: None,
         phase: None,
         message: None,
+        gpu_device: None,
     }
 }
 

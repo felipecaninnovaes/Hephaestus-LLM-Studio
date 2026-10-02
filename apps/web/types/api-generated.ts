@@ -3110,6 +3110,19 @@ export interface components {
             } | null;
             /** @description Diagnósticos adicionais de treinamento (fatia 3b/3c). */
             diagnostics?: components["schemas"]["TrainingDiagnostics"] | null;
+            /** @description Métricas de sistema do processo/container durante o treino (fatia 3a). */
+            systemMetrics?: components["schemas"]["SystemMetrics"] | null;
+        };
+        /** @description Métricas de sistema coletadas dentro do container do engine (fatia 3a). */
+        SystemMetrics: {
+            /** @description Uso de CPU pelo processo do treino (%). */
+            cpuPct?: number | null;
+            /** @description RAM usada pelo processo/container em GB. */
+            ramUsedGb?: number | null;
+            /** @description Taxa de leitura de disco em MB/s. */
+            diskReadMbS?: number | null;
+            /** @description Taxa de escrita em disco em MB/s. */
+            diskWriteMbS?: number | null;
         };
         /** @description Diagnósticos de treino emitidos pelo engine (fatia 3b/3c). */
         TrainingDiagnostics: {
@@ -3307,6 +3320,31 @@ export interface components {
             /** @description true quando não há mais linhas no artefato. */
             eof: boolean;
         };
+        /** @description Telemetria detalhada de uma GPU individual (nvidia-smi). */
+        GpuDeviceTelemetry: {
+            /** @description Índice da GPU no host (nvidia-smi). */
+            index: number;
+            /** @description Identificador canônico da GPU (GPU-...). */
+            uuid: string;
+            /** @description Nome do modelo da GPU. */
+            name: string;
+            /**
+             * Format: int64
+             * @description VRAM total da GPU em MiB.
+             */
+            vramTotal: number;
+            /**
+             * Format: int64
+             * @description VRAM usada da GPU em MiB.
+             */
+            vramUsed: number;
+            /** @description Consumo elétrico atual em Watts. */
+            powerWatts?: number | null;
+            /** @description Percentual de utilização da GPU (0..100). */
+            gpuUtilizationPct?: number | null;
+            /** @description Temperatura atual da GPU em graus Celsius. */
+            temperatureC?: number | null;
+        };
         /** @description Telemetria do sistema (ADR-0007 D9). */
         Telemetry: {
             /** @description true se VRAM é medível (false no mock sem GPU). */
@@ -3323,6 +3361,8 @@ export interface components {
             ramTotal?: number | null;
             /** @description Lista de GPUs detectadas (vazia no mock). */
             gpus: string[];
+            /** @description Lista de GPUs individuais com telemetria detalhada. */
+            gpuDevices?: components["schemas"]["GpuDeviceTelemetry"][];
             /** @description Número de jobs ativos (preparing/running). */
             jobsActive: number;
         };
@@ -3377,8 +3417,14 @@ export interface components {
             vramTotalGb?: number | null;
             /** @description Lista de GPUs detectadas (vazia no mock). */
             gpus?: string[];
+            /** @description Lista de GPUs individuais com telemetria detalhada. */
+            gpuDevices?: components["schemas"]["GpuDeviceTelemetry"][];
             /** @description Número de jobs ativos (preparing/running). */
             jobsActive?: number;
+            /** @description Capacidade total do filesystem do workdir do orquestrador em GB. */
+            diskTotalGb?: number | null;
+            /** @description Espaço em disco usado no filesystem do workdir do orquestrador em GB. */
+            diskUsedGb?: number | null;
         };
         /** @description Lista de orquestradores (ADR-0009 D1). */
         OrchestratorList: {

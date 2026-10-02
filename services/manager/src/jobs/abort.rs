@@ -26,30 +26,54 @@ pub async fn abort_job(
         "done" | "failed" | "cancelled" => Err(ManagerError::NotAbortable),
 
         "queued" | "dispatched" => {
+            let mut tx = pool
+                .begin()
+                .await
+                .map_err(|e| ManagerError::Internal(format!("begin abort tx: {e}")))?;
             sqlx::query("UPDATE jobs SET status = 'cancelled', queue_reason = NULL WHERE id = $1")
                 .bind(id)
-                .execute(pool)
+                .execute(&mut *tx)
                 .await
                 .map_err(|e| ManagerError::Internal(format!("cancel job: {e}")))?;
+            crate::notify::notify_status_change(&mut *tx, id).await?;
+            tx.commit()
+                .await
+                .map_err(|e| ManagerError::Internal(format!("commit abort tx: {e}")))?;
             heph_contracts::request_context::forget_for_job(&id.to_string());
             Ok("cancelled".to_string())
         }
 
         "preparing" => {
+            let mut tx = pool
+                .begin()
+                .await
+                .map_err(|e| ManagerError::Internal(format!("begin abort tx: {e}")))?;
             sqlx::query("UPDATE jobs SET status = 'cancelling' WHERE id = $1")
                 .bind(id)
-                .execute(pool)
+                .execute(&mut *tx)
                 .await
                 .map_err(|e| ManagerError::Internal(format!("set cancelling: {e}")))?;
+            crate::notify::notify_status_change(&mut *tx, id).await?;
+            tx.commit()
+                .await
+                .map_err(|e| ManagerError::Internal(format!("commit abort tx: {e}")))?;
             Ok("cancelling".to_string())
         }
 
         "running" => {
+            let mut tx = pool
+                .begin()
+                .await
+                .map_err(|e| ManagerError::Internal(format!("begin abort tx: {e}")))?;
             sqlx::query("UPDATE jobs SET status = 'cancelling' WHERE id = $1")
                 .bind(id)
-                .execute(pool)
+                .execute(&mut *tx)
                 .await
                 .map_err(|e| ManagerError::Internal(format!("set cancelling: {e}")))?;
+            crate::notify::notify_status_change(&mut *tx, id).await?;
+            tx.commit()
+                .await
+                .map_err(|e| ManagerError::Internal(format!("commit abort tx: {e}")))?;
 
             // Notifica orquestrador com retry (até 3 tentativas com backoff).
             if let Some(orch_id) = orchestrator_id {

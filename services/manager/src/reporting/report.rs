@@ -8,9 +8,10 @@ use super::artifacts::{
     ReportRequest,
 };
 use super::generations::hook_generations_on_done;
-use super::metrics::{insert_metrics_points, insert_metrics_points_conn};
+use super::metrics::insert_metrics_points_conn;
 use super::models::hook_models_on_done;
 use crate::error::ManagerError;
+use crate::notify::notify_status_change;
 
 /// Processa um report do orquestrador.
 ///
@@ -74,6 +75,11 @@ pub async fn report_job(
             Ok(())
         }
         "preparing" | "running" => {
+            let mut tx = pool
+                .begin()
+                .await
+                .map_err(|e| ManagerError::Internal(format!("begin running/preparing tx: {e}")))?;
+
             sqlx::query(
                 "UPDATE jobs SET status = $2, progress = COALESCE($3, progress), epoch = COALESCE($4, epoch), step = COALESCE($5, step), phase = COALESCE($6, phase), message = COALESCE($7, message) WHERE id = $1",
             )
@@ -84,13 +90,19 @@ pub async fn report_job(
             .bind(report.step)
             .bind(&report.phase)
             .bind(&report.message)
-            .execute(pool)
+            .execute(&mut *tx)
             .await
             .map_err(|e| ManagerError::Internal(format!("update job status: {e}")))?;
 
+            notify_status_change(&mut *tx, id).await?;
+
             if let Some(metrics) = &report.metrics {
-                insert_metrics_points(pool, id, metrics).await?;
+                insert_metrics_points_conn(&mut tx, id, metrics).await?;
             }
+
+            tx.commit()
+                .await
+                .map_err(|e| ManagerError::Internal(format!("commit running/preparing tx: {e}")))?;
 
             if let Some(artifacts) = &report.artifacts {
                 save_intermediate_artifacts(pool, id, artifacts).await?;
@@ -138,6 +150,7 @@ pub async fn report_job(
                     .execute(&mut *tx)
                     .await
                     .map_err(|e| ManagerError::Internal(format!("set failed no_artifacts: {e}")))?;
+                    notify_status_change(&mut *tx, id).await?;
                     tx.commit().await.map_err(|e| {
                         ManagerError::Internal(format!("commit failed no_artifacts tx: {e}"))
                     })?;
@@ -173,6 +186,8 @@ pub async fn report_job(
             .await
             .map_err(|e| ManagerError::Internal(format!("set done: {e}")))?;
 
+            notify_status_change(&mut *tx, id).await?;
+
             tx.commit()
                 .await
                 .map_err(|e| ManagerError::Internal(format!("commit done tx: {e}")))?;
@@ -181,11 +196,16 @@ pub async fn report_job(
         }
 
         "failed" => {
+            let mut tx = pool
+                .begin()
+                .await
+                .map_err(|e| ManagerError::Internal(format!("begin report failed tx: {e}")))?;
+
             if let Some(err_msg) = &report.error {
                 sqlx::query("UPDATE jobs SET params = params || $2::jsonb WHERE id = $1")
                     .bind(id)
                     .bind(serde_json::json!({"error": err_msg}))
-                    .execute(pool)
+                    .execute(&mut *tx)
                     .await
                     .map_err(|e| ManagerError::Internal(format!("merge error: {e}")))?;
             }
@@ -194,19 +214,30 @@ pub async fn report_job(
                 .bind(id)
                 .bind(&report.phase)
                 .bind(&report.message)
-                .execute(pool)
+                .execute(&mut *tx)
                 .await
                 .map_err(|e| ManagerError::Internal(format!("set failed: {e}")))?;
+
+            notify_status_change(&mut *tx, id).await?;
+
+            tx.commit()
+                .await
+                .map_err(|e| ManagerError::Internal(format!("commit report failed tx: {e}")))?;
 
             Ok(())
         }
 
         "cancelled" => {
+            let mut tx = pool
+                .begin()
+                .await
+                .map_err(|e| ManagerError::Internal(format!("begin report cancelled tx: {e}")))?;
+
             if let Some(err_msg) = &report.error {
                 sqlx::query("UPDATE jobs SET params = params || $2::jsonb WHERE id = $1")
                     .bind(id)
                     .bind(serde_json::json!({"error": err_msg}))
-                    .execute(pool)
+                    .execute(&mut *tx)
                     .await
                     .map_err(|e| ManagerError::Internal(format!("merge error: {e}")))?;
             }
@@ -215,9 +246,15 @@ pub async fn report_job(
                 .bind(id)
                 .bind(&report.phase)
                 .bind(&report.message)
-                .execute(pool)
+                .execute(&mut *tx)
                 .await
                 .map_err(|e| ManagerError::Internal(format!("set cancelled: {e}")))?;
+
+            notify_status_change(&mut *tx, id).await?;
+
+            tx.commit()
+                .await
+                .map_err(|e| ManagerError::Internal(format!("commit report cancelled tx: {e}")))?;
 
             Ok(())
         }

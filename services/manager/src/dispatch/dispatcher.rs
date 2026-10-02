@@ -124,6 +124,8 @@ pub async fn dispatch_next(
         .map_err(|e| ManagerError::Internal(format!("set dispatched: {e}")))?;
     }
 
+    crate::notify::notify_status_change(&mut *tx, job_id).await?;
+
     // Invariante #4: tx.commit() ANTES do POST HTTP ao orquestrador.
     tx.commit()
         .await
@@ -157,13 +159,22 @@ pub async fn dispatch_next(
         .await
     {
         tracing::warn!("dispatch failed for job {job_id}: {e}");
+        let mut revert_tx = pool
+            .begin()
+            .await
+            .map_err(|e2| ManagerError::Internal(format!("begin revert tx: {e2}")))?;
         sqlx::query(
             "UPDATE jobs SET status = 'queued', queue_reason = 'waiting_slot', orchestrator_id = NULL WHERE id = $1",
         )
         .bind(job_id)
-        .execute(pool)
+        .execute(&mut *revert_tx)
         .await
         .map_err(|e2| ManagerError::Internal(format!("revert job: {e2}")))?;
+        crate::notify::notify_status_change(&mut *revert_tx, job_id).await?;
+        revert_tx
+            .commit()
+            .await
+            .map_err(|e2| ManagerError::Internal(format!("commit revert tx: {e2}")))?;
     }
 
     Ok(true)

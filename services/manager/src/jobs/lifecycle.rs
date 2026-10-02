@@ -178,6 +178,10 @@ pub async fn prepare_complete(
         "md5_zip": req.package_ref.md5_zip,
         "bytes": req.package_ref.bytes,
     });
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| ManagerError::Internal(format!("begin prepare complete tx: {e}")))?;
     let result = sqlx::query(
         "UPDATE jobs SET status = 'queued', queue_reason = NULL, \
           params = params || jsonb_build_object('package_ref', $2::jsonb, 'dataset_version_id', $3) \
@@ -186,11 +190,14 @@ pub async fn prepare_complete(
     .bind(id)
     .bind(&package_json)
     .bind(dv_id.to_string())
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .map_err(|e| ManagerError::Internal(format!("prepare complete: {e}")))?;
 
     if result.rows_affected() == 0 {
+        tx.rollback()
+            .await
+            .map_err(|e| ManagerError::Internal(format!("rollback prepare complete tx: {e}")))?;
         let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM jobs WHERE id = $1)")
             .bind(id)
             .fetch_one(pool)
@@ -202,11 +209,17 @@ pub async fn prepare_complete(
         return Err(ManagerError::Conflict("job_not_preparing".into()));
     }
 
+    crate::notify::notify_status_change(&mut *tx, id).await?;
+
     sqlx::query("UPDATE dataset_versions SET created_at = now() WHERE id = $1")
         .bind(dv_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| ManagerError::Internal(format!("touch dataset version: {e}")))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| ManagerError::Internal(format!("commit prepare complete tx: {e}")))?;
     Ok(())
 }
 
@@ -227,6 +240,10 @@ pub async fn prepare_fail(
         ));
     }
     let error = format!("prepare_failed:{}:{}", req.code, req.message);
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| ManagerError::Internal(format!("begin prepare fail tx: {e}")))?;
     let result = sqlx::query(
         "UPDATE jobs SET status = 'failed', finished_at = now(), \
           params = params || jsonb_build_object('error', $2) \
@@ -234,11 +251,14 @@ pub async fn prepare_fail(
     )
     .bind(id)
     .bind(&error)
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .map_err(|e| ManagerError::Internal(format!("prepare fail: {e}")))?;
 
     if result.rows_affected() == 0 {
+        tx.rollback()
+            .await
+            .map_err(|e| ManagerError::Internal(format!("rollback prepare fail tx: {e}")))?;
         let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM jobs WHERE id = $1)")
             .bind(id)
             .fetch_one(pool)
@@ -249,6 +269,10 @@ pub async fn prepare_fail(
         }
         return Err(ManagerError::Conflict("job_not_preparing".into()));
     }
+    crate::notify::notify_status_change(&mut *tx, id).await?;
+    tx.commit()
+        .await
+        .map_err(|e| ManagerError::Internal(format!("commit prepare fail tx: {e}")))?;
     heph_contracts::request_context::forget_for_job(&id.to_string());
     Ok(())
 }

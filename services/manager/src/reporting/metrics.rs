@@ -129,6 +129,10 @@ pub async fn insert_metrics_points_conn(
         .map_err(|e| ManagerError::Internal(format!("insert metric point: {e}")))?;
     }
 
+    // pg_notify no canal job_events (fatia 1b) — dentro da MESMA transação
+    // (visível ao listener só após commit; rollback descarta o notice).
+    crate::notify::notify_metrics(&mut *conn, id, ret_seq).await?;
+
     Ok(())
 }
 

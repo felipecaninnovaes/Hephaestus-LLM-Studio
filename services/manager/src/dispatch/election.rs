@@ -1,4 +1,36 @@
 //! Eleição e seleção de nós orquestradores elegíveis com locking FOR UPDATE OF o (MM-14).
+fn select_best_gpu_for_devices(
+    devices: &[heph_contracts::GpuDeviceTelemetry],
+    required_gb: Option<i32>,
+) -> Option<String> {
+    if devices.is_empty() {
+        return None;
+    }
+    let chosen = match required_gb {
+        Some(req_gb) => {
+            let req_mib = (req_gb as i64) * 1024;
+            let mut valid: Vec<_> = devices.iter().filter(|d| d.vram_total >= req_mib).collect();
+            valid.sort_by(|a, b| {
+                a.vram_total
+                    .cmp(&b.vram_total)
+                    .then_with(|| a.vram_used.cmp(&b.vram_used))
+                    .then_with(|| a.index.cmp(&b.index))
+            });
+            valid.first().cloned()
+        }
+        None => {
+            let mut valid: Vec<_> = devices.iter().collect();
+            valid.sort_by(|a, b| {
+                b.vram_total
+                    .cmp(&a.vram_total)
+                    .then_with(|| a.vram_used.cmp(&b.vram_used))
+                    .then_with(|| a.index.cmp(&b.index))
+            });
+            valid.first().cloned()
+        }
+    };
+    chosen.map(|d| d.uuid.clone())
+}
 
 use sqlx::PgConnection;
 use uuid::Uuid;
@@ -35,8 +67,8 @@ pub async fn select_eligible_orchestrator(
 
     // 1. Tenta nó indicado pelo orchestrator_hint se presente.
     if let Some(hint_id) = hint {
-        let hinted: Option<(Uuid, String)> = sqlx::query_as(
-            "SELECT o.id, o.endpoint FROM orchestrators o \
+        let hinted: Option<(Uuid, String, Option<serde_json::Value>)> = sqlx::query_as(
+            "SELECT o.id, o.endpoint, o.gpu_devices FROM orchestrators o \
              WHERE o.id = $1 AND o.status = 'online' \
                AND NOT EXISTS (SELECT 1 FROM jobs j \
                                WHERE j.orchestrator_id = o.id \
@@ -50,8 +82,23 @@ pub async fn select_eligible_orchestrator(
         .await
         .map_err(|e| ManagerError::Internal(format!("find hinted orchestrator: {e}")))?;
 
-        if let Some(o) = hinted {
-            selected_orch = Some(o);
+        if let Some((id, endpoint, db_gpu_devices)) = hinted {
+            selected_orch = Some((id, endpoint));
+            // Se gpu manual não foi fixada no submit (nó escolhido, GPU automática),
+            // aplica a mesma regra automática para escolher a melhor GPU deste nó:
+            if selected_gpu.is_none() {
+                let cache_devices = {
+                    let c = telemetry_cache.read().await;
+                    c.get(&id).map(|s| s.gpu_devices.clone())
+                };
+                let devices = match cache_devices {
+                    Some(devs) if !devs.is_empty() => devs,
+                    _ => db_gpu_devices
+                        .and_then(|val| serde_json::from_value(val).ok())
+                        .unwrap_or_default(),
+                };
+                selected_gpu = select_best_gpu_for_devices(&devices, required_gb);
+            }
         } else if manual_gpu_device.is_some() {
             // Decisão 4: Para GPU manual, o nó do hint precisa estar elegível; se não, o job espera (não cai em fallback para outro nó)
             let reason = if required_gb.is_some() {
@@ -127,38 +174,15 @@ pub async fn select_eligible_orchestrator(
                         name,
                     });
                 } else {
-                    let chosen = match required_gb {
-                        Some(req_gb) => {
-                            let req_mib = (req_gb as i64) * 1024;
-                            let mut valid: Vec<_> =
-                                devices.iter().filter(|d| d.vram_total >= req_mib).collect();
-                            valid.sort_by(|a, b| {
-                                a.vram_total
-                                    .cmp(&b.vram_total)
-                                    .then_with(|| a.vram_used.cmp(&b.vram_used))
-                                    .then_with(|| a.index.cmp(&b.index))
-                            });
-                            valid.first().cloned()
-                        }
-                        None => {
-                            let mut valid: Vec<_> = devices.iter().collect();
-                            valid.sort_by(|a, b| {
-                                b.vram_total
-                                    .cmp(&a.vram_total)
-                                    .then_with(|| a.vram_used.cmp(&b.vram_used))
-                                    .then_with(|| a.index.cmp(&b.index))
-                            });
-                            valid.first().cloned()
-                        }
-                    };
-
-                    if let Some(gpu) = chosen {
+                    let chosen_uuid = select_best_gpu_for_devices(&devices, required_gb);
+                    if let Some(ref uuid) = chosen_uuid {
+                        let dev = devices.iter().find(|d| d.uuid == *uuid).unwrap();
                         candidates.push(NodeCandidate {
                             id: node_id,
                             endpoint,
-                            chosen_gpu: Some(gpu.uuid.clone()),
-                            gpu_vram_total: gpu.vram_total,
-                            gpu_vram_used: gpu.vram_used,
+                            chosen_gpu: chosen_uuid,
+                            gpu_vram_total: dev.vram_total,
+                            gpu_vram_used: dev.vram_used,
                             has_gpu_devices: true,
                             node_vram_gb,
                             name,

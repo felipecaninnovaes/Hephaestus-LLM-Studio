@@ -9489,7 +9489,7 @@ async fn b2_election_automatic_chooses_smallest_fitting_gpu_and_fallback() {
     .unwrap();
     let j4_id: uuid::Uuid = resp4.job_id.parse().unwrap();
 
-    let mut orch = FakeOrchestratorClient::new();
+    let orch = FakeOrchestratorClient::new();
     let disp4 =
         manager::dispatch_next_with_cache(&p, &orch, "docker", "/data", "img", &vram_table, &cache)
             .await
@@ -9714,5 +9714,127 @@ async fn b2_requeue_recovery_preserves_manual_and_clears_automatic() {
     assert_eq!(
         row_auto.0, None,
         "Requeue deve limpar gpu_device de eleição automática"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn b2_election_hint_with_automatic_gpu_chooses_by_vram() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let orch_id = uuid::Uuid::new_v4();
+    let gpu0_3060 = "GPU-1c1e01c2-4192-8f38-1a8a-33fb78b06f17";
+    let gpu1_1660s = "GPU-c83cc056-07f7-d31e-cc98-7486ddac0296";
+
+    let gpu_devices = serde_json::json!([
+        { "index": 0, "uuid": gpu0_3060, "name": "NVIDIA GeForce RTX 3060", "vram_total": 12288, "vram_used": 2048 },
+        { "index": 1, "uuid": gpu1_1660s, "name": "NVIDIA GeForce GTX 1660 SUPER", "vram_total": 6144, "vram_used": 1024 }
+    ]);
+
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status, vram_total_gb, gpu_devices) \
+         VALUES ($1, 'docker-04', 'http://10.15.50.114:8082', 'remoto', 'online', 12, $2)",
+    )
+    .bind(orch_id)
+    .bind(&gpu_devices)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    let cache = manager::new_telemetry_cache();
+    let vram_table = manager::VramTable::parse("defaults:\n  headroom_gb: 2\nentries:\n  - { engine: yolo, model: yolo11n, mode: train, vram_min_gb: 4 }\n  - { engine: yolo, model: yolo11x, mode: train, vram_min_gb: 8 }\n").unwrap();
+    let ds_id = insert_test_dataset(&p).await;
+
+    // Caso 1: hint do nó docker-04 + gpu_device None + required 4GB -> deve escolher 1660S (6144 MiB)
+    let resp4 = manager::create_job_with_context(
+        &p,
+        &cache,
+        &vram_table,
+        manager::CreateJobRequest {
+            kind: "yolo_train".into(),
+            engine: "yolo".into(),
+            model: "yolo11n".into(),
+            mode: "train".into(),
+            dataset_id: Some(ds_id.to_string()),
+            dataset_version_id: None,
+            package_ref: None,
+            config_yaml: None,
+            params: None,
+            vram_min_gb: None,
+            weights_id: None,
+            orchestrator_hint: Some(orch_id.to_string()),
+            gpu_device: None,
+        },
+    )
+    .await
+    .unwrap();
+    let j4_id: uuid::Uuid = resp4.job_id.parse().unwrap();
+
+    let orch = FakeOrchestratorClient::new();
+    let disp4 =
+        manager::dispatch_next_with_cache(&p, &orch, "docker", "/data", "img", &vram_table, &cache)
+            .await
+            .unwrap();
+    assert!(disp4);
+
+    let row4: (Option<String>,) = sqlx::query_as("SELECT gpu_device FROM jobs WHERE id = $1")
+        .bind(j4_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(
+        row4.0.as_deref(),
+        Some(gpu1_1660s),
+        "Hint com GPU auto e required 4GB deve cair na 1660S"
+    );
+
+    sqlx::query("UPDATE jobs SET status = 'done' WHERE id = $1")
+        .bind(j4_id)
+        .execute(&p)
+        .await
+        .unwrap();
+
+    // Caso 2: hint do nó docker-04 + gpu_device None + required 8GB -> deve escolher 3060 (12288 MiB)
+    let resp8 = manager::create_job_with_context(
+        &p,
+        &cache,
+        &vram_table,
+        manager::CreateJobRequest {
+            kind: "yolo_train".into(),
+            engine: "yolo".into(),
+            model: "yolo11x".into(),
+            mode: "train".into(),
+            dataset_id: Some(ds_id.to_string()),
+            dataset_version_id: None,
+            package_ref: None,
+            config_yaml: None,
+            params: None,
+            vram_min_gb: None,
+            weights_id: None,
+            orchestrator_hint: Some(orch_id.to_string()),
+            gpu_device: None,
+        },
+    )
+    .await
+    .unwrap();
+    let j8_id: uuid::Uuid = resp8.job_id.parse().unwrap();
+
+    let disp8 =
+        manager::dispatch_next_with_cache(&p, &orch, "docker", "/data", "img", &vram_table, &cache)
+            .await
+            .unwrap();
+    assert!(disp8);
+
+    let row8: (Option<String>,) = sqlx::query_as("SELECT gpu_device FROM jobs WHERE id = $1")
+        .bind(j8_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(
+        row8.0.as_deref(),
+        Some(gpu0_3060),
+        "Hint com GPU auto e required 8GB deve cair na 3060"
     );
 }

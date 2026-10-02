@@ -2,8 +2,13 @@
 
 import Link from "next/link";
 import { IconActivity } from "@/components/icons";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { JobListItem } from "@/components/studio/JobCard";
-import type { Job } from "@/types/studio";
+import type { Job, JobAlert } from "@/types/studio";
+import { JobAlertsBadge } from "./JobAlertsPanel";
+
+export const COMPARE_MAX_JOBS = 4;
+export const COMPARE_MIN_JOBS = 2;
 
 interface JobsSidebarProps {
   activeJobs: Job[];
@@ -13,6 +18,12 @@ interface JobsSidebarProps {
   totalCount: number;
   onSelectJob: (jobId: string) => void;
   onRerunJob: (job: Job) => void;
+  /** Alertas carregados só do job selecionado (fatia 3c-UI — evita N requests por card). */
+  selectedJobAlerts?: JobAlert[] | null;
+  onOpenSelectedAlerts?: () => void;
+  /** Seleção múltipla para comparação de runs (fatia 4c). */
+  compareIds?: Set<string>;
+  onToggleCompare?: (jobId: string) => void;
 }
 
 export function JobsSidebar({
@@ -23,7 +34,34 @@ export function JobsSidebar({
   totalCount,
   onSelectJob,
   onRerunJob,
+  selectedJobAlerts,
+  onOpenSelectedAlerts,
+  compareIds,
+  onToggleCompare,
 }: JobsSidebarProps) {
+  const compareFull = (compareIds?.size ?? 0) >= COMPARE_MAX_JOBS;
+
+  function renderCompareCheckbox(job: Job) {
+    if (!onToggleCompare || !compareIds) return null;
+    const checked = compareIds.has(job.id);
+    return (
+      <Checkbox
+        checked={checked}
+        disabled={!checked && compareFull}
+        onCheckedChange={() => onToggleCompare(job.id)}
+        label={<span className="sr-only">Selecionar {job.model} para comparação</span>}
+        className="relative z-10 shrink-0 pt-0"
+      />
+    );
+  }
+
+  function renderAlertsBadge(job: Job) {
+    if (selectedJobId !== job.id || !onOpenSelectedAlerts) return null;
+    return (
+      <JobAlertsBadge alerts={selectedJobAlerts} onOpen={onOpenSelectedAlerts} />
+    );
+  }
+
   return (
     <aside className="w-full md:w-80 lg:w-96 shrink-0 md:sticky md:top-4 md:max-h-[calc(100vh-2rem)] md:overflow-y-auto overflow-x-hidden [scrollbar-width:thin] space-y-4">
       {loading ? (
@@ -72,6 +110,8 @@ export function JobsSidebar({
                     job={job}
                     isFocused={selectedJobId === job.id}
                     onSelect={onSelectJob}
+                    leadingCheckbox={renderCompareCheckbox(job)}
+                    alertsBadge={renderAlertsBadge(job)}
                   />
                 ))}
               </div>
@@ -97,6 +137,8 @@ export function JobsSidebar({
                     isFocused={selectedJobId === job.id}
                     onSelect={onSelectJob}
                     onRerun={onRerunJob}
+                    leadingCheckbox={renderCompareCheckbox(job)}
+                    alertsBadge={renderAlertsBadge(job)}
                   />
                 ))}
               </div>

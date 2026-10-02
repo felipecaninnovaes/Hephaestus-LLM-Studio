@@ -15,6 +15,7 @@ import {
 	IconCheck,
 	IconDatabase,
 	IconDownload,
+	IconLayers,
 	IconPlay,
 	IconRefresh,
 	IconSparkles,
@@ -35,6 +36,9 @@ import { JobLogViewer } from "@/components/studio/JobLogViewer";
 import { JobProgressLive } from "@/components/studio/JobProgressLive";
 import { JobSamplesGallery } from "@/components/studio/JobSamplesGallery";
 import {
+	COMPARE_MAX_JOBS,
+	COMPARE_MIN_JOBS,
+	JobAlertsModal,
 	JobArtifactsList,
 	JobHeroHeader,
 	JobLineage,
@@ -47,6 +51,7 @@ import { Button, getButtonClasses } from "@/components/ui/Button";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { Spinner } from "@/components/ui/Spinner";
 import { showToast } from "@/components/ui/Toast";
+import { useJobAlerts } from "@/hooks/useJobAlerts";
 import { useJobLifecycle } from "@/hooks/useJobLifecycle";
 import { useJobMetricSeries } from "@/hooks/useJobMetricSeries";
 import { useJobTelemetry } from "@/hooks/useJobTelemetry";
@@ -127,6 +132,8 @@ function JobsPageContent() {
 	>(null);
 	const [zipBusy, setZipBusy] = useState(false);
 	const [cleanupOpen, setCleanupOpen] = useState(false);
+	const [compareIds, setCompareIds] = useState<Set<string>>(new Set());
+	const [alertsModalOpen, setAlertsModalOpen] = useState(false);
 	const {
 		abortTarget,
 		setAbortTarget,
@@ -300,6 +307,19 @@ function JobsPageContent() {
 
 	const isSelectedActive = selectedJob ? isActive(selectedJob.status) : false;
 
+	/** Alternância da seleção múltipla de comparação de runs (fatia 4c, máx. 4). */
+	const toggleCompare = useCallback((jobId: string) => {
+		setCompareIds((prev) => {
+			const next = new Set(prev);
+			if (next.has(jobId)) {
+				next.delete(jobId);
+			} else if (next.size < COMPARE_MAX_JOBS) {
+				next.add(jobId);
+			}
+			return next;
+		});
+	}, []);
+
 	// Hook de séries brutas (fatia 4a) com carga inicial
 	const isYoloSelected = selectedJob?.kind.startsWith("yolo");
 	const requestedKeys = useMemo(
@@ -322,6 +342,10 @@ function JobsPageContent() {
 
 	// SSE via useJobTelemetry: conecta ao stream e faz append de deltas sem refetch
 	// (no polling de fallback busca o delta via GET /metrics?afterSeq=)
+	// Alertas (fatia 3c-UI): snapshot inicial via useJobAlerts; evento SSE `alerts`
+	// substitui a lista inteira (idempotente) por applyAlertsSnapshot.
+	const { alerts: selectedJobAlerts, applySnapshot: applyAlertsSnapshot } =
+		useJobAlerts(selectedJob?.id);
 	const telemetry = useJobTelemetry(isSelectedActive ? selectedJob?.id : null, {
 		onMetricPoints: useCallback(
 			(pts: MetricPointWithKey[], maxSeq: number) => {
@@ -329,6 +353,7 @@ function JobsPageContent() {
 			},
 			[appendCurrentJobPoints],
 		),
+		onAlerts: applyAlertsSnapshot,
 		metricAfterSeq: currentJobMaxSeq,
 		metricKeys: requestedKeys,
 	});
@@ -551,15 +576,56 @@ function JobsPageContent() {
 				<div className="flex flex-col md:flex-row items-start gap-6">
 					{/* Coluna 1: Lista de Execuções — oculta no modo foco */}
 					{!focusMode && (
-						<JobsSidebar
-							activeJobs={activeJobs}
-							terminalJobs={terminalJobs}
-							selectedJobId={selectedJob?.id ?? null}
-							loading={loading}
-							totalCount={totalCount}
-							onSelectJob={selectJob}
-							onRerunJob={handleRerunJob}
-						/>
+						<div className="w-full md:w-80 lg:w-96 shrink-0 space-y-3">
+							{/* Barra de comparação de runs (fatia 4c) — some sem seleção */}
+							{compareIds.size > 0 && (
+								<div className="glass-card flex items-center justify-between gap-2 rounded-xl border border-brand-500/30 bg-brand-500/[0.08] px-3 py-2">
+									<span className="font-mono text-2xs text-zinc-300">
+										{compareIds.size} job{compareIds.size > 1 ? "s" : ""}{" "}
+										selecionado{compareIds.size > 1 ? "s" : ""}
+										{compareIds.size < COMPARE_MIN_JOBS
+											? ` · selecione mais ${COMPARE_MIN_JOBS - compareIds.size}`
+											: ""}
+									</span>
+									<div className="flex items-center gap-2">
+										<button
+											type="button"
+											onClick={() => setCompareIds(new Set())}
+											className="font-mono text-2xs text-zinc-400 hover:text-zinc-200 underline underline-offset-2 cursor-pointer"
+										>
+											Limpar
+										</button>
+										<Button
+											type="button"
+											variant="secondary"
+											size="sm"
+											disabled={compareIds.size < COMPARE_MIN_JOBS}
+											leftIcon={<IconLayers className="size-3" />}
+											onClick={() =>
+												router.push(
+													`/jobs/compare?ids=${Array.from(compareIds).join(",")}`,
+												)
+											}
+										>
+											Comparar
+										</Button>
+									</div>
+								</div>
+							)}
+							<JobsSidebar
+								activeJobs={activeJobs}
+								terminalJobs={terminalJobs}
+								selectedJobId={selectedJob?.id ?? null}
+								loading={loading}
+								totalCount={totalCount}
+								onSelectJob={selectJob}
+								onRerunJob={handleRerunJob}
+								selectedJobAlerts={selectedJobAlerts}
+								onOpenSelectedAlerts={() => setAlertsModalOpen(true)}
+								compareIds={compareIds}
+								onToggleCompare={toggleCompare}
+							/>
+						</div>
 					)}
 
 					{/* Coluna 2: Painel de Detalhe (flex-1 min-w-0) */}
@@ -574,9 +640,16 @@ function JobsPageContent() {
 									selectedJobId={selectedJobId}
 									hasActiveJobs={activeJobs.length > 0}
 									activeJobId={activeJobs[0]?.id}
+									alerts={selectedJobAlerts}
+									onOpenAlerts={() => setAlertsModalOpen(true)}
 									onSetFocus={setFocus}
 									onDelete={setDeleteTarget}
 									onSelectJob={selectJob}
+								/>
+								<JobAlertsModal
+									open={alertsModalOpen}
+									onClose={() => setAlertsModalOpen(false)}
+									alerts={selectedJobAlerts}
 								/>
 
 								{/* Job Hero Card */}

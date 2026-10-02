@@ -155,6 +155,10 @@ export interface JobListItemProps {
   onSelect?: (jobId: string) => void;
   onRerun?: (job: Job) => void;
   actionButton?: React.ReactNode;
+  /** Badge de contagem de alertas ativos (fatia 3c-UI) — só o job selecionado carrega alertas. */
+  alertsBadge?: React.ReactNode;
+  /** Checkbox de seleção para comparação de runs (fatia 4c). */
+  leadingCheckbox?: React.ReactNode;
 }
 
 export function JobListItem({
@@ -163,6 +167,8 @@ export function JobListItem({
   onSelect,
   onRerun,
   actionButton,
+  alertsBadge,
+  leadingCheckbox,
 }: JobListItemProps) {
   const config = JOB_STATUS_CONFIG[job.status] || JOB_STATUS_CONFIG.queued;
   const isActive =
@@ -200,6 +206,9 @@ export function JobListItem({
       />
 
       <div className="flex items-start sm:items-center space-x-3 min-w-0 flex-1">
+        {leadingCheckbox && (
+          <span className="relative z-10 shrink-0 pt-0.5">{leadingCheckbox}</span>
+        )}
         <span
           className={`flex size-8 shrink-0 items-center justify-center rounded-lg border border-white/10 ${config.iconBg} ${config.iconColor}`}
         >
@@ -232,6 +241,7 @@ export function JobListItem({
                 Ativo no monitor
               </span>
             )}
+            {alertsBadge}
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-3 font-mono text-2xs text-zinc-400">
             <span>{formatRelativeTime(job.createdAt)}</span>

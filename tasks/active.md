@@ -12,6 +12,12 @@
   - Dependências novas do web entram também em `apps/web/package-lock.json` (o Dockerfile usa esse lock) e exigem `npm ci` no checkout principal (o `next dev` do usuário quebrou sem o `uplot`).
 - **Outras pendências antigas:** `fix/ci-trainer-difusao-torch-import` (`842ad5a`) e `fix/difusao-resume-lora-weights` (`a3e8736`) já estão em `develop`/`origin/develop` (conferido 2026-10-02). [x] Ponte `ENGINE_USER: "0:0"` removida (`5de6429`, `@reviewer` APROVA, em `origin/develop`; nó em `5de6429`, container recriado sem a env, health 200; `find -type d ! -writable` como uid 1000: 0 em `gpu_gpu_datasets`/`gpu_gpu_outputs`). Rollback no nó: `infra/compose.gpu.yaml.bak-engine-user`. Nits não bloqueantes: comentários obsoletos em `services/orchestrator/src/daemon/launcher.rs:71-73` e `daemon/tests.rs:57-59`.
 
+## Em andamento — Fix telemetria do autolabel (progresso por imagem)
+- **Pedido do usuário (2026-10-03):** a telemetria do autolabel só mostra o carregamento do dataset, nunca o progresso das imagens.
+- **Causa raiz (orchestrator, leitura de código):** `engines/trainer-yolo/src/trainer_yolo/autolabel_pkg/pipeline.py:61-66` emite UM evento `preparing` (5%) pelo `TelemetryEmitter` (cria `telemetry.jsonl`) e depois grava o progresso por imagem só no legado `metrics.jsonl` (`:120-136`). O collector do orchestrator lê `telemetry.jsonl` como primário e só cai no `metrics.jsonl` se o primeiro não existir (`services/orchestrator/src/app/stages/collector.rs:559-560`) → progresso fica preso em 5% até o `completed`. Além disso, as linhas manuais fabricam `box_loss/cls_loss/dfl_loss/mAP50/mAP50-95 = 0.0` (viola PITFALLS: ausente ≠ zero).
+- [ ] `@engines` na branch `fix/autolabel-telemetry-progress` (checkout principal, sequencial).
+- [ ] `@reviewer` · [ ] rebuild `trainer-yolo:gpu` no nó + smoke real (job autolabel pequeno, progresso visível na UI) · [ ] backlog/docs.
+
 ## Fechado — Multi-GPU: sensores por GPU física + seleção por UUID (fecha 3a-GPU e `vram_high`)
 - **Spec:** `docs/archive/specs/multi-gpu-sensores-selecao.md` (revisada em `234a742`, concluída e arquivada em `e61e602`/`1dc41e2`).
 - [x] `@docs` final: REPO_MAP, `docs/infra/gpu-nodes.md`, `docs/architecture/network-and-vram.md`, backlog e PITFALLS (`1d6aade`) sincronizados; as 2 specs arquivadas.

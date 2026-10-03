@@ -1395,7 +1395,29 @@ pub async fn get_thumb(
         }
     }
 
-    // 2. Buscar imagem original
+    // 2. Semáforo para limitar processamento e download concorrente de originais grandes
+    let _permit = match state.thumb_semaphore.acquire().await {
+        Ok(p) => p,
+        Err(_) => return internal(),
+    };
+
+    // Re-checar storage: outra requisição concorrente pode ter gerado o thumb enquanto esperávamos o permit
+    if let Ok(bytes) = state.storage.get(&thumb_key).await {
+        return (
+            StatusCode::OK,
+            [
+                (axum::http::header::CONTENT_TYPE, "image/jpeg"),
+                (
+                    axum::http::header::CACHE_CONTROL,
+                    "public, max-age=31536000, immutable",
+                ),
+            ],
+            bytes,
+        )
+            .into_response();
+    }
+
+    // 3. Buscar imagem original (com o permit retido)
     let original_bytes = match state.storage.get(&object_key).await {
         Ok(b) => b,
         Err(StorageError::NotFound) => {
@@ -1408,12 +1430,6 @@ pub async fn get_thumb(
                 MSG_STORAGE_UNAVAILABLE,
             );
         }
-    };
-
-    // 3. Semáforo para limitar processamento concorrente
-    let _permit = match state.thumb_semaphore.acquire().await {
-        Ok(p) => p,
-        Err(_) => return internal(),
     };
 
     // 4. Gerar miniatura em tokio::task::spawn_blocking

@@ -78,7 +78,9 @@ Fonte: tabela de contrato em `services/api-principal/src/auth/routes.rs`
 (`submit`, `lifecycle`, `query`, `stream`, `artifacts`, `apply`, `helpers`, `types`, `tests`). Grupos:
 - **Auth:** `POST /api/auth/login|logout`, `GET /api/auth/me`; `GET /health|/ready`.
 - **Datasets:** CRUD `/api/datasets[/:id]`; upload `POST /:id/upload`;
-  galeria `GET /:id/images` (+ `/data`, `/boxes`, `DELETE /:id/images/:imageId`,
+  galeria `GET /:id/images` (itens com `thumbUrl` obrigatório; + `/data`,
+  `/thumb` JPEG ≤512px gerado sob demanda, `Cache-Control … immutable`, 415
+  `thumb_unavailable`; `/boxes`, `DELETE /:id/images/:imageId`,
   `/restore`, trash `/:id/trash`); `PUT /:id/images/:imageId/boxes`,
   `POST /:id/boxes/batch`, captions `/:id/images/:imageId/caption`,
   classes `/:id/classes`; export/import `POST /:id/export`, `/:id/package`,

@@ -99,6 +99,11 @@ Para entrega de imagens e download direto no browser:
 - `S3_PUBLIC_ENDPOINT_URL`: URL alcançável pelo navegador do usuário (`http://localhost:8333` em dev ou `http://<ip-dev-host>:8333` em rede local).
 - **Atenção:** As URLs pré-assinadas utilizam o hostname configurado em `S3_PUBLIC_ENDPOINT_URL` para o cálculo da assinatura SigV4. Se o operador acessar a interface web de outro IP da rede sem reconfigurar essa variável, o download falhará com erro de assinatura.
 
+### 3.4 Chaves derivadas de dataset: miniaturas
+- `datasets/{id}/thumbs/{imageId}.jpg`: JPEG ≤512px derivado e regenerável, criado na 1ª leitura de `GET /api/datasets/{id}/images/{imageId}/thumb` (`datasets/handlers.rs::get_thumb`, geração limitada por `thumb_semaphore`).
+- Apagada no purge da lixeira da imagem (`DELETE /:id/trash` em `datasets/handlers.rs::delete_trash` e GC por TTL em `storage/gc.rs`) e no delete do dataset pelo sweep do prefixo `datasets/{id}/`.
+- Não entra em pacotes de treino/export: `datasets/package.rs` e `datasets/export.rs` só materializam `images/<filename>` a partir dos originais.
+
 ---
 
 ## 4. Volumes de Trabalho e Cache de Modelos

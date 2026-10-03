@@ -276,6 +276,14 @@ export function JobListItem({
                 )}
               </span>
             ) : null}
+            {job.gpuDevice ? (
+              <span className="flex items-center gap-1 text-zinc-300" title={`GPU: ${job.gpuDevice}`}>
+                <span className="text-zinc-600">·</span>
+                <span className="text-brand-300 font-mono">
+                  {job.gpuDevice.length > 12 ? `${job.gpuDevice.slice(0, 8)}…` : job.gpuDevice}
+                </span>
+              </span>
+            ) : null}
           </div>
         </div>
       </div>

@@ -5044,6 +5044,47 @@ async fn create_dir_all_open_grants_world_write() {
     );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn ensure_shared_engine_dirs_grants_world_write_to_all_levels() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let outputs_root = tmp.path().join("outputs");
+
+    // Simula estado prévio comum: root criou .cache com umask 022 (0o755)
+    // antes do boot do orchestrator.
+    let cache_dir = outputs_root.join(".cache");
+    tokio::fs::create_dir_all(&cache_dir).await.unwrap();
+    tokio::fs::set_permissions(&cache_dir, std::fs::Permissions::from_mode(0o755))
+        .await
+        .unwrap();
+
+    crate::storage::ensure_shared_engine_dirs(&outputs_root)
+        .await
+        .expect("ensure_shared_engine_dirs deve ter sucesso");
+
+    for rel in crate::storage::SHARED_ENGINE_CACHE_DIRS {
+        let dir = outputs_root.join(rel);
+        assert!(
+            dir.is_dir(),
+            "diretório esperado deve existir: {}",
+            dir.display()
+        );
+        let mode = tokio::fs::metadata(&dir)
+            .await
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o777,
+            0o777,
+            "diretório compartilhado {} deve ter modo 0o777 (obtido {:o})",
+            rel,
+            mode & 0o777
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Testes P0-3: Admissão Atômica e Concorrência
 // ---------------------------------------------------------------------------

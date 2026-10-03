@@ -270,13 +270,12 @@ async fn main() {
     // promoção de dataset dedup (no-gpu-reuso-dataset-embeds §3A).
     orchestrator::sweep_dataset_cache_tmp(&std::path::PathBuf::from(&cfg.workdir)).await;
 
-    // Pilar B: cria a raiz do cache compartilhado de text-embeds no boot —
-    // mesmo volume outputs, 0o777 (PITFALLS:51 — engine roda uid 1000).
-    let text_embeds_root = std::path::PathBuf::from(&cfg.workdir)
-        .join("outputs")
-        .join(".text_embeds_cache");
-    if let Err(e) = orchestrator::storage::create_dir_all_open(&text_embeds_root).await {
-        tracing::warn!(error = %e, "falha ao criar raiz do cache de text-embeds no boot");
+    // Garante permissões abertas (0o777) em cada nível dos diretórios compartilhados
+    // no volume outputs para engines rodando como uid 1000 (PITFALLS:51):
+    // text embeds (Pilar B), .cache HuggingFace/Torch e quantized.
+    let outputs_root = std::path::PathBuf::from(&cfg.workdir).join("outputs");
+    if let Err(e) = orchestrator::storage::ensure_shared_engine_dirs(&outputs_root).await {
+        tracing::warn!(error = %e, "falha ao inicializar diretórios compartilhados de cache em outputs no boot");
     }
 
     // Periodic sweeper de containers órfãos e workdirs antigos (§P2-2)

@@ -57,6 +57,7 @@ const PHASE_LABELS: Record<string, string> = {
   generating_sample: "Gerando Amostra",
   sample_ready: "Amostra Concluída",
   baseline_ready: "Amostra Inicial Pronta",
+  labeling: "Anotando Imagens",
   training: "Treinamento",
   training_started: "Treino Iniciado",
   epoch_complete: "Época Concluída",

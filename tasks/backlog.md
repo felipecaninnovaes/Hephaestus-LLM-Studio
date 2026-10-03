@@ -10,6 +10,7 @@ Consolidação única de pendências e melhorias prioritárias. Rotas canônicas
 - **Validação @gpu Difusão & Img2Img:** Validar carregamento com pesos reais (`ENGINE_MOCK=0`) para SDXL/Flux-2-Klein, multi-LoRA PEFT e geração sequencial em daemon quente (ADR-0023).
 - [x] **Unificação dos 4 trainers de difusão (Template Method):** Fases A (sd15+sdxl) e B (flux.1+flux.2-klein) unificadas via `TrainingLoopRunner`/`ModelAdapter` em `models/loop.py` (-1.876 linhas líquidas em `sd15.py`/`sdxl.py`/`flux.py`); Fase C reduzida por decisão explícita (risco vs ganho reavaliado após 2 bugs críticos achados na Fase B) a só migrar `prompt_cache` de RAM para `TextEmbedsCache` em disco em `qwen_image.py` (item #12), sem forçar o Template Method completo no modelo flagship. Fecha #7/#8/#12 de `engines-auditoria-global.md`. As 3 fases com smoke real (SD15/SDXL/FLUX.2-Klein/Qwen-Image-2.1 reais, pesos HF baixados on-the-fly) no nó GPU e gate `@reviewer` aprovado (Quitado 2026-09-26; commits d062c93, f94541c, a61344b; spec arquivada em `docs/archive/specs/trainer-difusao-unificacao-modelos.md`).
 - **AutoLabel v2:** Evoluir motor para modelos VLM reais (Florence-2 / Qwen-VL) com aceleração GPU (v1 atual é determinística mock).
+- **AutoLabel — telemetria sem progresso por imagem** (reportado pelo usuário 2026-10-03): telemetria mostra só o carregamento do dataset. Evidência: job `bc54d01c` (986 imagens, modelo `openai`) ficou com 6 pontos de métrica, o último 4 s após o início; log do container parado em `[PREPARING] (5%) Iniciando AutoLabel com modelo openai (986 imagens)` por >3h.
 - **Daemon de geração Qwen-Image-2.1 nativo (gap achado pelo @reviewer):** o
   treino nativo (`models/qwen_image.py`) está completo/verificado
   (`fix/qwen-image-2-1-native`, 234 pytest, smoke GPU real com
@@ -55,6 +56,7 @@ Consolidação única de pendências e melhorias prioritárias. Rotas canônicas
   - Implementar fila por VRAM livre dinâmica no manager (suporte a 2+ jobs por nó, preempção de runner, `max_parallel_trainers`).
 - **Segurança & Credenciais de Nós:**
   - Adicionar credenciais dedicadas por nó (`heph_o_*`), rotação de tokens e rate-limit de pareamento.
+- **Recovery do manager reconciliado:** `recover_jobs` no boot (`services/manager/src/watchdog/recovery.rs:27`) deve reconciliar com o orchestrator (jobs ativos reportados por heartbeat/endpoint) em vez de requeue cego de `dispatched|running` (incidente 2026-10-03, job `bc54d01c`; ver PITFALLS § Orquestração).
 
 - **Sensores Avançados de GPU & Seleção Multi-GPU (Prioridade Média-Alta):**
   - Coleta granular de sensores por GPU física: potência (W), utilização (%) e temperatura (°C) via `nvidia-smi` com fallback resiliente para ambientes sem suporte.
@@ -108,6 +110,7 @@ Consolidação única de pendências e melhorias prioritárias. Rotas canônicas
   - [x] Eliminar duplicação da lógica `canTrain`/`trainDisabledReason` na galeria de datasets (Quitado: unificado em `lib/datasets.ts`).
   - [x] Desativar polling de telemetria da sidebar quando o drawer estiver fechado ou aba oculta (Quitado: listener de visibilidade e estado do drawer em `Sidebar.tsx`).
   - Push-down de paginação/filtro de quantização no BFF/manager para evitar degradação em memória.
+- **VRAM exibida incorreta em nó heterogêneo (multi-GPU):** opção de nó no `NodeSelect` mostra VRAM somada ("18GB VRAM"); painel "VRAM estimada" do treino de difusão mostra "Dispositivo: NVIDIA GeForce RTX 3060 (24 G…" e alerta de OOM para ~8 GB numa placa de 12 GB — conferir a fonte desses números.
 
 ---
 

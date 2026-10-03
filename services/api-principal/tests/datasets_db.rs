@@ -1540,7 +1540,7 @@ async fn t0003_data_proxy() {
     assert_eq!(json(&body)["code"], "not_found");
 
     // Backend morto ⇒ 503.
-    let mut st_fail = state().await;
+    let mut st_fail = st.clone();
     st_fail.storage = std::sync::Arc::new(api_principal::storage::MockStorage::failing());
     let app_fail = routes::build(st_fail.clone());
     let ds_id2: uuid::Uuid = {

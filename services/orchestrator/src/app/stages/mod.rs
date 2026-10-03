@@ -9,8 +9,9 @@ pub mod execute;
 pub mod weights;
 
 pub use collector::{
-    collect_diffusion_artifacts, read_final_metrics, read_generation_meta_content,
-    stream_metrics_and_samples, META_CONTENT_MAX_BYTES,
+    attach_gpu_metrics_if_applicable, collect_diffusion_artifacts, read_final_metrics,
+    read_generation_meta_content, resolve_job_gpu_uuid, stream_metrics_and_samples,
+    META_CONTENT_MAX_BYTES,
 };
 pub use config::{extract_epochs, replace_config_placeholders, replace_config_placeholders_legacy};
 pub use execute::resolve_subcommand_args;

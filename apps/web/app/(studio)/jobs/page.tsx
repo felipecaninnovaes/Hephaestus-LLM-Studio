@@ -713,6 +713,17 @@ function JobsPageContent() {
 														<span>Aguardando nó</span>
 													</span>
 												) : null}
+												{selectedJob.gpuDevice && (
+													<span className="flex items-center gap-1.5 text-zinc-300">
+														<span className="text-zinc-500">·</span>
+														<span>
+															GPU:{" "}
+															<strong className="font-semibold text-brand-300 font-mono" title={selectedJob.gpuDevice}>
+																{selectedJob.gpuDevice.length > 12 ? `${selectedJob.gpuDevice.slice(0, 8)}…` : selectedJob.gpuDevice}
+															</strong>
+														</span>
+													</span>
+												)}
 											</div>
 										</div>
 

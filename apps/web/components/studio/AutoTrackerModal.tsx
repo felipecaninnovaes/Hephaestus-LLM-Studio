@@ -1,22 +1,24 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { IconTarget } from "@/components/icons";
-import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
-import { Slider } from "@/components/ui/Slider";
+import { Modal } from "@/components/ui/Modal";
 import { Select, type SelectOption } from "@/components/ui/Select";
+import { Slider } from "@/components/ui/Slider";
+import { showToast } from "@/components/ui/Toast";
 import { ApiError } from "@/lib/api";
 import { startAutotrackerJob } from "@/lib/autotracker";
+import { openActionCenter } from "@/lib/events";
 import { listModels } from "@/lib/models";
+import type { Orchestrator } from "@/lib/monitoring";
 import {
   autotrackerErrorMessage,
-  modelSourceLabel,
   type Model,
+	modelSourceLabel,
 } from "@/types/studio";
-import { showToast } from "@/components/ui/Toast";
-import { openActionCenter } from "@/lib/events";
+import GpuDeviceSelect from "./GpuDeviceSelect";
 import NodeSelect from "./NodeSelect";
 
 const CONF_MIN = 0.3;
@@ -49,8 +51,15 @@ export default function AutoTrackerModal({
   const [availableModels, setAvailableModels] = useState<Model[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [selectedModelId, setSelectedModelId] = useState<string>("");
-  const [selectedOrchestratorId, setSelectedOrchestratorId] = useState<string | null>(null);
-
+	const [selectedOrchestratorId, setSelectedOrchestratorId] = useState<
+		string | null
+	>(null);
+	const [selectedGpuDevice, setSelectedGpuDevice] = useState<string | null>(
+		null,
+	);
+	const [orchestratorsList, setOrchestratorsList] = useState<Orchestrator[]>(
+		[],
+	);
   useEffect(() => {
     if (!open) return;
     let active = true;
@@ -59,7 +68,9 @@ export default function AutoTrackerModal({
       .then((res) => {
         if (active) {
           setAvailableModels(
-            res.items.filter((m) => m.engine === "world" || m.engine === "yolo"),
+						res.items.filter(
+							(m) => m.engine === "world" || m.engine === "yolo",
+						),
           );
           setModelsLoading(false);
         }
@@ -80,6 +91,7 @@ export default function AutoTrackerModal({
     setConf(CONF_DEFAULT);
     setSelectedModelId("");
     setSelectedOrchestratorId(null);
+		setSelectedGpuDevice(null);
     setTopError(null);
     setBusy(false);
     const t = setTimeout(() => sliderRef.current?.focus(), 30);
@@ -139,7 +151,12 @@ export default function AutoTrackerModal({
         model: "mock",
         conf,
         ...(selectedModelId ? { modelId: selectedModelId } : {}),
-        ...(selectedOrchestratorId ? { orchestratorId: selectedOrchestratorId } : {}),
+				...(selectedOrchestratorId
+					? { orchestratorId: selectedOrchestratorId }
+					: {}),
+				...(selectedOrchestratorId && selectedGpuDevice
+					? { gpuDevice: selectedGpuDevice }
+					: {}),
       });
       showToast(
         result.status === "preparing"
@@ -241,7 +258,24 @@ export default function AutoTrackerModal({
         {/* Nó de Execução (ADR-0015 D2) */}
         <NodeSelect
           value={selectedOrchestratorId}
-          onChange={setSelectedOrchestratorId}
+					onChange={(nodeId) => {
+						setSelectedOrchestratorId(nodeId);
+						setSelectedGpuDevice(null);
+					}}
+					onOrchestratorsLoaded={setOrchestratorsList}
+					disabled={busy}
+					size="default"
+				/>
+
+				{/* GPU de Execução (Fatia F2) */}
+				<GpuDeviceSelect
+					orchestratorId={selectedOrchestratorId}
+					devices={
+						orchestratorsList.find((o) => o.id === selectedOrchestratorId)
+							?.gpuDevices ?? null
+					}
+					value={selectedGpuDevice}
+					onChange={setSelectedGpuDevice}
           disabled={busy}
           size="default"
         />

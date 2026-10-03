@@ -29,12 +29,14 @@ export function startYoloJob(params: {
 	augment: YoloAugment;
 	weights?: string | null;
 	orchestratorId?: string | null;
+	gpuDevice?: string | null;
 	outputName?: string | null;
 }): Promise<SubmitJobResponse> {
-	const { weights, orchestratorId, outputName, ...rest } = params;
+	const { weights, orchestratorId, gpuDevice, outputName, ...rest } = params;
 	const body: Record<string, unknown> = { ...rest };
 	if (weights) body.weights = weights;
 	if (orchestratorId) body.orchestratorId = orchestratorId;
+	if (gpuDevice) body.gpuDevice = gpuDevice;
 	if (outputName?.trim()) body.outputName = outputName.trim();
 	return apiFetch("/api/jobs/yolo", {
 		method: "POST",
@@ -56,6 +58,7 @@ export function startDiffusionJob(params: {
 	alpha?: number;
 	weights?: string | null;
 	orchestratorId?: string | null;
+	gpuDevice?: string | null;
 	outputName?: string | null;
 	samplePrompt?: string;
 	sampleInterval?: number;
@@ -113,6 +116,7 @@ export function startDiffusionJob(params: {
 	if (triggerWord?.trim()) body.triggerWord = triggerWord.trim();
 	if (weights) body.weights = weights;
 	if (orchestratorId) body.orchestratorId = orchestratorId;
+	if (params.gpuDevice) body.gpuDevice = params.gpuDevice;
 	if (resolution) body.resolution = resolution;
 	if (gradientAccumulationSteps != null)
 		body.gradientAccumulationSteps = gradientAccumulationSteps;

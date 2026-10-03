@@ -211,6 +211,7 @@ export interface Job {
   orchestratorName?: string | null;
   orchestratorKind?: "docker" | "slurm" | "local" | "remoto" | null;
   orchestratorFallback: boolean;
+  gpuDevice?: string | null;
   createdAt: string;
   finishedAt: string | null;
   error?: string | null;
@@ -232,7 +233,11 @@ export type JobErrorCode =
   | "queue_unavailable"
   | "not_found"
   | "job_not_done"
-  | "storage_unavailable";
+  | "storage_unavailable"
+  | "invalid_gpu_device"
+  | "gpu_device_requires_orchestrator"
+  | "unknown_gpu_device"
+  | "insufficient_gpu_vram";
 
 export function jobErrorMessage(code: string): string {
   switch (code) {
@@ -244,6 +249,14 @@ export function jobErrorMessage(code: string): string {
       return "Fila de treino indisponível — tente novamente.";
     case "not_found":
       return "Job não encontrado.";
+    case "invalid_gpu_device":
+      return "Identificador da GPU inválido (deve ser UUID ou índice).";
+    case "gpu_device_requires_orchestrator":
+      return "Seleção de GPU exige selecionar um nó de execução.";
+    case "unknown_gpu_device":
+      return "GPU selecionada não encontrada no nó escolhido.";
+    case "insufficient_gpu_vram":
+      return "A GPU selecionada não possui VRAM suficiente para os requisitos mínimos deste modelo.";
     default:
       return "Falha ao criar job de treino.";
   }

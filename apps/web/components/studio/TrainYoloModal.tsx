@@ -1,21 +1,24 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { IconPlay } from "@/components/icons";
-import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
+import { Modal } from "@/components/ui/Modal";
 import type { SelectRefHandle } from "@/components/ui/Select";
-import { ApiError } from "@/lib/api";
-import { startYoloJob } from "@/lib/jobs";
-import { jobErrorMessage } from "@/types/studio";
 import { showToast } from "@/components/ui/Toast";
+import { ApiError } from "@/lib/api";
 import { openActionCenter } from "@/lib/events";
+import { startYoloJob } from "@/lib/jobs";
+import type { Orchestrator } from "@/lib/monitoring";
+import { jobErrorMessage } from "@/types/studio";
+import { estimateYoloVramGb } from "./ForjaYoloSetup";
+import GpuDeviceSelect from "./GpuDeviceSelect";
 import NodeSelect from "./NodeSelect";
 import {
-  YoloHyperparameters,
-  EPOCHS_MIN,
   EPOCHS_MAX,
+	EPOCHS_MIN,
+	YoloHyperparameters,
   type YoloHyperparametersValues,
 } from "./YoloHyperparameters";
 
@@ -46,23 +49,29 @@ export default function TrainYoloModal({
 }: Props) {
   const router = useRouter();
   const firstRef = useRef<SelectRefHandle>(null);
-  const [params, setParams] = useState<YoloHyperparametersValues>(DEFAULT_PARAMS);
-  const [selectedOrchestratorId, setSelectedOrchestratorId] = useState<string | null>(null);
+	const [params, setParams] =
+		useState<YoloHyperparametersValues>(DEFAULT_PARAMS);
+	const [selectedOrchestratorId, setSelectedOrchestratorId] = useState<
+		string | null
+	>(null);
+	const [selectedGpuDevice, setSelectedGpuDevice] = useState<string | null>(
+		null,
+	);
+	const [orchestratorsList, setOrchestratorsList] = useState<Orchestrator[]>(
+		[],
+	);
   const [busy, setBusy] = useState(false);
   const [topError, setTopError] = useState<string | null>(null);
-
   useEffect(() => {
     if (!open) return;
     setParams(DEFAULT_PARAMS);
     setSelectedOrchestratorId(null);
+		setSelectedGpuDevice(null);
     setTopError(null);
     setBusy(false);
     const t = setTimeout(() => firstRef.current?.focus(), 30);
     return () => clearTimeout(t);
   }, [open]);
-
-  if (!open) return null;
-
   const parsedLr0 = parseFloat(params.lr0);
   const epochsValid =
     Number.isInteger(params.epochs) &&
@@ -70,7 +79,18 @@ export default function TrainYoloModal({
     params.epochs <= EPOCHS_MAX;
   const lr0Valid =
     !isNaN(parsedLr0) && parsedLr0 >= 1e-5 && parsedLr0 <= 0.1 + 1e-9;
+	const estimatedVram = useMemo(
+		() =>
+			estimateYoloVramGb(
+				params.model,
+				params.batch,
+				params.imgsz,
+				params.optimizer,
+			),
+		[params.model, params.batch, params.imgsz, params.optimizer],
+	);
 
+	if (!open) return null;
   const handleParamChange = <K extends keyof YoloHyperparametersValues>(
     key: K,
     val: YoloHyperparametersValues[K],
@@ -103,6 +123,7 @@ export default function TrainYoloModal({
         optimizer: params.optimizer,
         augment: params.augment,
         orchestratorId: selectedOrchestratorId || null,
+        gpuDevice: (selectedOrchestratorId && selectedGpuDevice) ? selectedGpuDevice : undefined,
       });
       showToast(
         result.status === "preparing"
@@ -170,7 +191,25 @@ export default function TrainYoloModal({
         {/* Nó de Execução (ADR-0015 D2) */}
         <NodeSelect
           value={selectedOrchestratorId}
-          onChange={setSelectedOrchestratorId}
+					onChange={(nodeId) => {
+						setSelectedOrchestratorId(nodeId);
+						setSelectedGpuDevice(null);
+					}}
+					onOrchestratorsLoaded={setOrchestratorsList}
+					disabled={busy}
+					size="default"
+				/>
+
+				{/* GPU de Execução (Fatia F2) */}
+				<GpuDeviceSelect
+					orchestratorId={selectedOrchestratorId}
+					devices={
+						orchestratorsList.find((o) => o.id === selectedOrchestratorId)
+							?.gpuDevices ?? null
+					}
+					value={selectedGpuDevice}
+					onChange={setSelectedGpuDevice}
+					vramMinGb={estimatedVram}
           disabled={busy}
           size="default"
         />

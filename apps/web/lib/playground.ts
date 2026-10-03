@@ -37,6 +37,7 @@ export function startDiffusionGenerateJob(
   if (params.loras && params.loras.length > 0) body.loras = params.loras;
   if (params.textEncoderModelId) body.textEncoderModelId = params.textEncoderModelId;
   if (params.orchestratorId) body.orchestratorId = params.orchestratorId;
+  if (params.gpuDevice) body.gpuDevice = params.gpuDevice;
   // img2img (fatia feat/img2img — openapi 30140ea): XOR, nunca os dois ids;
   // initStrength só segue quando há id presente (sem id o backend 400).
   if (params.initImageId) {

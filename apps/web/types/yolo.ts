@@ -45,6 +45,7 @@ export interface AutolabelJobRequest {
   apiBase?: string;
   openaiModel?: string;
   orchestratorId?: string | null;
+  gpuDevice?: string | null;
   reasoningEffort?: "none" | "low" | "medium" | "high" | null;
   filterClassId?: string | null;
   imageIds?: string[] | null;
@@ -98,6 +99,14 @@ export function autolabelErrorMessage(code: string): string {
       return "O job ainda não terminou — aguarde a conclusão.";
     case "storage_unavailable":
       return "Armazenamento de artefatos indisponível — tente novamente.";
+    case "invalid_gpu_device":
+      return "Identificador da GPU inválido (deve ser UUID ou índice).";
+    case "gpu_device_requires_orchestrator":
+      return "Seleção de GPU exige selecionar um nó de execução.";
+    case "unknown_gpu_device":
+      return "GPU selecionada não encontrada no nó escolhido.";
+    case "insufficient_gpu_vram":
+      return "A GPU selecionada não possui VRAM suficiente para os requisitos mínimos deste modelo.";
     default:
       return "Falha ao processar AutoLabel.";
   }
@@ -117,6 +126,14 @@ export function autotrackerErrorMessage(code: string): string {
       return "O job ainda não terminou — aguarde a conclusão.";
     case "storage_unavailable":
       return "Armazenamento de artefatos indisponível — tente novamente.";
+    case "invalid_gpu_device":
+      return "Identificador da GPU inválido (deve ser UUID ou índice).";
+    case "gpu_device_requires_orchestrator":
+      return "Seleção de GPU exige selecionar um nó de execução.";
+    case "unknown_gpu_device":
+      return "GPU selecionada não encontrada no nó escolhido.";
+    case "insufficient_gpu_vram":
+      return "A GPU selecionada não possui VRAM suficiente para os requisitos mínimos deste modelo.";
     default:
       return "Falha ao processar AutoTracker.";
   }

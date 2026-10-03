@@ -25,6 +25,7 @@ import {
 } from "@/lib/geracao-storage";
 import { getJob } from "@/lib/jobs";
 import { listModels } from "@/lib/models";
+import type { Orchestrator } from "@/lib/monitoring";
 import {
 	getGeneratedBatchResults,
 	getGeneratedImageUrl,
@@ -88,6 +89,12 @@ export function GenerationPanel() {
 	const [selectedOrchestratorId, setSelectedOrchestratorId] = useState<
 		string | null
 	>(null);
+	const [selectedGpuDevice, setSelectedGpuDevice] = useState<string | null>(
+		null,
+	);
+	const [orchestratorsList, setOrchestratorsList] = useState<Orchestrator[]>(
+		[],
+	);
 	const [paramsOpen, setParamsOpen] = useState(true);
 
 	/* ── Imagem inicial img2img ── */
@@ -354,7 +361,11 @@ export function GenerationPanel() {
 
 	const handleBaseModelChange = useCallback(
 		(modelVal: string) => {
-			const b = modelVal as "flux-2-klein-4b" | "sdxl" | "sd15" | "qwen-image-2.1";
+			const b = modelVal as
+				| "flux-2-klein-4b"
+				| "sdxl"
+				| "sd15"
+				| "qwen-image-2.1";
 			setBaseModel(b);
 			setSampler((prev) =>
 				b === "flux-2-klein-4b"
@@ -598,6 +609,7 @@ export function GenerationPanel() {
 						? loras.filter((l) => l.modelId)
 						: undefined,
 				orchestratorId: selectedOrchestratorId,
+				gpuDevice: (selectedOrchestratorId && selectedGpuDevice) ? selectedGpuDevice : undefined,
 			};
 
 			if (customModelId) {
@@ -692,6 +704,7 @@ export function GenerationPanel() {
 			isFlux2,
 			loras,
 			selectedOrchestratorId,
+			selectedGpuDevice,
 			customModelId,
 			baseModel,
 			textEncoderModelId,
@@ -996,7 +1009,14 @@ export function GenerationPanel() {
 						batchSize={batchSize}
 						setBatchSize={setBatchSize}
 						selectedOrchestratorId={selectedOrchestratorId}
-						setSelectedOrchestratorId={setSelectedOrchestratorId}
+						setSelectedOrchestratorId={(id) => {
+							setSelectedOrchestratorId(id);
+							setSelectedGpuDevice(null);
+						}}
+						selectedGpuDevice={selectedGpuDevice}
+						setSelectedGpuDevice={setSelectedGpuDevice}
+						orchestratorsList={orchestratorsList}
+						setOrchestratorsList={setOrchestratorsList}
 						isBusy={isBusy}
 						activeJobId={activeJobId}
 						onGenerate={() => void handleGenerate()}

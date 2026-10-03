@@ -9,37 +9,43 @@ import {
   IconX,
 } from "@/components/icons";
 import { Button } from "@/components/ui/Button";
-import { Select, type SelectOption, type SelectRefHandle } from "@/components/ui/Select";
-import { startDiffusionJob } from "@/lib/jobs";
+import {
+	Select,
+	type SelectOption,
+	type SelectRefHandle,
+} from "@/components/ui/Select";
+import { showToast } from "@/components/ui/Toast";
 import { useHardwareTelemetry } from "@/hooks/useHardwareTelemetry";
 import { useVramEstimator } from "@/hooks/useVramEstimator";
+import { ApiError } from "@/lib/api";
 import {
   canTrainDiffusion,
   listDatasets,
   trainDiffusionDisabledReason,
 } from "@/lib/datasets";
-import { listModels } from "@/lib/models";
 import { formatBytes } from "@/lib/format";
-import { ApiError } from "@/lib/api";
-import { diffusionErrorMessage } from "@/types/studio";
-import { showToast } from "@/components/ui/Toast";
-import NodeSelect from "../NodeSelect";
+import { startDiffusionJob } from "@/lib/jobs";
+import { listModels } from "@/lib/models";
+import type { Orchestrator } from "@/lib/monitoring";
 import type {
   Dataset,
   DiffusionOptimizer,
   DiffusionPreset,
   Model,
 } from "@/types/studio";
-import {
-  estimateDiffusionVramGb,
-  type DiffusionBaseModel,
-  type DiffusionHyperparametersValues,
-} from "./estimateDiffusionVram";
+import { diffusionErrorMessage } from "@/types/studio";
+import GpuDeviceSelect from "../GpuDeviceSelect";
+import NodeSelect from "../NodeSelect";
 import { DiffusionAdvancedSettings } from "./DiffusionAdvancedSettings";
 import { DiffusionHyperparametersSection } from "./DiffusionHyperparametersSection";
 import { DiffusionPresetBar } from "./DiffusionPresetBar";
 import { DiffusionSamplesSection } from "./DiffusionSamplesSection";
 import { DiffusionVramForecast } from "./DiffusionVramForecast";
+import {
+	type DiffusionBaseModel,
+	type DiffusionHyperparametersValues,
+	estimateDiffusionVramGb,
+} from "./estimateDiffusionVram";
 
 export interface ForjaDifusaoSetupProps {
   onJobCreated?: (jobId: string) => void;
@@ -78,6 +84,12 @@ export function ForjaDifusaoSetup({
   const [selectedOrchestratorId, setSelectedOrchestratorId] = useState<
     string | null
   >(null);
+	const [selectedGpuDevice, setSelectedGpuDevice] = useState<string | null>(
+		null,
+	);
+	const [orchestratorsList, setOrchestratorsList] = useState<Orchestrator[]>(
+		[],
+	);
   /* Base custom (fatia pesos-custom-flux2): UUID de checkpoint kind=checkpoint; "" = preset oficial. */
   const [customModelId, setCustomModelId] = useState<string>("");
   /* Text encoder custom (kind=text_encoder). "" = encoder oficial BFL; só vale p/ arch flux-2. */
@@ -103,7 +115,9 @@ export function ForjaDifusaoSetup({
   });
   // Nome do modelo/adaptador sugerido (outputName)
   const [outputName, setOutputName] = useState<string>(
-    typeof initialPreset?.outputName === "string" ? initialPreset.outputName : "",
+		typeof initialPreset?.outputName === "string"
+			? initialPreset.outputName
+			: "",
   );
 
   // Advanced options
@@ -191,7 +205,10 @@ export function ForjaDifusaoSetup({
     },
   ) {
     if (preset.baseModel) {
-      setParams((p) => ({ ...p, baseModel: preset.baseModel as DiffusionBaseModel }));
+			setParams((p) => ({
+				...p,
+				baseModel: preset.baseModel as DiffusionBaseModel,
+			}));
       setCustomModelId("");
       if (preset.baseModel !== "flux") setTextEncoderModelId("");
     }
@@ -202,7 +219,10 @@ export function ForjaDifusaoSetup({
     if (preset.batchSize !== undefined)
       setParams((p) => ({ ...p, batchSize: preset.batchSize ?? 1 }));
     if (preset.learningRate !== undefined)
-      setParams((p) => ({ ...p, learningRate: String(preset.learningRate ?? "1e-4") }));
+			setParams((p) => ({
+				...p,
+				learningRate: String(preset.learningRate ?? "1e-4"),
+			}));
     if (preset.rank !== undefined) {
       setParams((p) => ({
         ...p,
@@ -240,10 +260,8 @@ export function ForjaDifusaoSetup({
     if (preset.sampleSeed !== undefined)
       setSampleSeed(String(preset.sampleSeed));
     // Rerun via paramsToPreset: UUID de pesos (fine-tune) e nome do adaptador.
-    if (preset.weights !== undefined)
-      setSelectedWeightId(preset.weights ?? "");
-    if (preset.outputName !== undefined)
-      setOutputName(preset.outputName ?? "");
+		if (preset.weights !== undefined) setSelectedWeightId(preset.weights ?? "");
+		if (preset.outputName !== undefined) setOutputName(preset.outputName ?? "");
 
     showToast(`Preset aplicado: "${preset.name}"`, "info");
   }
@@ -345,7 +363,9 @@ export function ForjaDifusaoSetup({
             ? (parsed.data as Record<string, unknown>)
             : undefined;
         const engineOutputName =
-          typeof parsed.output_name === "string" ? parsed.output_name : undefined;
+					typeof parsed.output_name === "string"
+						? parsed.output_name
+						: undefined;
 
         applyPreset({
           name:
@@ -627,7 +647,10 @@ export function ForjaDifusaoSetup({
   const defaultSuggestedOutputName = useMemo(() => {
     const dsSlug = selectedDataset?.slug || "dataset";
     const trigger = params.triggerWord.trim()
-      ? params.triggerWord.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-")
+			? params.triggerWord
+					.trim()
+					.toLowerCase()
+					.replace(/[^a-z0-9]+/g, "-")
       : "lora";
     return `${dsSlug}-${params.baseModel}-${trigger}.safetensors`;
   }, [selectedDataset, params.baseModel, params.triggerWord]);
@@ -689,9 +712,7 @@ export function ForjaDifusaoSetup({
   /* Arch efetivo do treino: custom ⇒ arch do checkpoint; senão o preset ("flux" = flux-2-klein-4b). */
   const trainEffectiveArch = useMemo(() => {
     if (customModelId) {
-      return (
-        checkpointModels.find((m) => m.id === customModelId)?.arch ?? null
-      );
+			return checkpointModels.find((m) => m.id === customModelId)?.arch ?? null;
     }
     return params.baseModel === "flux" ? "flux-2-klein-4b" : params.baseModel;
   }, [customModelId, checkpointModels, params.baseModel]);
@@ -703,7 +724,9 @@ export function ForjaDifusaoSetup({
       estimateDiffusionVramGb(
         trainEffectiveArch === "flux-2-klein-4b"
           ? "flux"
-          : trainEffectiveArch === "sdxl" || trainEffectiveArch === "sd15" || trainEffectiveArch === "qwen-image-2.1"
+					: trainEffectiveArch === "sdxl" ||
+							trainEffectiveArch === "sd15" ||
+							trainEffectiveArch === "qwen-image-2.1"
             ? trainEffectiveArch
             : params.baseModel,
         params.batchSize,
@@ -875,6 +898,7 @@ export function ForjaDifusaoSetup({
         alpha: params.alpha,
         weights: selectedWeightId || null,
         orchestratorId: selectedOrchestratorId || null,
+        gpuDevice: (selectedOrchestratorId && selectedGpuDevice) ? selectedGpuDevice : undefined,
         samplePrompt:
           enableSamples && samplePrompt.trim()
             ? samplePrompt.trim()
@@ -1054,7 +1078,11 @@ export function ForjaDifusaoSetup({
               const base = val.replace("preset:", "") as DiffusionBaseModel;
               setCustomModelId("");
               if (base === "qwen-image-2.1") {
-                setParams((p) => ({ ...p, baseModel: base, learningRate: "0.0002" }));
+								setParams((p) => ({
+									...p,
+									baseModel: base,
+									learningRate: "0.0002",
+								}));
                 setResolution(1024);
               } else {
                 setParams((p) => ({ ...p, baseModel: base }));
@@ -1153,7 +1181,24 @@ export function ForjaDifusaoSetup({
       {/* Nó de Execução (ADR-0015 D2) */}
       <NodeSelect
         value={selectedOrchestratorId}
-        onChange={setSelectedOrchestratorId}
+				onChange={(nodeId) => {
+					setSelectedOrchestratorId(nodeId);
+					setSelectedGpuDevice(null);
+				}}
+				onOrchestratorsLoaded={setOrchestratorsList}
+				disabled={busy}
+			/>
+
+			{/* GPU de Execução (Fatia F2) */}
+			<GpuDeviceSelect
+				orchestratorId={selectedOrchestratorId}
+				devices={
+					orchestratorsList.find((o) => o.id === selectedOrchestratorId)
+						?.gpuDevices ?? null
+				}
+				value={selectedGpuDevice}
+				onChange={setSelectedGpuDevice}
+				vramMinGb={estimatedVram}
         disabled={busy}
       />
 

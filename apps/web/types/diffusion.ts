@@ -81,6 +81,14 @@ export function diffusionErrorMessage(code: string): string {
       return "Fila de treino indisponível — tente novamente.";
     case "not_found":
       return "Job ou modelo não encontrado.";
+    case "invalid_gpu_device":
+      return "Identificador da GPU inválido (deve ser UUID ou índice).";
+    case "gpu_device_requires_orchestrator":
+      return "Seleção de GPU exige selecionar um nó de execução.";
+    case "unknown_gpu_device":
+      return "GPU selecionada não encontrada no nó escolhido.";
+    case "insufficient_gpu_vram":
+      return "A GPU selecionada não possui VRAM suficiente para os requisitos mínimos deste modelo.";
     default:
       return "Falha ao criar job de treino de difusão.";
   }
@@ -105,6 +113,7 @@ export interface DiffusionGenerateJobRequest {
   batchSize?: number;
   loras?: { modelId: string; scale: number }[];
   orchestratorId?: string | null;
+  gpuDevice?: string | null;
   /* img2img (fatia feat/img2img — openapi 30140ea): XOR, no máximo um. */
   initImageId?: string | null;
   initGenerationId?: string | null;
@@ -130,6 +139,14 @@ export function diffusionGenerateErrorMessage(code: string): string {
       return "Fila de geração indisponível — tente novamente.";
     case "not_found":
       return "Pesos de modelo selecionados não encontrados.";
+    case "invalid_gpu_device":
+      return "Identificador da GPU inválido (deve ser UUID ou índice).";
+    case "gpu_device_requires_orchestrator":
+      return "Seleção de GPU exige selecionar um nó de execução.";
+    case "unknown_gpu_device":
+      return "GPU selecionada não encontrada no nó escolhido.";
+    case "insufficient_gpu_vram":
+      return "A GPU selecionada não possui VRAM suficiente para os requisitos mínimos deste modelo.";
     default:
       return "Falha ao submeter job de geração de difusão.";
   }

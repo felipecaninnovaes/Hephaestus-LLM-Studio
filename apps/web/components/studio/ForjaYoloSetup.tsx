@@ -1,32 +1,42 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  IconPlay,
-  IconDatabase,
   IconAlertTriangle,
+	IconDatabase,
   IconInfo,
+	IconPlay,
   IconZap,
 } from "@/components/icons";
 import { Button, getButtonClasses } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import { Select, type SelectOption, type SelectRefHandle } from "@/components/ui/Select";
-import { startYoloJob } from "@/lib/jobs";
+import {
+	Select,
+	type SelectOption,
+	type SelectRefHandle,
+} from "@/components/ui/Select";
+import { showToast } from "@/components/ui/Toast";
 import { useHardwareTelemetry } from "@/hooks/useHardwareTelemetry";
 import { useVramEstimator } from "@/hooks/useVramEstimator";
-import { listDatasets, canTrainYolo, trainDisabledReason } from "@/lib/datasets";
-import { listModels } from "@/lib/models";
-import { formatBytes } from "@/lib/format";
 import { ApiError } from "@/lib/api";
-import { jobErrorMessage } from "@/types/studio";
-import { showToast } from "@/components/ui/Toast";
-import NodeSelect from "./NodeSelect";
-import type { Dataset, Model, Telemetry, YoloAugment } from "@/types/studio";
 import {
-  YoloHyperparameters,
-  EPOCHS_MIN,
+	canTrainYolo,
+	listDatasets,
+	trainDisabledReason,
+} from "@/lib/datasets";
+import { formatBytes } from "@/lib/format";
+import { startYoloJob } from "@/lib/jobs";
+import { listModels } from "@/lib/models";
+import type { Orchestrator } from "@/lib/monitoring";
+import type { Dataset, Model, Telemetry, YoloAugment } from "@/types/studio";
+import { jobErrorMessage } from "@/types/studio";
+import GpuDeviceSelect from "./GpuDeviceSelect";
+import NodeSelect from "./NodeSelect";
+import {
   EPOCHS_MAX,
+	EPOCHS_MIN,
+	YoloHyperparameters,
   type YoloHyperparametersValues,
 } from "./YoloHyperparameters";
 
@@ -101,8 +111,15 @@ export default function ForjaYoloSetup({
   const [selectedWeightId, setSelectedWeightId] = useState<string>(
     initialWeightsId ?? "",
   );
-  const [selectedOrchestratorId, setSelectedOrchestratorId] = useState<string | null>(null);
-
+	const [selectedOrchestratorId, setSelectedOrchestratorId] = useState<
+		string | null
+	>(null);
+	const [selectedGpuDevice, setSelectedGpuDevice] = useState<string | null>(
+		null,
+	);
+	const [orchestratorsList, setOrchestratorsList] = useState<Orchestrator[]>(
+		[],
+	);
   // Form fields — mirrors TrainYoloModal defaults
   const [params, setParams] = useState<YoloHyperparametersValues>({
     model: initialParams?.model ?? "yolo11m",
@@ -150,10 +167,15 @@ export default function ForjaYoloSetup({
 
   // Estimativa preditiva de VRAM em GB
   const estimatedVram = useMemo(
-    () => estimateYoloVramGb(params.model, params.batch, params.imgsz, params.optimizer),
+		() =>
+			estimateYoloVramGb(
+				params.model,
+				params.batch,
+				params.imgsz,
+				params.optimizer,
+			),
     [params.model, params.batch, params.imgsz, params.optimizer],
   );
-
 
   const { oomRisk } = useVramEstimator(estimatedVram, nodeVramTotalGb, 0.8);
 
@@ -193,7 +215,9 @@ export default function ForjaYoloSetup({
       }
     }
     load();
-    return () => { cancelled = true; };
+		return () => {
+			cancelled = true;
+		};
   }, []);
 
   // Load YOLO models for weights selector
@@ -210,7 +234,9 @@ export default function ForjaYoloSetup({
       }
     }
     load();
-    return () => { cancelled = true; };
+		return () => {
+			cancelled = true;
+		};
   }, []);
 
   // Auto-focus first field
@@ -261,7 +287,8 @@ export default function ForjaYoloSetup({
     return yoloModels.map((m) => ({
       value: m.id,
       label: `${m.name} · ${formatBytes(m.bytes)}`,
-      badge: m.source === "train" ? (
+			badge:
+				m.source === "train" ? (
         <span className="rounded-full border border-brand-500/30 bg-brand-500/10 px-1.5 py-0.5 font-mono text-3xs text-brand-400">
           Treino
         </span>
@@ -270,9 +297,14 @@ export default function ForjaYoloSetup({
   }, [yoloModels]);
 
   const parsedLr0 = parseFloat(params.lr0);
-  const epochsValid = Number.isInteger(params.epochs) && params.epochs >= EPOCHS_MIN && params.epochs <= EPOCHS_MAX;
-  const lr0Valid = !isNaN(parsedLr0) && parsedLr0 >= 1e-5 && parsedLr0 <= 0.1 + 1e-9;
-  const canSubmit = hasEligibleDataset && selectedDatasetId && epochsValid && lr0Valid && !busy;
+	const epochsValid =
+		Number.isInteger(params.epochs) &&
+		params.epochs >= EPOCHS_MIN &&
+		params.epochs <= EPOCHS_MAX;
+	const lr0Valid =
+		!isNaN(parsedLr0) && parsedLr0 >= 1e-5 && parsedLr0 <= 0.1 + 1e-9;
+	const canSubmit =
+		hasEligibleDataset && selectedDatasetId && epochsValid && lr0Valid && !busy;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -304,6 +336,7 @@ export default function ForjaYoloSetup({
         augment: params.augment,
         weights: selectedWeightId || null,
         orchestratorId: selectedOrchestratorId || null,
+        gpuDevice: (selectedOrchestratorId && selectedGpuDevice) ? selectedGpuDevice : undefined,
         outputName: outputName.trim() || undefined,
       });
       showToast(
@@ -314,6 +347,7 @@ export default function ForjaYoloSetup({
       setSelectedDatasetId("");
       setSelectedWeightId("");
       setSelectedOrchestratorId(null);
+			setSelectedGpuDevice(null);
       setOutputName("");
       setParams({
         model: "yolo11m",
@@ -354,7 +388,8 @@ export default function ForjaYoloSetup({
           Nenhum dataset YOLO elegível
         </p>
         <p className="text-xs text-zinc-400">
-          Crie ou prepare um dataset YOLO com pelo menos 1 classe e 1 imagem para treinar.
+					Crie ou prepare um dataset YOLO com pelo menos 1 classe e 1 imagem
+					para treinar.
         </p>
         <Link
           href="/datasets"
@@ -425,8 +460,12 @@ export default function ForjaYoloSetup({
 
       {/* Nome do Modelo (outputName — ADR-0022 D1/D4) */}
       <div className="space-y-1.5">
-        <label htmlFor="setup-output-name" className="block text-xs font-medium text-zinc-300">
-          Nome do Modelo / Adaptador <span className="text-zinc-500 font-normal">(opcional)</span>
+				<label
+					htmlFor="setup-output-name"
+					className="block text-xs font-medium text-zinc-300"
+				>
+					Nome do Modelo / Adaptador{" "}
+					<span className="text-zinc-500 font-normal">(opcional)</span>
         </label>
         <Input
           id="setup-output-name"
@@ -438,7 +477,8 @@ export default function ForjaYoloSetup({
           className="font-mono text-xs"
         />
         <p className="text-2xs font-mono text-zinc-500">
-          Nome personalizado para o arquivo .pt. Se omitido, o estúdio gerará um nome semântico inteligente.
+					Nome personalizado para o arquivo .pt. Se omitido, o estúdio gerará um
+					nome semântico inteligente.
         </p>
       </div>
 
@@ -452,7 +492,25 @@ export default function ForjaYoloSetup({
       {/* Nó de Execução (ADR-0015 D2) */}
       <NodeSelect
         value={selectedOrchestratorId}
-        onChange={setSelectedOrchestratorId}
+				onChange={(nodeId) => {
+					setSelectedOrchestratorId(nodeId);
+					setSelectedGpuDevice(null);
+				}}
+				onOrchestratorsLoaded={setOrchestratorsList}
+				disabled={busy}
+				size="default"
+			/>
+
+			{/* GPU de Execução (Fatia F2) */}
+			<GpuDeviceSelect
+				orchestratorId={selectedOrchestratorId}
+				devices={
+					orchestratorsList.find((o) => o.id === selectedOrchestratorId)
+						?.gpuDevices ?? null
+				}
+				value={selectedGpuDevice}
+				onChange={setSelectedGpuDevice}
+				vramMinGb={estimatedVram}
         disabled={busy}
         size="default"
       />
@@ -481,7 +539,8 @@ export default function ForjaYoloSetup({
                   : "text-zinc-100"
             }`}
           >
-            ~{estimatedVram} GB {nodeVramTotalGb ? `/ ${nodeVramTotalGb} GB` : ""}
+						~{estimatedVram} GB{" "}
+						{nodeVramTotalGb ? `/ ${nodeVramTotalGb} GB` : ""}
           </span>
         </div>
 
@@ -498,7 +557,10 @@ export default function ForjaYoloSetup({
             style={{
               width: `${Math.min(
                 100,
-                Math.max(6, Math.round((estimatedVram / (nodeVramTotalGb || 16)) * 100)),
+								Math.max(
+									6,
+									Math.round((estimatedVram / (nodeVramTotalGb || 16)) * 100),
+								),
               )}%`,
             }}
           />
@@ -507,7 +569,10 @@ export default function ForjaYoloSetup({
         {/* Dispositivo de Destino */}
         <div className="flex items-center justify-between font-mono text-2xs text-zinc-400">
           <span>Dispositivo:</span>
-          <span className="text-zinc-300 truncate max-w-[180px]" title={deviceLabel}>
+					<span
+						className="text-zinc-300 truncate max-w-[180px]"
+						title={deviceLabel}
+					>
             {deviceLabel}
           </span>
         </div>
@@ -536,7 +601,9 @@ export default function ForjaYoloSetup({
                 <p className="text-zinc-300 leading-snug">
                   {oomRisk === "danger"
                     ? `A combinação selecionada exige ~${estimatedVram} GB de VRAM${
-                        nodeVramTotalGb ? ` (limite do nó: ${nodeVramTotalGb} GB)` : ""
+												nodeVramTotalGb
+													? ` (limite do nó: ${nodeVramTotalGb} GB)`
+													: ""
                       }. O treinamento local falhará por falta de memória na GPU.`
                     : `A estimativa de ~${estimatedVram} GB opera próxima ao limite seguro de alocação da GPU.`}
                 </p>

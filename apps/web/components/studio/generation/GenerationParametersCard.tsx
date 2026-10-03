@@ -1,6 +1,7 @@
 "use client";
 
 import { IconDice, IconPlay, IconRefresh, IconStop } from "@/components/icons";
+import GpuDeviceSelect from "@/components/studio/GpuDeviceSelect";
 import NodeSelect from "@/components/studio/NodeSelect";
 import {
   Button,
@@ -10,7 +11,12 @@ import {
   type SelectOption,
   Slider,
 } from "@/components/ui";
-import type { GeracaoQuantization, GeracaoSampler, GeracaoUpscaleModel } from "@/lib/geracao-storage";
+import type {
+	GeracaoQuantization,
+	GeracaoSampler,
+	GeracaoUpscaleModel,
+} from "@/lib/geracao-storage";
+import type { Orchestrator } from "@/lib/monitoring";
 import {
   ASPECT_RESOLUTION_PRESETS,
   QUANTIZATION_OPTIONS,
@@ -48,6 +54,11 @@ export interface GenerationParametersCardProps {
   setBatchSize: (b: number) => void;
   selectedOrchestratorId: string | null;
   setSelectedOrchestratorId: (id: string | null) => void;
+	selectedGpuDevice?: string | null;
+	setSelectedGpuDevice?: (dev: string | null) => void;
+	orchestratorsList?: Orchestrator[];
+	setOrchestratorsList?: (list: Orchestrator[]) => void;
+	vramMinGb?: number | null;
   isBusy: boolean;
   activeJobId: string | null;
   onGenerate: () => void;
@@ -84,6 +95,11 @@ export function GenerationParametersCard({
   setBatchSize,
   selectedOrchestratorId,
   setSelectedOrchestratorId,
+	selectedGpuDevice = null,
+	setSelectedGpuDevice,
+	orchestratorsList = [],
+	setOrchestratorsList,
+	vramMinGb,
   isBusy,
   activeJobId,
   onGenerate,
@@ -289,7 +305,24 @@ export function GenerationParametersCard({
       {/* ══ Nó de Execução (Orchestrator) ══ */}
       <NodeSelect
         value={selectedOrchestratorId}
-        onChange={setSelectedOrchestratorId}
+				onChange={(nodeId) => {
+					setSelectedOrchestratorId(nodeId);
+					setSelectedGpuDevice?.(null);
+				}}
+				onOrchestratorsLoaded={setOrchestratorsList}
+				disabled={isBusy}
+			/>
+
+			{/* ══ GPU de Execução (Fatia F2) ══ */}
+			<GpuDeviceSelect
+				orchestratorId={selectedOrchestratorId}
+				devices={
+					orchestratorsList.find((o) => o.id === selectedOrchestratorId)
+						?.gpuDevices ?? null
+				}
+				value={selectedGpuDevice}
+				onChange={(dev) => setSelectedGpuDevice?.(dev)}
+				vramMinGb={vramMinGb}
         disabled={isBusy}
       />
 

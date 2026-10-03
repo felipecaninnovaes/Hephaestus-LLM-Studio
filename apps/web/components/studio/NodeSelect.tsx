@@ -8,6 +8,7 @@ import { listOrchestrators, type Orchestrator } from "@/lib/monitoring";
 export interface NodeSelectProps {
   value: string | null;
   onChange: (nodeId: string | null) => void;
+  onOrchestratorsLoaded?: (orchestrators: Orchestrator[]) => void;
   disabled?: boolean;
   label?: string;
   hint?: string;
@@ -25,6 +26,7 @@ export interface NodeSelectProps {
 export default function NodeSelect({
   value,
   onChange,
+  onOrchestratorsLoaded,
   disabled = false,
   label = "Nó de Execução",
   hint = "Selecione o ambiente alvo ou use Automático para roteamento por menor carga.",
@@ -41,6 +43,7 @@ export default function NodeSelect({
         const res = await listOrchestrators();
         if (!cancelled) {
           setOrchestrators(res.items || []);
+          onOrchestratorsLoaded?.(res.items || []);
         }
       } catch {
         // Silenciosamente tolera indisponibilidade do manager

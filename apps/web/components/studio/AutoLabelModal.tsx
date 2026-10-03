@@ -1,25 +1,31 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  IconSparkles,
   IconCpu,
-  IconZap,
-  IconServer,
-  IconLock,
   IconInfo,
+	IconLock,
   IconRefresh,
+	IconServer,
+	IconSparkles,
+	IconZap,
 } from "@/components/icons";
-import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import { Modal } from "@/components/ui/Modal";
 import { Select, type SelectOption } from "@/components/ui/Select";
+import { showToast } from "@/components/ui/Toast";
 import { ApiError } from "@/lib/api";
 import { startAutolabelJob } from "@/lib/autolabel";
-import { autolabelErrorMessage, type AutolabelModel, type StudioClass } from "@/types/studio";
-import { showToast } from "@/components/ui/Toast";
 import { openActionCenter } from "@/lib/events";
+import type { Orchestrator } from "@/lib/monitoring";
+import {
+	type AutolabelModel,
+	autolabelErrorMessage,
+	type StudioClass,
+} from "@/types/studio";
+import GpuDeviceSelect from "./GpuDeviceSelect";
 import NodeSelect from "./NodeSelect";
 
 interface Props {
@@ -34,7 +40,12 @@ interface Props {
   totalImagesCount?: number;
 }
 
-export type ApiProviderPreset = "openai" | "ollama" | "openrouter" | "lmstudio" | "custom";
+export type ApiProviderPreset =
+	| "openai"
+	| "ollama"
+	| "openrouter"
+	| "lmstudio"
+	| "custom";
 
 interface ProviderConfig {
   id: ApiProviderPreset;
@@ -146,7 +157,10 @@ function sanitizeParam(val: string): string {
 }
 
 function sanitizeUrl(val: string): string {
-  return val.trim().replace(/^["']+|["']+$/g, "").replace(/\/+$/, "");
+	return val
+		.trim()
+		.replace(/^["']+|["']+$/g, "")
+		.replace(/\/+$/, "");
 }
 
 export type ScopeMode = "all" | "class" | "selected";
@@ -179,10 +193,18 @@ export default function AutoLabelModal({
   // Estados principais
   const [model, setModel] = useState<AutolabelModel>("florence-2");
   const [prompt, setPrompt] = useState("");
-  const [selectedOrchestratorId, setSelectedOrchestratorId] = useState<string | null>(null);
-
+	const [selectedOrchestratorId, setSelectedOrchestratorId] = useState<
+		string | null
+	>(null);
+	const [selectedGpuDevice, setSelectedGpuDevice] = useState<string | null>(
+		null,
+	);
+	const [orchestratorsList, setOrchestratorsList] = useState<Orchestrator[]>(
+		[],
+	);
   // Estados de Provedor OpenAI / Compatível
-  const [selectedProvider, setSelectedProvider] = useState<ApiProviderPreset>("openai");
+	const [selectedProvider, setSelectedProvider] =
+		useState<ApiProviderPreset>("openai");
   const [apiKey, setApiKey] = useState("");
   const [showApiKey, setShowApiKey] = useState(false);
   const [apiBase, setApiBase] = useState("https://api.openai.com/v1");
@@ -197,12 +219,17 @@ export default function AutoLabelModal({
   function persistCustomConfig(updates: Partial<AutoLabelSavedConfig>) {
     try {
       const raw = localStorage.getItem(AUTOLABEL_STORAGE_KEY);
-      const current = raw ? (JSON.parse(raw) as Partial<AutoLabelSavedConfig>) : {};
+			const current = raw
+				? (JSON.parse(raw) as Partial<AutoLabelSavedConfig>)
+				: {};
       const next: AutoLabelSavedConfig = {
         provider: updates.provider ?? current.provider ?? selectedProvider,
         apiBase: updates.apiBase ?? current.apiBase ?? apiBase,
         openaiModel: updates.openaiModel ?? current.openaiModel ?? openaiModel,
-        apiKey: updates.apiKey !== undefined ? updates.apiKey : (current.apiKey ?? apiKey),
+				apiKey:
+					updates.apiKey !== undefined
+						? updates.apiKey
+						: (current.apiKey ?? apiKey),
         model: updates.model ?? current.model ?? model,
         disableReasoning:
           updates.disableReasoning !== undefined
@@ -252,7 +279,8 @@ export default function AutoLabelModal({
         if (saved.openaiModel) setOpenaiModel(saved.openaiModel);
         if (saved.apiKey !== undefined) setApiKey(saved.apiKey);
         if (saved.model) setModel(saved.model);
-        if (saved.disableReasoning !== undefined) setDisableReasoning(saved.disableReasoning);
+				if (saved.disableReasoning !== undefined)
+					setDisableReasoning(saved.disableReasoning);
       }
     } catch {
       // Falha silenciosa se localStorage corrompido
@@ -278,7 +306,9 @@ export default function AutoLabelModal({
   }
 
   function handleResetProvider() {
-    const p = PROVIDER_PRESETS.find((x) => x.id === selectedProvider) ?? PROVIDER_PRESETS[0];
+		const p =
+			PROVIDER_PRESETS.find((x) => x.id === selectedProvider) ??
+			PROVIDER_PRESETS[0];
     setApiBase(p.defaultBase);
     setOpenaiModel(p.defaultModel);
     persistCustomConfig({
@@ -299,19 +329,31 @@ export default function AutoLabelModal({
         datasetId,
         model,
         ...(prompt.trim() ? { prompt: prompt.trim() } : {}),
-        ...(selectedOrchestratorId ? { orchestratorId: selectedOrchestratorId } : {}),
+				...(selectedOrchestratorId
+					? { orchestratorId: selectedOrchestratorId }
+					: {}),
+				...(selectedOrchestratorId && selectedGpuDevice
+					? { gpuDevice: selectedGpuDevice }
+					: {}),
       };
-
       if (scopeMode === "class" && selectedClassId) {
         payload.filterClassId = selectedClassId;
-      } else if (scopeMode === "selected" && selectedImageIds && selectedImageIds.length > 0) {
+			} else if (
+				scopeMode === "selected" &&
+				selectedImageIds &&
+				selectedImageIds.length > 0
+			) {
         payload.imageIds = selectedImageIds;
       }
 
       if (model === "openai") {
-        const provider = PROVIDER_PRESETS.find((p) => p.id === selectedProvider);
+				const provider = PROVIDER_PRESETS.find(
+					(p) => p.id === selectedProvider,
+				);
         if (provider?.keyRequired && !apiKey.trim()) {
-          setTopError(`O provedor ${provider.label} requer uma API Key para autenticação.`);
+					setTopError(
+						`O provedor ${provider.label} requer uma API Key para autenticação.`,
+					);
           setBusy(false);
           return;
         }
@@ -398,9 +440,13 @@ export default function AutoLabelModal({
               Escopo de Execução
             </span>
             <span className="font-mono text-3xs text-zinc-400">
-              {scopeMode === "all" && (totalImagesCount ? `${totalImagesCount} imagens` : "todas as imagens")}
+							{scopeMode === "all" &&
+								(totalImagesCount
+									? `${totalImagesCount} imagens`
+									: "todas as imagens")}
               {scopeMode === "class" && "filtro por classe YOLO"}
-              {scopeMode === "selected" && `${selectedImageIds?.length ?? 0} imagens selecionadas`}
+							{scopeMode === "selected" &&
+								`${selectedImageIds?.length ?? 0} imagens selecionadas`}
             </span>
           </div>
 
@@ -416,8 +462,12 @@ export default function AutoLabelModal({
                   : "border-white/10 bg-white/[0.02] text-zinc-400 hover:border-white/20 hover:text-zinc-200"
               }`}
             >
-              <span className="font-semibold text-xs text-zinc-100">Dataset Completo</span>
-              <span className="font-mono text-3xs text-zinc-400">Todas as imagens ativas</span>
+							<span className="font-semibold text-xs text-zinc-100">
+								Dataset Completo
+							</span>
+							<span className="font-mono text-3xs text-zinc-400">
+								Todas as imagens ativas
+							</span>
             </button>
 
             {/* Filtrar por Classe */}
@@ -436,14 +486,20 @@ export default function AutoLabelModal({
                   : "border-white/10 bg-white/[0.02] text-zinc-400 hover:border-white/20 hover:text-zinc-200 disabled:opacity-40"
               }`}
             >
-              <span className="font-semibold text-xs text-zinc-100">Por Classe YOLO</span>
-              <span className="font-mono text-3xs text-zinc-400">Apenas com a classe anotada</span>
+							<span className="font-semibold text-xs text-zinc-100">
+								Por Classe YOLO
+							</span>
+							<span className="font-mono text-3xs text-zinc-400">
+								Apenas com a classe anotada
+							</span>
             </button>
 
             {/* Selecionadas */}
             <button
               type="button"
-              disabled={busy || !selectedImageIds || selectedImageIds.length === 0}
+							disabled={
+								busy || !selectedImageIds || selectedImageIds.length === 0
+							}
               onClick={() => setScopeMode("selected")}
               className={`flex flex-col text-left p-2.5 rounded-lg border transition ${
                 scopeMode === "selected"
@@ -451,7 +507,9 @@ export default function AutoLabelModal({
                   : "border-white/10 bg-white/[0.02] text-zinc-400 hover:border-white/20 hover:text-zinc-200 disabled:opacity-40"
               }`}
             >
-              <span className="font-semibold text-xs text-zinc-100">Selecionadas no Grid</span>
+							<span className="font-semibold text-xs text-zinc-100">
+								Selecionadas no Grid
+							</span>
               <span className="font-mono text-3xs text-zinc-400">
                 {selectedImageIds && selectedImageIds.length > 0
                   ? `${selectedImageIds.length} selecionadas`
@@ -519,7 +577,8 @@ export default function AutoLabelModal({
                 </span>
               </div>
               <p className="font-mono text-2xs text-zinc-400 leading-snug">
-                Microsoft Florence-2. Dense captioning rápido e rico em contornos visuais.
+								Microsoft Florence-2. Dense captioning rápido e rico em
+								contornos visuais.
               </p>
             </button>
 
@@ -544,7 +603,8 @@ export default function AutoLabelModal({
                 </span>
               </div>
               <p className="font-mono text-2xs text-zinc-400 leading-snug">
-                Alibaba Qwen2-VL. Alto raciocínio analítico e aderência a instruções finas.
+								Alibaba Qwen2-VL. Alto raciocínio analítico e aderência a
+								instruções finas.
               </p>
             </button>
 
@@ -569,7 +629,8 @@ export default function AutoLabelModal({
                 </span>
               </div>
               <p className="font-mono text-2xs text-zinc-400 leading-snug">
-                GPT-4o, GPT-4o-mini ou instâncias locais (Ollama, vLLM) via protocolo OpenAI.
+								GPT-4o, GPT-4o-mini ou instâncias locais (Ollama, vLLM) via
+								protocolo OpenAI.
               </p>
             </button>
 
@@ -594,7 +655,8 @@ export default function AutoLabelModal({
                 </span>
               </div>
               <p className="font-mono text-2xs text-zinc-400 leading-snug">
-                Geração sintética rápida para testes de fluxo ou ambientes sem GPU/internet.
+								Geração sintética rápida para testes de fluxo ou ambientes sem
+								GPU/internet.
               </p>
             </button>
           </div>
@@ -672,11 +734,15 @@ export default function AutoLabelModal({
                 >
                   API Key
                   {(() => {
-                    const p = PROVIDER_PRESETS.find((x) => x.id === selectedProvider);
+										const p = PROVIDER_PRESETS.find(
+											(x) => x.id === selectedProvider,
+										);
                     return p?.keyRequired ? (
                       <span className="text-amber-400 ml-1">*</span>
                     ) : (
-                      <span className="text-zinc-500 font-normal ml-1">(opcional)</span>
+											<span className="text-zinc-500 font-normal ml-1">
+												(opcional)
+											</span>
                     );
                   })()}
                 </label>
@@ -693,8 +759,8 @@ export default function AutoLabelModal({
                   id="openai-key"
                   type={showApiKey ? "text" : "password"}
                   placeholder={
-                    PROVIDER_PRESETS.find((x) => x.id === selectedProvider)?.keyPlaceholder ??
-                    "sk-proj-... (opcional se no nó)"
+										PROVIDER_PRESETS.find((x) => x.id === selectedProvider)
+											?.keyPlaceholder ?? "sk-proj-... (opcional se no nó)"
                   }
                   value={apiKey}
                   onChange={(e) => {
@@ -785,7 +851,9 @@ export default function AutoLabelModal({
               if (!p || p.suggestedModels.length === 0) return null;
               return (
                 <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                  <span className="font-mono text-3xs text-zinc-500">Modelos sugeridos:</span>
+									<span className="font-mono text-3xs text-zinc-500">
+										Modelos sugeridos:
+									</span>
                   {p.suggestedModels.map((sm) => (
                     <button
                       key={sm}
@@ -820,7 +888,15 @@ export default function AutoLabelModal({
                   </span>
                 </div>
                 <p className="text-2xs text-zinc-400">
-                  Suprime tokens de reflexão interna (<code className="rounded bg-black/40 px-1 py-0.5 font-mono text-3xs text-zinc-300">&lt;think&gt;</code> / <code className="rounded bg-black/40 px-1 py-0.5 font-mono text-3xs text-zinc-300">reasoning_effort: none</code>), acelerando a resposta e economizando tokens de contexto.
+									Suprime tokens de reflexão interna (
+									<code className="rounded bg-black/40 px-1 py-0.5 font-mono text-3xs text-zinc-300">
+										&lt;think&gt;
+									</code>{" "}
+									/{" "}
+									<code className="rounded bg-black/40 px-1 py-0.5 font-mono text-3xs text-zinc-300">
+										reasoning_effort: none
+									</code>
+									), acelerando a resposta e economizando tokens de contexto.
                 </p>
               </div>
               <label className="relative inline-flex shrink-0 cursor-pointer items-center">
@@ -896,7 +972,24 @@ export default function AutoLabelModal({
         {/* 4. SELETOR DE NÓ DE EXECUÇÃO */}
         <NodeSelect
           value={selectedOrchestratorId}
-          onChange={setSelectedOrchestratorId}
+					onChange={(nodeId) => {
+						setSelectedOrchestratorId(nodeId);
+						setSelectedGpuDevice(null);
+					}}
+					onOrchestratorsLoaded={setOrchestratorsList}
+					disabled={busy}
+					size="default"
+				/>
+
+				{/* 4.1 SELETOR DE GPU DE EXECUÇÃO */}
+				<GpuDeviceSelect
+					orchestratorId={selectedOrchestratorId}
+					devices={
+						orchestratorsList.find((o) => o.id === selectedOrchestratorId)
+							?.gpuDevices ?? null
+					}
+					value={selectedGpuDevice}
+					onChange={setSelectedGpuDevice}
           disabled={busy}
           size="default"
         />

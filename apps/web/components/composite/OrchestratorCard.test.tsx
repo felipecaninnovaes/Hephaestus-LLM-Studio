@@ -78,6 +78,8 @@ describe("OrchestratorCard integration with MultiGpuRack", () => {
 			createElement(OrchestratorCard, { node: multiGpuNode }),
 		);
 		expect(html).toContain("docker-04");
+		expect(html).toContain("2 GPUs");
+		expect(html).toContain("VRAM (POOL DO NÓ)");
 		expect(html).toContain("RACK MULTI-GPU (2 PLACAS)");
 		expect(html).toContain("NVIDIA GeForce RTX 3060");
 		expect(html).toContain("NVIDIA GeForce GTX 1660 SUPER");

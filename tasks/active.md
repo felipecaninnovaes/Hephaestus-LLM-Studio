@@ -1,3 +1,13 @@
+## Fechado — Fix EACCES em `/outputs/.cache` com volumes novos no nó
+- **Branch:** `fix/orchestrator-engine-cache-dirs` (a partir de `develop` `1d0b9d4`).
+- **Sintoma (usuário, 2026-10-03 14:33 local):** `diffusion_train` no `orchestrator-gpu` morre com `[Errno 13] Permission denied: '/outputs/.cache'` logo após iniciar o container.
+- **Causa raiz (orchestrator, conferido no nó):** volumes `gpu_gpu_datasets`/`gpu_gpu_outputs` foram RECRIADOS em 2026-10-03T17:31:06Z (vazios; nó em `1d0b9d4`, orchestrator-gpu reiniciado ~17:32). A raiz do volume nasce `root 0755`; o boot só abre `.text_embeds_cache` (`services/orchestrator/src/main.rs:273-280`), mas o engine difusão (uid 1000) usa `/outputs/.cache/{huggingface/hub,torch,quantized}` (`app/mod.rs:1012-1039`, `Dockerfile.gpu:31-37`, `runtime.py:48-56`, `quant_cache.py:87-91`) e não consegue criar `.cache`. Nos volumes antigos o `.cache` existia desde a ponte `ENGINE_USER=0:0`, por isso nunca falhou. `create_dir_all_open` só faz chmod na folha.
+- [x] `@infra` hotfix no nó (5 níveis do `.cache` em 0777; probe uid 1000 OK; nenhum job ativo). Recriação dos volumes: `docker events` mostra destruição de `gpu_gpu_{models,datasets,outputs}` às 17:29–17:30Z e recriação às 17:31:06Z por redeploy do **Komodo Periphery** (sem reboot, nada no bash_history).
+- [x] `@backend` `ccba920`: `SHARED_ENGINE_CACHE_DIRS` + `ensure_shared_engine_dirs` no boot (0o777 nível a nível, inclusive dir já existente em 0755); teste de regressão; 230 testes, clippy limpo.
+- [x] `@reviewer` APROVA (NITs: abrir também a raiz `outputs`; comentário cita PITFALLS:51 em vez de :56). Merge ff em `develop`/`origin`.
+- [x] Deploy no nó (`@infra`): nó em `ccba920`, imagem `cd8e3c7128ec`, rollback `gpu-orchestrator-gpu:pre-cache-dirs` (`8a5bfd7c84cb`). Prova de regressão: `.cache`, `.cache/huggingface`, `.cache/torch` forçados a 755 antes do restart → 777 nos 6 diretórios após o boot (conferido pelo orchestrator via SSH), health 200, probe uid 1000 OK. Falta o usuário re-rodar o job real.
+- [x] `@docs`: PITFALLS L57 + backlog L77 (smoke de nó novo do zero; decidir se o stack no Komodo preserva volumes).
+
 ## Fechado — Galeria do dataset: miniaturas + upload no mobile
 - **Branch:** `perf/dataset-gallery-thumbs` (a partir de `develop` `2422ce8`).
 - **Pedido do usuário (2026-10-03):** galeria trava com imagens de alta resolução; no mobile não dá para enviar arquivos depois que o dataset tem 1 imagem (o tile de upload some).

@@ -74,6 +74,7 @@ Consolidação única de pendências e melhorias prioritárias. Rotas canônicas
   - Alertas via webhook (ntfy/Discord) — hoje alertas só na UI.
   - Prova formal no nó GPU de `systemMetrics` em ≥70% das linhas de step do `telemetry.jsonl` (aceite 3a não registrado; pontos `sys.*` já observados nos smokes).
 - [x] **Sensores de GPU & Seleção Multi-GPU:** sensores por GPU física (VRAM/W/%/°C) no heartbeat, `/api/orchestrators` e telemetria; `gpuDevice` (UUID ou índice → UUID) nos 5 submits com eleição por VRAM da placa (automático = menor que cabe com headroom; manual sem headroom); daemon fixado por `DIFFUSION_DAEMON_GPU_DEVICE` e preempção só na mesma GPU; `sys.gpu.*` por job e alerta `vram_high`; UI `MultiGpuRack` + `GpuDeviceSelect`; Pitfall D9 mitigado por UUID (Quitado 2026-10-03; commits `519cd9e`, `f83ddb1`, `e05cecc`, `95da793`, `691468d`, `2cc03b8` + fix `047a827`; smoke real no docker-04; spec arquivada em `docs/archive/specs/multi-gpu-sensores-selecao.md`).
+- **Smoke de nó novo do zero:** volumes `gpu_*` vazios + primeiro job de cada engine (difusão one-shot, daemon de difusão, yolo, autolabel, autotracker) rodando como uid 1000, para achar outras suposições de estado herdado (o `/outputs/.cache` do fix `ccba920` só apareceu porque o Komodo recriou os volumes). Decidir também se o stack no Komodo deve preservar volumes: o redeploy via Komodo no docker-04 (2026-10-03 17:31Z) apagou `gpu_gpu_{datasets,outputs,models}`, perdendo cache de modelos HF/datasets.
 
 ---
 

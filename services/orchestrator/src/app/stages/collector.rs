@@ -269,6 +269,94 @@ pub fn read_generation_meta_content(outputs: &Path) -> Option<String> {
     Some(String::from_utf8_lossy(&raw).into_owned())
 }
 
+/// Anexa métricas de GPU (`sys.gpu.*`) a um mapa de métricas para um report com step (fatia B3).
+///
+/// Lê os sensores do `GpuSampler` compartilhado para a GPU do job.
+/// Apenas reports com `epoch` e `step` recebem essas chaves.
+/// Sensor `None` → chave ausente (nunca 0 — PITFALLS:39).
+pub async fn attach_gpu_metrics_if_applicable(
+    metrics: &mut serde_json::Value,
+    step: Option<i64>,
+    gpu_sampler: Option<&crate::telemetry::gpu::GpuSampler>,
+    target_gpu_uuid: Option<&str>,
+) {
+    // Reports sem step não recebem métricas de GPU (UNIQUE (job_id, key, epoch, step) descartaria)
+    if step.is_none() {
+        return;
+    }
+    let (Some(sampler), Some(uuid)) = (gpu_sampler, target_gpu_uuid) else {
+        return;
+    };
+    let Some(device) = sampler.get_device_by_uuid(uuid).await else {
+        return;
+    };
+
+    if let Some(obj) = metrics.as_object_mut() {
+        if let Some(util) = device.gpu_utilization_pct {
+            if util.is_finite() {
+                obj.insert("sys.gpu.util_pct".to_string(), serde_json::json!(util));
+            }
+        }
+        if let Some(temp) = device.temperature_c {
+            obj.insert("sys.gpu.temp_c".to_string(), serde_json::json!(temp));
+        }
+        if let Some(power) = device.power_watts {
+            if power.is_finite() {
+                obj.insert("sys.gpu.power_w".to_string(), serde_json::json!(power));
+            }
+        }
+        obj.insert(
+            "sys.gpu.vram_used_mb".to_string(),
+            serde_json::json!(device.vram_used),
+        );
+    }
+}
+
+/// Resolve o UUID da GPU para um job de acordo com as regras da fatia B3:
+/// 1. `dispatch.gpu_device` se presente.
+/// 2. Sem ele, a única GPU de `ORCH_GPU_DEVICES` se for exatamente uma (resolve índice→UUID pelo sampler).
+/// 3. Senão retorna `None` (não emite métricas de GPU).
+pub async fn resolve_job_gpu_uuid(
+    dispatch_gpu: Option<&str>,
+    orch_gpu_devices: Option<&str>,
+    sampler: Option<&crate::telemetry::gpu::GpuSampler>,
+) -> Option<String> {
+    let target = match dispatch_gpu {
+        Some(g) if !g.trim().is_empty() => Some(g.trim()),
+        _ => match orch_gpu_devices {
+            Some(devices) => {
+                let list: Vec<&str> = devices
+                    .split(',')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if list.len() == 1 {
+                    Some(list[0])
+                } else {
+                    None
+                }
+            }
+            None => None,
+        },
+    }?;
+
+    if target.starts_with("GPU-") {
+        return Some(target.to_string());
+    }
+
+    if let Ok(idx) = target.parse::<u32>() {
+        if let Some(s) = sampler {
+            if let Some(sample) = s.sample().await {
+                if let Some(dev) = sample.devices.iter().find(|d| d.index == idx) {
+                    return Some(dev.uuid.clone());
+                }
+            }
+        }
+    }
+
+    None
+}
+
 /// Coleta incremental de métricas + streaming de samples/checkpoints durante a
 /// execução one-shot (poll a cada 2s).
 ///
@@ -287,6 +375,8 @@ pub async fn stream_metrics_and_samples(
     total_epochs: i32,
     is_diffusion: bool,
     run_log_path: PathBuf,
+    gpu_sampler: Option<crate::telemetry::gpu::GpuSampler>,
+    target_gpu_uuid: Option<String>,
 ) {
     use crate::compute_progress;
     use crate::domain::models::ReportBody;
@@ -535,7 +625,15 @@ pub async fn stream_metrics_and_samples(
                             epoch: Some(m.epoch),
                             step: m.step.map(|s| s as i32),
                             metrics: if is_metric {
-                                Some(m.to_report_json())
+                                let mut j = m.to_report_json();
+                                attach_gpu_metrics_if_applicable(
+                                    &mut j,
+                                    m.step,
+                                    gpu_sampler.as_ref(),
+                                    target_gpu_uuid.as_deref(),
+                                )
+                                .await;
+                                Some(j)
                             } else {
                                 None
                             },

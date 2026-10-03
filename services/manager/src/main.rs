@@ -98,6 +98,9 @@ async fn main() {
             if let Err(e) = manager::evaluate_disk_alerts(&dispatch_pool, &dispatch_cache).await {
                 tracing::error!("watchdog disk alert error: {e}");
             }
+            if let Err(e) = manager::evaluate_vram_alerts(&dispatch_pool, &dispatch_cache).await {
+                tracing::error!("watchdog vram alert error: {e}");
+            }
 
             match manager::dispatch_next_with_cache(
                 &dispatch_pool,

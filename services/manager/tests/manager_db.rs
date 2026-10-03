@@ -9838,3 +9838,367 @@ async fn b2_election_hint_with_automatic_gpu_chooses_by_vram() {
         "Hint com GPU auto e required 8GB deve cair na 3060"
     );
 }
+// ===========================================================================
+// Fatia B3 — Alerta `vram_high`
+// ===========================================================================
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn alert_vram_high_warning_critical_resolution_and_isolation() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+    let cache = manager::new_telemetry_cache();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+    let orchs = manager::list_orchestrators(&p, &cache).await.expect("list");
+    let orch_id: uuid::Uuid = orchs.items[0].id.parse().unwrap();
+
+    let dev3060 = heph_contracts::GpuDeviceTelemetry {
+        index: 0,
+        uuid: "GPU-1c1e01c2-4192-8f38-1a8a-33fb78b06f17".into(),
+        name: "NVIDIA GeForce RTX 3060".into(),
+        vram_total: 12288,
+        vram_used: 1024,
+        power_watts: Some(25.0),
+        gpu_utilization_pct: Some(10.0),
+        temperature_c: Some(45),
+    };
+    let dev1660s = heph_contracts::GpuDeviceTelemetry {
+        index: 1,
+        uuid: "GPU-c83cc056-07f7-d31e-cc98-7486ddac0296".into(),
+        name: "NVIDIA GeForce GTX 1660 SUPER".into(),
+        vram_total: 6144,
+        vram_used: 512,
+        power_watts: Some(20.0),
+        gpu_utilization_pct: Some(5.0),
+        temperature_c: Some(40),
+    };
+
+    // Cria um job na 1660S (6 GB VRAM) usando modelo que não exige mais que 6 GB
+    let mut req = test_job_request(ds_id);
+    req.model = "custom-small".into();
+    req.orchestrator_hint = Some(orch_id.to_string());
+    req.gpu_device = Some(dev1660s.uuid.clone());
+
+    // Popula cache e banco com o nó tendo 2 GPUs
+    manager::receive_heartbeat(
+        &p,
+        &cache,
+        HeartbeatRequest {
+            endpoint: "http://orchestrator-local:8082".into(),
+            gpus: vec![dev3060.name.clone(), dev1660s.name.clone()],
+            gpu_devices: vec![dev3060.clone(), dev1660s.clone()],
+            vram_total: Some(18432),
+            vram_used: Some(1536),
+            cpu: Some(10.0),
+            ram: Some(1024),
+            ram_total: Some(4096),
+            jobs_active: 0,
+            max_gpu_mib: Some(12288),
+            disk_total_gb: Some(100.0),
+            disk_used_gb: Some(20.0),
+        },
+    )
+    .await
+    .expect("heartbeat");
+
+    let resp = manager::create_job_with_context(&p, &cache, &test_vram_table(), req)
+        .await
+        .expect("create job");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    let disp = manager::dispatch_next_with_cache(
+        &p,
+        &orch,
+        "docker",
+        "/data",
+        "img",
+        &test_vram_table(),
+        &cache,
+    )
+    .await
+    .expect("dispatch");
+    assert!(disp);
+
+    // Job passa a running
+    sqlx::query("UPDATE jobs SET status = 'running' WHERE id = $1")
+        .bind(job_id)
+        .execute(&p)
+        .await
+        .unwrap();
+
+    // 1. Nó sem telemetria (cache vazio) -> no-op
+    let empty_cache = manager::new_telemetry_cache();
+    manager::evaluate_vram_alerts(&p, &empty_cache)
+        .await
+        .expect("eval vram empty cache");
+    let alerts = manager::get_job_alerts(&p, job_id).await.expect("alerts");
+    assert!(alerts.items.is_empty(), "nó sem telemetria é no-op");
+
+    // 2. Uso na 3060 atinge 98%, mas o job está na 1660S (que está em 10%) -> NÃO deve disparar alerta pro job!
+    let mut dev3060_high = dev3060.clone();
+    dev3060_high.vram_used = 12000; // ~97.6%
+    manager::receive_heartbeat(
+        &p,
+        &cache,
+        HeartbeatRequest {
+            endpoint: "http://orchestrator-local:8082".into(),
+            gpus: vec![dev3060.name.clone(), dev1660s.name.clone()],
+            gpu_devices: vec![dev3060_high.clone(), dev1660s.clone()],
+            vram_total: Some(18432),
+            vram_used: Some(12512),
+            cpu: Some(10.0),
+            ram: Some(1024),
+            ram_total: Some(4096),
+            jobs_active: 1,
+            max_gpu_mib: Some(12288),
+            disk_total_gb: Some(100.0),
+            disk_used_gb: Some(20.0),
+        },
+    )
+    .await
+    .expect("heartbeat 3060 high");
+
+    manager::evaluate_vram_alerts(&p, &cache)
+        .await
+        .expect("eval vram");
+    let alerts = manager::get_job_alerts(&p, job_id).await.expect("alerts");
+    assert!(
+        alerts.items.is_empty(),
+        "job na 1660S não deve disparar quando só a 3060 está cheia"
+    );
+
+    // 3. Uso na 1660S atinge 91% (5590 / 6144) -> Dispara WARNING
+    let mut dev1660s_warn = dev1660s.clone();
+    dev1660s_warn.vram_used = 5590; // ~90.98% >= 0.90
+    manager::receive_heartbeat(
+        &p,
+        &cache,
+        HeartbeatRequest {
+            endpoint: "http://orchestrator-local:8082".into(),
+            gpus: vec![dev3060.name.clone(), dev1660s.name.clone()],
+            gpu_devices: vec![dev3060.clone(), dev1660s_warn.clone()],
+            vram_total: Some(18432),
+            vram_used: Some(1024 + 5590),
+            cpu: Some(10.0),
+            ram: Some(1024),
+            ram_total: Some(4096),
+            jobs_active: 1,
+            max_gpu_mib: Some(12288),
+            disk_total_gb: Some(100.0),
+            disk_used_gb: Some(20.0),
+        },
+    )
+    .await
+    .expect("heartbeat 1660s warn");
+
+    manager::evaluate_vram_alerts(&p, &cache)
+        .await
+        .expect("eval vram warn");
+    let alerts = manager::get_job_alerts(&p, job_id).await.expect("alerts");
+    assert_eq!(alerts.items.len(), 1);
+    assert_eq!(alerts.items[0].rule_id, "vram_high");
+    assert_eq!(alerts.items[0].severity, "warning");
+    assert!(alerts.items[0].resolved_at.is_none());
+    let original_warning_id = alerts.items[0].id.clone();
+
+    // 4. Nova avaliação com o mesmo nível não duplica alerta ativo
+    manager::evaluate_vram_alerts(&p, &cache)
+        .await
+        .expect("eval vram same");
+    let alerts_same = manager::get_job_alerts(&p, job_id).await.expect("alerts");
+    assert_eq!(alerts_same.items.len(), 1);
+    assert_eq!(alerts_same.items[0].id, original_warning_id);
+
+    // 5. Uso sobe para 96% (5900 / 6144) -> Escala para CRITICAL (resolve o warning e cria critical)
+    let mut dev1660s_crit = dev1660s.clone();
+    dev1660s_crit.vram_used = 5900; // ~96.02% >= 0.95
+    manager::receive_heartbeat(
+        &p,
+        &cache,
+        HeartbeatRequest {
+            endpoint: "http://orchestrator-local:8082".into(),
+            gpus: vec![dev3060.name.clone(), dev1660s.name.clone()],
+            gpu_devices: vec![dev3060.clone(), dev1660s_crit.clone()],
+            vram_total: Some(18432),
+            vram_used: Some(1024 + 5900),
+            cpu: Some(10.0),
+            ram: Some(1024),
+            ram_total: Some(4096),
+            jobs_active: 1,
+            max_gpu_mib: Some(12288),
+            disk_total_gb: Some(100.0),
+            disk_used_gb: Some(20.0),
+        },
+    )
+    .await
+    .expect("heartbeat 1660s crit");
+
+    manager::evaluate_vram_alerts(&p, &cache)
+        .await
+        .expect("eval vram crit");
+    let alerts_crit = manager::get_job_alerts(&p, job_id).await.expect("alerts");
+    assert_eq!(alerts_crit.items.len(), 2);
+    let active_crit = alerts_crit
+        .items
+        .iter()
+        .find(|a| a.resolved_at.is_none())
+        .expect("active critical alert");
+    assert_eq!(active_crit.severity, "critical");
+    let old_warn = alerts_crit
+        .items
+        .iter()
+        .find(|a| a.id == original_warning_id)
+        .expect("old warning");
+    assert!(old_warn.resolved_at.is_some());
+
+    // 6. Uso desce para 92% (5652 / 6144) -> Permanece CRITICAL (histerese de downgrade: < 0.90)
+    let mut dev1660s_92 = dev1660s.clone();
+    dev1660s_92.vram_used = 5652; // ~91.99%
+    manager::receive_heartbeat(
+        &p,
+        &cache,
+        HeartbeatRequest {
+            endpoint: "http://orchestrator-local:8082".into(),
+            gpus: vec![dev3060.name.clone(), dev1660s.name.clone()],
+            gpu_devices: vec![dev3060.clone(), dev1660s_92.clone()],
+            vram_total: Some(18432),
+            vram_used: Some(1024 + 5652),
+            cpu: Some(10.0),
+            ram: Some(1024),
+            ram_total: Some(4096),
+            jobs_active: 1,
+            max_gpu_mib: Some(12288),
+            disk_total_gb: Some(100.0),
+            disk_used_gb: Some(20.0),
+        },
+    )
+    .await
+    .expect("heartbeat 1660s 92%");
+
+    manager::evaluate_vram_alerts(&p, &cache)
+        .await
+        .expect("eval vram 92%");
+    let alerts_92 = manager::get_job_alerts(&p, job_id).await.expect("alerts");
+    let active_92 = alerts_92
+        .items
+        .iter()
+        .find(|a| a.resolved_at.is_none())
+        .expect("active 92%");
+    assert_eq!(
+        active_92.severity, "critical",
+        "histerese mantém critical acima de 0.90"
+    );
+
+    // 7. Uso desce para 88% (5406 / 6144) -> Rebaixa para WARNING (< 0.90)
+    let mut dev1660s_88 = dev1660s.clone();
+    dev1660s_88.vram_used = 5406; // ~87.98%
+    manager::receive_heartbeat(
+        &p,
+        &cache,
+        HeartbeatRequest {
+            endpoint: "http://orchestrator-local:8082".into(),
+            gpus: vec![dev3060.name.clone(), dev1660s.name.clone()],
+            gpu_devices: vec![dev3060.clone(), dev1660s_88.clone()],
+            vram_total: Some(18432),
+            vram_used: Some(1024 + 5406),
+            cpu: Some(10.0),
+            ram: Some(1024),
+            ram_total: Some(4096),
+            jobs_active: 1,
+            max_gpu_mib: Some(12288),
+            disk_total_gb: Some(100.0),
+            disk_used_gb: Some(20.0),
+        },
+    )
+    .await
+    .expect("heartbeat 1660s 88%");
+
+    manager::evaluate_vram_alerts(&p, &cache)
+        .await
+        .expect("eval vram 88%");
+    let alerts_88 = manager::get_job_alerts(&p, job_id).await.expect("alerts");
+    let active_88 = alerts_88
+        .items
+        .iter()
+        .find(|a| a.resolved_at.is_none())
+        .expect("active 88%");
+    assert_eq!(
+        active_88.severity, "warning",
+        "abaixo de 0.90 critical rebaixa para warning"
+    );
+
+    // 8. Uso oscila para 86% (5283 / 6144) -> Permanece WARNING (histerese de resolução: < 0.85)
+    let mut dev1660s_86 = dev1660s.clone();
+    dev1660s_86.vram_used = 5283; // ~85.98%
+    manager::receive_heartbeat(
+        &p,
+        &cache,
+        HeartbeatRequest {
+            endpoint: "http://orchestrator-local:8082".into(),
+            gpus: vec![dev3060.name.clone(), dev1660s.name.clone()],
+            gpu_devices: vec![dev3060.clone(), dev1660s_86.clone()],
+            vram_total: Some(18432),
+            vram_used: Some(1024 + 5283),
+            cpu: Some(10.0),
+            ram: Some(1024),
+            ram_total: Some(4096),
+            jobs_active: 1,
+            max_gpu_mib: Some(12288),
+            disk_total_gb: Some(100.0),
+            disk_used_gb: Some(20.0),
+        },
+    )
+    .await
+    .expect("heartbeat 1660s 86%");
+
+    manager::evaluate_vram_alerts(&p, &cache)
+        .await
+        .expect("eval vram 86%");
+    let alerts_86 = manager::get_job_alerts(&p, job_id).await.expect("alerts");
+    let active_86 = alerts_86
+        .items
+        .iter()
+        .find(|a| a.resolved_at.is_none())
+        .expect("active 86%");
+    assert_eq!(
+        active_86.severity, "warning",
+        "histerese mantém warning acima de 0.85"
+    );
+
+    // 9. Uso desce para 80% (4915 / 6144) -> RESOLVE (< 0.85)
+    let mut dev1660s_80 = dev1660s.clone();
+    dev1660s_80.vram_used = 4915; // ~79.99% < 0.85
+    manager::receive_heartbeat(
+        &p,
+        &cache,
+        HeartbeatRequest {
+            endpoint: "http://orchestrator-local:8082".into(),
+            gpus: vec![dev3060.name.clone(), dev1660s.name.clone()],
+            gpu_devices: vec![dev3060.clone(), dev1660s_80.clone()],
+            vram_total: Some(18432),
+            vram_used: Some(1024 + 4915),
+            cpu: Some(10.0),
+            ram: Some(1024),
+            ram_total: Some(4096),
+            jobs_active: 1,
+            max_gpu_mib: Some(12288),
+            disk_total_gb: Some(100.0),
+            disk_used_gb: Some(20.0),
+        },
+    )
+    .await
+    .expect("heartbeat 1660s 80%");
+
+    manager::evaluate_vram_alerts(&p, &cache)
+        .await
+        .expect("eval vram 80%");
+    let alerts_80 = manager::get_job_alerts(&p, job_id).await.expect("alerts");
+    assert!(
+        alerts_80.items.iter().all(|a| a.resolved_at.is_some()),
+        "todos os alertas devem estar resolvidos abaixo de 0.85"
+    );
+}

@@ -6328,6 +6328,8 @@ async fn stream_metrics_and_samples_retries_apos_falha_de_report() {
         10,
         false,
         run_log_path,
+        None,
+        None,
     ));
 
     // 1º tick (dispara quase imediatamente — tokio::interval tica no t=0):
@@ -6377,4 +6379,147 @@ fn b2_docker_run_args_with_uuid_device() {
         .position(|a| a == &format!("NVIDIA_VISIBLE_DEVICES={uuid}"))
         .expect("NVIDIA_VISIBLE_DEVICES");
     assert_eq!(args[nvd_idx - 1], "-e");
+}
+// ===========================================================================
+// Fatia B3 — Métricas de GPU por job (`sys.gpu.*`)
+// ===========================================================================
+
+#[tokio::test]
+async fn b3_collector_attaches_gpu_metrics_to_step_report_for_correct_gpu() {
+    let sampler = crate::telemetry::gpu::GpuSampler::new();
+    let csv = "\
+0, GPU-1c1e01c2-4192-8f38-1a8a-33fb78b06f17, NVIDIA GeForce RTX 3060, 12288, 6961, 18.03, 15.5, 50
+1, GPU-c83cc056-07f7-d31e-cc98-7486ddac0296, NVIDIA GeForce GTX 1660 SUPER, 6144, 1063, 42.78, 85.0, 68
+";
+    let telem = crate::telemetry::gpu::parse_nvidia_smi_csv(csv).expect("parse csv");
+    *sampler.cache.write().await = crate::telemetry::gpu::GpuSamplerCache {
+        last_sampled: Some(std::time::Instant::now()),
+        telemetry: Some(telem),
+    };
+
+    let uuid_1660s = "GPU-c83cc056-07f7-d31e-cc98-7486ddac0296";
+
+    // 1. Report COM step na 1660S ganha as 4 chaves da 1660S (e não da 3060)
+    let mut metrics = serde_json::json!({
+        "loss": 0.42,
+        "epoch": 2,
+    });
+    crate::app::stages::collector::attach_gpu_metrics_if_applicable(
+        &mut metrics,
+        Some(100),
+        Some(&sampler),
+        Some(uuid_1660s),
+    )
+    .await;
+
+    assert_eq!(metrics["loss"], 0.42);
+    assert_eq!(metrics["sys.gpu.util_pct"], 85.0);
+    assert_eq!(metrics["sys.gpu.temp_c"], 68);
+    assert_eq!(metrics["sys.gpu.power_w"], 42.78);
+    assert_eq!(metrics["sys.gpu.vram_used_mb"], 1063);
+
+    // 2. Report SEM step não recebe sys.gpu.*
+    let mut no_step_metrics = serde_json::json!({
+        "loss": 0.42,
+        "epoch": 2,
+    });
+    crate::app::stages::collector::attach_gpu_metrics_if_applicable(
+        &mut no_step_metrics,
+        None,
+        Some(&sampler),
+        Some(uuid_1660s),
+    )
+    .await;
+    assert!(no_step_metrics.get("sys.gpu.util_pct").is_none());
+    assert!(no_step_metrics.get("sys.gpu.temp_c").is_none());
+    assert!(no_step_metrics.get("sys.gpu.power_w").is_none());
+    assert!(no_step_metrics.get("sys.gpu.vram_used_mb").is_none());
+}
+
+#[tokio::test]
+async fn b3_collector_sensor_none_omits_key_never_zero() {
+    let sampler = crate::telemetry::gpu::GpuSampler::new();
+    // CSV com N/A e Not Supported
+    let csv = "\
+0, GPU-1c1e01c2-4192-8f38-1a8a-33fb78b06f17, NVIDIA GeForce RTX 3060, 12288, 6961, [N/A], [Not Supported], 50
+";
+    let telem = crate::telemetry::gpu::parse_nvidia_smi_csv(csv).expect("parse csv");
+    *sampler.cache.write().await = crate::telemetry::gpu::GpuSamplerCache {
+        last_sampled: Some(std::time::Instant::now()),
+        telemetry: Some(telem),
+    };
+
+    let uuid_3060 = "GPU-1c1e01c2-4192-8f38-1a8a-33fb78b06f17";
+    let mut metrics = serde_json::json!({
+        "loss": 0.5,
+        "epoch": 1,
+    });
+
+    crate::app::stages::collector::attach_gpu_metrics_if_applicable(
+        &mut metrics,
+        Some(50),
+        Some(&sampler),
+        Some(uuid_3060),
+    )
+    .await;
+
+    // Chaves com N/A devem estar AUSENTES (nunca 0 — PITFALLS:39)
+    assert!(metrics.get("sys.gpu.util_pct").is_none());
+    assert!(metrics.get("sys.gpu.power_w").is_none());
+    // Temp e VRAM válidos estão presentes
+    assert_eq!(metrics["sys.gpu.temp_c"], 50);
+    assert_eq!(metrics["sys.gpu.vram_used_mb"], 6961);
+}
+
+#[tokio::test]
+async fn b3_resolve_job_gpu_uuid_rules() {
+    let sampler = crate::telemetry::gpu::GpuSampler::new();
+    let csv = "\
+0, GPU-1c1e01c2-4192-8f38-1a8a-33fb78b06f17, NVIDIA GeForce RTX 3060, 12288, 6961, 18.03, 15.5, 50
+1, GPU-c83cc056-07f7-d31e-cc98-7486ddac0296, NVIDIA GeForce GTX 1660 SUPER, 6144, 1063, 42.78, 85.0, 68
+";
+    let telem = crate::telemetry::gpu::parse_nvidia_smi_csv(csv).expect("parse csv");
+    *sampler.cache.write().await = crate::telemetry::gpu::GpuSamplerCache {
+        last_sampled: Some(std::time::Instant::now()),
+        telemetry: Some(telem),
+    };
+
+    // 1. dispatch.gpu_device presente com UUID
+    let res = crate::app::stages::collector::resolve_job_gpu_uuid(
+        Some("GPU-1c1e01c2-4192-8f38-1a8a-33fb78b06f17"),
+        Some("0,1"),
+        Some(&sampler),
+    )
+    .await;
+    assert_eq!(
+        res.as_deref(),
+        Some("GPU-1c1e01c2-4192-8f38-1a8a-33fb78b06f17")
+    );
+
+    // 2. dispatch.gpu_device presente com índice
+    let res =
+        crate::app::stages::collector::resolve_job_gpu_uuid(Some("1"), Some("0,1"), Some(&sampler))
+            .await;
+    assert_eq!(
+        res.as_deref(),
+        Some("GPU-c83cc056-07f7-d31e-cc98-7486ddac0296")
+    );
+
+    // 3. Sem dispatch.gpu_device, ORCH_GPU_DEVICES com exatamente 1 placa -> resolve para UUID dessa placa
+    let res =
+        crate::app::stages::collector::resolve_job_gpu_uuid(None, Some("0"), Some(&sampler)).await;
+    assert_eq!(
+        res.as_deref(),
+        Some("GPU-1c1e01c2-4192-8f38-1a8a-33fb78b06f17")
+    );
+
+    // 4. Sem dispatch.gpu_device, ORCH_GPU_DEVICES com 2 placas -> None (não emite)
+    let res =
+        crate::app::stages::collector::resolve_job_gpu_uuid(None, Some("0,1"), Some(&sampler))
+            .await;
+    assert_eq!(res, None);
+
+    // 5. Sem dispatch.gpu_device e sem ORCH_GPU_DEVICES -> None (não emite)
+    let res = crate::app::stages::collector::resolve_job_gpu_uuid(None, None, Some(&sampler)).await;
+    assert_eq!(res, None);
 }

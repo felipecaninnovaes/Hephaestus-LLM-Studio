@@ -795,6 +795,13 @@ pub async fn run_job_inner_with_sampler(
         let telemetry_report_client = Arc::clone(&report_client);
         let telemetry_path_clone = telemetry_abs.clone();
         let telemetry_job_id = job_id.clone();
+        let target_gpu_uuid = stages::collector::resolve_job_gpu_uuid(
+            dispatch.gpu_device.as_deref(),
+            gpu_devices,
+            gpu_sampler,
+        )
+        .await;
+        let daemon_sampler = gpu_sampler.cloned();
         // C2a: upload periódico do snapshot de logs também no caminho daemon
         // (a cada ~5s de ticks de 500ms, só quando o arquivo cresce; o report
         // do artefato é anunciado uma única vez — dedupe por path no manager).
@@ -811,7 +818,16 @@ pub async fn run_job_inner_with_sampler(
                 let (new_lines, new_offset) = tail_jsonl_lines(&telemetry_path_clone, lines_read);
                 lines_read = new_offset;
                 for m in new_lines {
-                    let body = telemetry_report_for_line(&m, total_epochs);
+                    let mut body = telemetry_report_for_line(&m, total_epochs);
+                    if let Some(metrics) = &mut body.metrics {
+                        stages::collector::attach_gpu_metrics_if_applicable(
+                            metrics,
+                            m.step,
+                            daemon_sampler.as_ref(),
+                            target_gpu_uuid.as_deref(),
+                        )
+                        .await;
+                    }
                     let _ = telemetry_report_client
                         .report(&telemetry_job_id, &body)
                         .await;
@@ -1065,6 +1081,13 @@ pub async fn run_job_inner_with_sampler(
     let run_log_path = logs_dir.join("run.log");
     let metrics_report_client = Arc::clone(&report_client);
     let metrics_s3 = Arc::clone(&s3);
+    let target_gpu_uuid = stages::collector::resolve_job_gpu_uuid(
+        dispatch.gpu_device.as_deref(),
+        gpu_devices,
+        gpu_sampler,
+    )
+    .await;
+    let collector_sampler = gpu_sampler.cloned();
     let metrics_handle = tokio::spawn(stream_metrics_and_samples(
         metrics_s3,
         metrics_report_client,
@@ -1075,8 +1098,9 @@ pub async fn run_job_inner_with_sampler(
         total_epochs,
         dispatch.engine == "diffusion",
         run_log_path.clone(),
+        collector_sampler,
+        target_gpu_uuid,
     ));
-
     // Ramifica subcomando e artefatos por (engine, mode) — ADR-0013 D6 (estágio execute.rs)
     let subcommand_args = resolve_subcommand_args(&dispatch.engine, &dispatch.mode, job_id)?;
 

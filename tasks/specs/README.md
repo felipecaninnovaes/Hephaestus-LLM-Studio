@@ -22,14 +22,13 @@ A **valid spec** is one of:
 - **Audit-only snapshot**: Point-in-time findings without execution plan. Examples: "memory audit of qwen-image on 2026-03-15". These go to `docs/archive/specs/` once findings are triaged and assigned.
 - **Multi-domain dumping ground**: A single file mixing orchestrator + manager + API + telemetry + infra findings without clear ownership or phase plan (see *Multi-Domain Anti-Pattern* below).
 
-## Active Specs (5)
+## Active Specs (4)
 
 | File | Domain | ID Namespace | Scope |
 |------|--------|--------------|-------|
 | `consolidacao-auditoria-roadmap.md` | Backend | `RD-*` | Waves 0–5: orchestrator, manager, api-principal modularization & autonomy |
 | `engines-auditoria-global.md` | ML Engines | simple numeric | Roadmap & findings for trainer-difusão, trainer-yolo, and dependent engines |
 | `infra-pendencias.md` | Infrastructure | `INFRA-NN` + `P0–P3` | Operational blockers: Docker Compose, Dockerfiles, networking (9 open items) |
-| `multi-gpu-sensores-selecao.md` | Feature | simple numeric | New feature pre-implementation: multi-GPU selection + sensor integration (0% started) |
 | `treino-flux-performance.md` | Performance | `P1–P5` | Flux training throughput optimization; includes comparative context vs Qwen-Image |
 
 ## Closure Rule

@@ -47,7 +47,7 @@ GPU real (VM dedicada `docker-04`, `10.15.50.114`, 60GB disco): `infra/compose.g
 
 ## 3. Posse de Dados (Postgres único, schema compartilhado)
 
-Migrations canônicas: `services/api-principal/migrations/0001..0022.sql`.
+Migrations canônicas: `services/api-principal/migrations/0001..0024.sql`.
 - **Domínio aplicação/dados (escrita: api-principal):** `users`, `auth_state`,
   `datasets`, `dataset_versions`, `job_prepares` (aceite assíncrono ADR-0025 —
   0015 tabela, 0016 índice único parcial `state='preparing'`), `images`,
@@ -57,10 +57,14 @@ Migrations canônicas: `services/api-principal/migrations/0001..0022.sql`.
   de inputs avulsos, sem GC; `used_at` marca consumo, linhas permanecem p/ auditoria).
 - **Domínio execução (escrita: manager/orchestrator):** `jobs` (status inclui
   `preparing`/`dispatched` + `phase`/`message` — ADR-0024/ADR-0025;
-  `metric_seq` — 0020; `started_at` — 0022; coluna `metrics` JSONB congelada,
-  drop pendente), `job_metric_points` (séries append-only, `seq` por job,
-  `ON DELETE CASCADE` — 0020, backfill 0021), `job_alerts` (0022; regras
-  `nan_detected`/`telemetry_stale`), `job_artifacts`, `orchestrators`.
+  `metric_seq` — 0020; `started_at` — 0022; `gpu_device` TEXT = UUID efetivo
+  da GPU, manual no create ou automático na eleição — 0024; coluna `metrics`
+  JSONB congelada, drop pendente), `job_metric_points` (séries append-only,
+  `seq` por job, `ON DELETE CASCADE` — 0020, backfill 0021; pontos `sys.*` e
+  `sys.gpu.util_pct|temp_c|power_w|vram_used_mb` só em reports com step),
+  `job_alerts` (0022; regras `nan_detected`/`telemetry_stale`/`disk_high`/
+  `vram_high`), `job_artifacts`, `orchestrators` (`gpu_devices` JSONB por
+  placa — 0023; `vram_total_gb` = maior placa; `gpus` legado mantido).
   Manager emite `pg_notify('job_events', {jobId,seq|status|alert})`; BFF tem um
   `PgListener` com fan-out para o SSE.
 - Políticas de hardware/engines: `packages/policies/vram-table.yaml`,
@@ -90,8 +94,14 @@ Fonte: tabela de contrato em `services/api-principal/src/auth/routes.rs`
   `/export?format=csv|parquet`, >2M pontos → 413); submits com dataset aceitam
   em <1s com 202 `{jobId,status: preparing|queued}` (ADR-0025, spec 0.29.0 —
   erro assíncrono `prepare_failed:<code>:<msg>` lido via `GET /jobs/:id`);
+  `gpuDevice` opcional (UUID `GPU-…` ou índice, gravado como UUID; exige
+  `orchestratorId`) em `/jobs/yolo`, `/jobs/diffusion`, `/jobs/autolabel`,
+  `/jobs/autotracker` e `/jobs/diffusion/generate`; job expõe `gpuDevice`
+  (UUID efetivo, nullable); erros 400 `invalid_gpu_device`,
+  `gpu_device_requires_orchestrator`, `unknown_gpu_device`,
+  `insufficient_gpu_vram` (manual valida `vram_min_gb` sem headroom);
   previews `POST /jobs/:id/autolabel|autotracker/preview` + `/apply`;
-  telemetria `GET /api/telemetry`; geração `POST /jobs/diffusion/generate`;
+  telemetria `GET /api/telemetry` (com `gpuDevices`); geração `POST /jobs/diffusion/generate`;
   `POST /jobs/diffusion` aceita `cacheTextEmbeddings` (opcional, bool) para
   reuso de text-embeds entre jobs via cache compartilhado do nó GPU.
 - **Modelos/pesos:** `GET /api/models[/:id]`, `POST /api/models/upload|download`
@@ -111,8 +121,11 @@ Fonte: tabela de contrato em `services/api-principal/src/auth/routes.rs`
   `initStrength` (0.05–0.95, default 0.6 aplicado no yaml e no engine; wire
   null quando ausente).
 - **Nós/monitoramento:** `GET /api/environments`, `/api/orchestrators` (inclui
-  `diskTotalGb`/`diskUsedGb` do heartbeat; alerta `disk_high` no manager via
-  `ALERT_DISK_RATIO`/`ALERT_DISK_HYSTERESIS`),
+  `diskTotalGb`/`diskUsedGb` e `gpuDevices` por placa `{index,uuid,name,
+  vramTotal,vramUsed,powerWatts?,gpuUtilizationPct?,temperatureC?}` do
+  heartbeat; alertas no manager: `disk_high` via
+  `ALERT_DISK_RATIO`/`ALERT_DISK_HYSTERESIS`, `vram_high` por placa do job via
+  `ALERT_VRAM_RATIO`/`ALERT_VRAM_CRITICAL_RATIO`/`ALERT_VRAM_HYSTERESIS`),
   `POST /api/environments/adopt`, `/orchestrators/adopt`, `/:id/revoke`,
   `GET /api/storage/usage`.
 

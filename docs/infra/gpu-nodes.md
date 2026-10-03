@@ -9,15 +9,15 @@ Guia sobre arquitetura de nós de execução, distribuição de imagens de motor
 O Hephaestus separa o plano de controle da execução computacional pesada:
 
 - **Control Plane (Dev Host — `10.15.10.3`):** Hospeda `api-principal` (BFF :8080), `manager` (:8081), `seaweedfs` (:8333), `db` (Postgres) e interface `web` (:3000).
-- **Data Plane (Nó GPU Remoto — `10.15.50.114`, VM Proxmox dedicada `docker-04`, usuário `dockeruser` sem sudo):** Hospeda o `orchestrator-gpu` (:8082) e executa containers efêmeros de treino com acesso direto às GPUs físicas (RTX 3060 12 GB, device 0, default; GTX 1660 Super 6 GB, device 1, fallback). Disco: apenas 60 GB total (`/`), sem volumes extras montados — capacidade permanentemente restrita, exige build de uma imagem GPU por vez e prune agressivo entre builds.
+- **Data Plane (Nó GPU Remoto — `10.15.50.114`, VM Proxmox dedicada `docker-04`, usuário `dockeruser` sem sudo):** Hospeda o `orchestrator-gpu` (:8082) e executa containers efêmeros de treino com acesso direto a 2 GPUs físicas, identificadas por UUID (estável a reboot — Pitfall D9; o índice é só entrada): GPU0 RTX 3060 12 GB `GPU-1c1e01c2-4192-8f38-1a8a-33fb78b06f17` e GPU1 GTX 1660 Super 6 GB `GPU-c83cc056-07f7-d31e-cc98-7486ddac0296`. Cada job roda em uma placa (escolha manual por `gpuDevice` ou automática pelo manager — `docs/architecture/network-and-vram.md`); 1 job por nó. Disco: apenas 60 GB total (`/`), sem volumes extras montados — capacidade permanentemente restrita, exige build de uma imagem GPU por vez e prune agressivo entre builds.
 
 ```
        [ DEV HOST (10.15.10.3) ]                     [ VM GPU DEDICADA / docker-04 (10.15.50.114) ]
   +-----------------------------------+          +------------------------------------------+
   | - Postgres (:5432)                |          |                                          |
   | - SeaweedFS S3 (:8333) [LAN]      | <======= | - orchestrator-gpu (:8082)               |
-  | - Manager (:8081) [LAN]           |  Heart-  |   |-> GPU 0: RTX 3060 (12 GB) - Treino    |
-  | - api-principal (:8080)           |  beat /  |   |-> GPU 1: GTX 1660S (6 GB) - Auxiliar |
+  | - Manager (:8081) [LAN]           |  Heart-  |   |-> GPU 0: RTX 3060 (12 GB) + daemon    |
+  | - api-principal (:8080)           |  beat /  |   |-> GPU 1: GTX 1660S (6 GB)             |
   | - Web UI (:3000)                  |  Job API |   \-> /var/run/docker.sock               |
   +-----------------------------------+          +------------------------------------------+
 ```
@@ -81,11 +81,10 @@ Como o projeto não possui um registry privado configurado por padrão (os pacot
    - Definido no `infra/env.gpu` do nó GPU (ou gerado dinamicamente no boot do orchestrator).
    - O operador registra o nó na interface Web do Studio (ou via chamada POST ao manager) informando o código e o endereço anunciado (`ORCH_ADVERTISE_URL=http://10.15.50.114:8082`).
    - Após a validação do código, o manager cadastra o nó e estabelece a comunicação autenticada via HMAC/Bearer.
-2. **Telemetria de VRAM via Heartbeat:**
-   - A cada 5 segundos, o orchestrator executa o utilitário `nvidia-smi` no nó GPU e envia ao manager:
-     - Estado do nó (`idle` ou `busy`).
-     - Lista de GPUs físicas, modelo, VRAM total (`max_gpu_mib`) e VRAM livre instantânea (`vram_free_mib`).
-     - IDs dos jobs ativos.
+2. **Telemetria por placa via Heartbeat:**
+   - A cada 5 segundos o orchestrator envia ao manager o estado do nó (`idle`/`busy`), os jobs ativos e `gpu_devices`: por GPU física `index`, `uuid`, `name`, VRAM total/usada (MiB), potência (W), utilização (%) e temperatura (°C). Sensor não suportado (`[N/A]`/`[Not Supported]`) vira ausente, nunca 0.
+   - Fonte única: `GpuSampler` do orchestrator (`nvidia-smi --query-gpu=index,uuid,name,memory.total,memory.used,power.draw,utilization.gpu,temperature.gpu`, timeout 2s, cache compartilhado) lido pelo heartbeat e pelo coletor de métricas do job (`sys.gpu.util_pct|temp_c|power_w|vram_used_mb`).
+   - O manager persiste `orchestrators.gpu_devices` (migration 0023; `vram_total_gb` = maior placa) e expõe `gpuDevices` em `GET /api/orchestrators` e na telemetria; a regra `vram_high` usa a placa do job.
 
 ---
 
@@ -124,9 +123,11 @@ MANAGER_TOKEN=<token-do-.env-do-dev-host>
 S3_ORCH_ACCESS_KEY=<access-key>
 S3_ORCH_SECRET_KEY=<secret-key>
 S3_ORCH_BUCKET=heph-data
-ORCH_GPU_DEVICES=0
+ORCH_GPU_DEVICES=GPU-1c1e01c2-4192-8f38-1a8a-33fb78b06f17
 ORCH_ADVERTISE_URL=http://10.15.50.114:8082
 ORCH_PAIRING_CODE=heph_p_$(openssl rand -hex 8)
+DIFFUSION_DAEMON_ENABLED=1
+DIFFUSION_DAEMON_GPU_DEVICE=GPU-1c1e01c2-4192-8f38-1a8a-33fb78b06f17
 EOF'
 ```
 
@@ -158,3 +159,10 @@ invariante YOLO (item 3 do §6 da spec). Buildada nessa sessão via
 cutover `:reuso-cache` (W2 da mesma fatia): `gpu-orchestrator-gpu:latest`,
 `hephaestus/trainer-difusao:gpu`, `hephaestus/trainer-yolo:gpu`; backups de
 rollback preservados com sufixo `:pre-reuso-cutover` para as três imagens.
+
+**Incidente 2026-10-03 (~00:50Z):** `hephaestus/trainer-difusao:gpu` e todas as tags de rollback antigas (`:pre-3a`, `:pre-metrickeys`, `:pre-telemetria`, `:gpu-pre-resume-fix`, `gpu-orchestrator-gpu:pre-multigpu-b1`) sumiram do nó; `trainer-yolo:gpu` foi recriada às 00:50:45Z. Causa não identificada (suspeita de prune externo); `trainer-difusao:gpu` rebuildada do build cache. Antes de depender de uma tag de rollback, conferir `docker image ls` no nó. Investigação em `tasks/backlog.md`.
+
+### 6.6 Multi-GPU: seleção por UUID e daemon de difusão
+- **`ORCH_GPU_DEVICES`** (UUID da 3060 no docker-04): só fallback — usado quando o dispatch chega sem `gpu_device` (nó/job legado). Com `gpu_device`, o executor roda `docker run --gpus "device=<UUID>"` e define `NVIDIA_VISIBLE_DEVICES=<UUID>` (as imagens CUDA trazem `=all`); `nvidia-smi -L` dentro do container lista só a placa do job.
+- **`DIFFUSION_DAEMON_GPU_DEVICE`** (UUID da 3060): fixa o daemon de difusão numa placa. Job em outra GPU não derruba o daemon; job na mesma GPU (ou com GPU desconhecida) o derruba **só** se ocioso há mais de `DIFFUSION_DAEMON_IDLE_TTL_S/2` — usado há menos que isso, convive com o treino na mesma placa.
+- **`DIFFUSION_DAEMON_ENABLED=1`** ligado no docker-04 em 2026-10-03 (backup `infra/env.gpu.bak-daemon`; default do `compose.gpu.yaml` é `0`). Geração quente em ~3 s; a 1ª geração com o daemon frio pode falhar enquanto ele baixa/carrega o modelo (backlog).

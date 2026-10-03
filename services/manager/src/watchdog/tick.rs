@@ -89,8 +89,8 @@ pub async fn watchdog_tick(pool: &PgPool) -> Result<(), ManagerError> {
         tracing::warn!("watchdog alerts evaluation error: {e}");
     }
 
-    // Avaliação periódica de alertas de disco (fatia 3a): disk_high
-    // (executado quando cache estiver disponível ou chamado explicitamente via evaluate_disk_alerts)
+    // Avaliação periódica de alertas de disco (fatia 3a) e VRAM (fatia B3): disk_high, vram_high
+    // (executado quando cache estiver disponível ou chamado explicitamente via evaluate_disk_alerts / evaluate_vram_alerts)
 
     Ok(())
 }

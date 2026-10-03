@@ -270,3 +270,195 @@ pub async fn evaluate_disk_alerts(
 
     Ok(())
 }
+/// Avalia alertas de VRAM (`vram_high`) para jobs em status `running` (fatia B3).
+///
+/// Avalia por job `running` com `gpu_device` resolvido no `TelemetryCache` do nó.
+/// Job sem `gpu_device` em nó com exatamente 1 GPU → essa GPU; senão no-op.
+/// ratio = `vram_used / vram_total` da placa.
+///
+/// Dispara em `>= ALERT_VRAM_RATIO` (default 0.90) com warning.
+/// Sobe para critical em `>= ALERT_VRAM_CRITICAL_RATIO` (default 0.95).
+/// Com histerese (ALERT_VRAM_HYSTERESIS, default 0.05):
+/// * Só volta de critical para warning abaixo de `ALERT_VRAM_RATIO` (< 0.90).
+/// * Só resolve abaixo de `ALERT_VRAM_RATIO - hysteresis` (< 0.85).
+///
+/// Nó sem telemetria / sem `gpu_devices` → no-op (não dispara nem resolve).
+/// Transições emitem o mesmo `pg_notify` que `disk_high`.
+pub async fn evaluate_vram_alerts(
+    pool: &PgPool,
+    cache: &crate::nodes::TelemetryCache,
+) -> Result<(), ManagerError> {
+    let threshold_ratio = get_alert_vram_ratio();
+    let critical_ratio = get_alert_vram_critical_ratio();
+    let hysteresis = get_alert_vram_hysteresis();
+    let warning_resolve_ratio = threshold_ratio - hysteresis;
+    let critical_downgrade_ratio = threshold_ratio;
+
+    // Busca todos os jobs running, seus nós e gpu_device
+    let running_jobs = sqlx::query_as::<_, (Uuid, Option<Uuid>, Option<String>)>(
+        "SELECT id, orchestrator_id, gpu_device FROM jobs WHERE status = 'running'",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("find running jobs for vram alert: {e}")))?;
+
+    let cache_guard = cache.read().await;
+
+    for (job_id, orch_id_opt, job_gpu_device) in running_jobs {
+        let orch_telemetry = orch_id_opt.and_then(|id| cache_guard.get(&id));
+        let Some(t) = orch_telemetry else {
+            // Nó sem telemetria: no-op
+            continue;
+        };
+
+        if t.gpu_devices.is_empty() {
+            // Nó sem gpu_devices: no-op
+            continue;
+        }
+
+        // Resolução da GPU:
+        // Se job_gpu_device estiver preenchido, busca a GPU correspondente (UUID ou índice).
+        // Se ausente: se o nó tiver exatamente 1 GPU, usa essa GPU; senão no-op.
+        let target_device = match job_gpu_device.as_deref() {
+            Some(dev_str) => {
+                if dev_str.starts_with("GPU-") {
+                    t.gpu_devices.iter().find(|d| d.uuid == dev_str)
+                } else if let Ok(idx) = dev_str.parse::<u32>() {
+                    t.gpu_devices.iter().find(|d| d.index == idx)
+                } else {
+                    None
+                }
+            }
+            None => {
+                if t.gpu_devices.len() == 1 {
+                    Some(&t.gpu_devices[0])
+                } else {
+                    None
+                }
+            }
+        };
+
+        let Some(device) = target_device else {
+            // Não foi possível resolver a GPU do job: no-op
+            continue;
+        };
+
+        if device.vram_total <= 0 {
+            continue;
+        }
+
+        let r = device.vram_used as f64 / device.vram_total as f64;
+        let gpu_name = &device.name;
+        let node_endpoint = &t.endpoint;
+
+        let active_alert = sqlx::query_as::<_, (Uuid, String)>(
+            "SELECT id, severity FROM job_alerts WHERE job_id = $1 AND rule_id = $2 AND resolved_at IS NULL",
+        )
+        .bind(job_id)
+        .bind(RULE_VRAM_HIGH)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| ManagerError::Internal(format!("fetch active vram alert: {e}")))?;
+
+        match active_alert {
+            None => {
+                // Sem alerta ativo: dispara se r >= threshold_ratio
+                if r >= threshold_ratio {
+                    let severity = if r >= critical_ratio {
+                        SEVERITY_CRITICAL
+                    } else {
+                        SEVERITY_WARNING
+                    };
+                    let pct = (r * 100.0).round() as i64;
+                    let message = format!(
+                        "Uso de VRAM na GPU {gpu_name} do nó ({node_endpoint}) em {pct}% (>= {}%)",
+                        (threshold_ratio * 100.0).round() as i64
+                    );
+
+                    let mut tx = pool
+                        .begin()
+                        .await
+                        .map_err(|e| ManagerError::Internal(format!("tx begin: {e}")))?;
+                    let fired =
+                        fire_alert(&mut tx, job_id, RULE_VRAM_HIGH, severity, &message).await?;
+                    if fired {
+                        crate::notify::notify_alert(&mut *tx, job_id).await?;
+                    }
+                    tx.commit()
+                        .await
+                        .map_err(|e| ManagerError::Internal(format!("tx commit: {e}")))?;
+                }
+            }
+            Some((_id, current_sev)) if current_sev == SEVERITY_WARNING => {
+                if r >= critical_ratio {
+                    // Sobe para critical
+                    let pct = (r * 100.0).round() as i64;
+                    let message = format!(
+                        "Uso de VRAM na GPU {gpu_name} do nó ({node_endpoint}) em {pct}% (>= {}%)",
+                        (critical_ratio * 100.0).round() as i64
+                    );
+                    let mut tx = pool
+                        .begin()
+                        .await
+                        .map_err(|e| ManagerError::Internal(format!("tx begin: {e}")))?;
+                    resolve_alerts(&mut tx, job_id, Some(RULE_VRAM_HIGH)).await?;
+                    fire_alert(&mut tx, job_id, RULE_VRAM_HIGH, SEVERITY_CRITICAL, &message)
+                        .await?;
+                    crate::notify::notify_alert(&mut *tx, job_id).await?;
+                    tx.commit()
+                        .await
+                        .map_err(|e| ManagerError::Internal(format!("tx commit: {e}")))?;
+                } else if r < warning_resolve_ratio {
+                    // Resolve com histerese (< threshold_ratio - hysteresis)
+                    let mut tx = pool
+                        .begin()
+                        .await
+                        .map_err(|e| ManagerError::Internal(format!("tx begin: {e}")))?;
+                    let resolved = resolve_alerts(&mut tx, job_id, Some(RULE_VRAM_HIGH)).await?;
+                    if resolved > 0 {
+                        crate::notify::notify_alert(&mut *tx, job_id).await?;
+                    }
+                    tx.commit()
+                        .await
+                        .map_err(|e| ManagerError::Internal(format!("tx commit: {e}")))?;
+                }
+            }
+            Some((_id, _current_sev)) => {
+                // current_sev == SEVERITY_CRITICAL
+                if r < warning_resolve_ratio {
+                    // Resolve completamente se caiu abaixo do limiar de resolução geral
+                    let mut tx = pool
+                        .begin()
+                        .await
+                        .map_err(|e| ManagerError::Internal(format!("tx begin: {e}")))?;
+                    let resolved = resolve_alerts(&mut tx, job_id, Some(RULE_VRAM_HIGH)).await?;
+                    if resolved > 0 {
+                        crate::notify::notify_alert(&mut *tx, job_id).await?;
+                    }
+                    tx.commit()
+                        .await
+                        .map_err(|e| ManagerError::Internal(format!("tx commit: {e}")))?;
+                } else if r < critical_downgrade_ratio {
+                    // Critical volta a warning < 0.90 (threshold_ratio)
+                    let pct = (r * 100.0).round() as i64;
+                    let message = format!(
+                        "Uso de VRAM na GPU {gpu_name} do nó ({node_endpoint}) em {pct}% (>= {}%)",
+                        (threshold_ratio * 100.0).round() as i64
+                    );
+                    let mut tx = pool
+                        .begin()
+                        .await
+                        .map_err(|e| ManagerError::Internal(format!("tx begin: {e}")))?;
+                    resolve_alerts(&mut tx, job_id, Some(RULE_VRAM_HIGH)).await?;
+                    fire_alert(&mut tx, job_id, RULE_VRAM_HIGH, SEVERITY_WARNING, &message).await?;
+                    crate::notify::notify_alert(&mut *tx, job_id).await?;
+                    tx.commit()
+                        .await
+                        .map_err(|e| ManagerError::Internal(format!("tx commit: {e}")))?;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}

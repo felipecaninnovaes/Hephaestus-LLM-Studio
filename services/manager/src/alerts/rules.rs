@@ -24,6 +24,35 @@ pub const CRITICAL_ALERT_DISK_RATIO: f64 = 0.95;
 /// Histerese padrão para resolução de alertas de disco (ALERT_DISK_HYSTERESIS).
 pub const DEFAULT_ALERT_DISK_HYSTERESIS: f64 = 0.05;
 
+/// Limiar padrão de uso de VRAM para warning (ALERT_VRAM_RATIO).
+pub const DEFAULT_ALERT_VRAM_RATIO: f64 = 0.90;
+/// Limiar de uso de VRAM para critical.
+pub const CRITICAL_ALERT_VRAM_RATIO: f64 = 0.95;
+
+/// Histerese padrão para resolução de alertas de VRAM (ALERT_VRAM_HYSTERESIS).
+pub const DEFAULT_ALERT_VRAM_HYSTERESIS: f64 = 0.05;
+
+pub fn get_alert_vram_hysteresis() -> f64 {
+    std::env::var("ALERT_VRAM_HYSTERESIS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_ALERT_VRAM_HYSTERESIS)
+}
+
+pub fn get_alert_vram_ratio() -> f64 {
+    std::env::var("ALERT_VRAM_RATIO")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_ALERT_VRAM_RATIO)
+}
+
+pub fn get_alert_vram_critical_ratio() -> f64 {
+    std::env::var("ALERT_VRAM_CRITICAL_RATIO")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(CRITICAL_ALERT_VRAM_RATIO)
+}
+
 pub fn get_alert_disk_hysteresis() -> f64 {
     std::env::var("ALERT_DISK_HYSTERESIS")
         .ok()

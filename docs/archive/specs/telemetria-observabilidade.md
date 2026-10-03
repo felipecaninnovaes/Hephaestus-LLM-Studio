@@ -1,8 +1,10 @@
 # Spec — Telemetria, Logs e Observabilidade
 
+> Archived 2026-10-03 | Todas as fatias fechadas; dívidas residuais (drop de `jobs.metrics`, OTel do nó GPU, webhook de alertas, prova ≥70% de `systemMetrics`) migradas para `tasks/backlog.md`
+
 **Data da especificação:** 2026-10-01  
 **Autor:** @orchestrator (plano base do @planner revisado com 13 correções; redação @docs)  
-**Status:** Aprovada — escopo COMPLETO (ondas 0–5, 17 fatias). Implementado em `develop` (`8b6e442`): 0a, 0b, 1a, 1b, 1c, 2a, 2b, 2c, 3b, 3c (backend), 5a, 5b, 5c; depois (`fe32265`): 3c (UI), 4a, 4b, 4c + fix `0f1c90c`; depois (`f7f886b`): 3a parcial (CPU/RAM/disco) e regra `disk_high` da 3c. Abertos: parte GPU da 3a (util/potência/temperatura por job) e a regra `vram_high` da 3c — dependem de `tasks/specs/multi-gpu-sensores-selecao.md`.
+**Status:** Concluída 2026-10-03 — escopo COMPLETO (ondas 0–5, 17 fatias). Implementado em `develop` (`8b6e442`): 0a, 0b, 1a, 1b, 1c, 2a, 2b, 2c, 3b, 3c (backend), 5a, 5b, 5c; depois (`fe32265`): 3c (UI), 4a, 4b, 4c + fix `0f1c90c`; depois (`f7f886b`): 3a parcial (CPU/RAM/disco) e regra `disk_high` da 3c; por fim (B3 `e05cecc` da `docs/archive/specs/multi-gpu-sensores-selecao.md`): parte GPU da 3a (`sys.gpu.*` por job) e a regra `vram_high` da 3c, provadas no smoke real do docker-04 em 2026-10-03.
 **Branches:** uma por fatia, a partir de `develop` (tabela §8)
 
 Restrições: single-user/homelab; nó GPU 10.15.50.114 (RTX 3060 12GB + GTX 1660S 6GB, 158G disco); topologia fixa BFF (`api-principal`) → `manager` → `orchestrator` → engines. Wire público camelCase (`packages/contracts/openapi.yaml`); Rust/Postgres snake_case (`crates/heph-contracts`). Contract ≡ router: toda rota/campo novo entra no openapi na mesma fatia.
@@ -43,7 +45,7 @@ Lacunas funcionais: comparação de runs (overlay, hiperparâmetros, diff), mét
 4. **Downsampling server-side** em `GET /api/jobs/:id/metrics` (`?maxPoints=`, `?afterSeq=`), rota existente evoluída; contract ≡ router.
 5. **Fix do descarte silencioso** `collector.rs:464,498` dentro da fatia 1a.
 6. **Ordem onda 2:** propagação `x-request-id`/`traceparent` + `job_id` em spans ANTES do OTel; depois collector; depois Loki/Tempo/Grafana.
-7. **Diagnóstico de treino só difusão** (`models/loop.py` + `models/qwen_image.py`); sensores de sistema reusam `tasks/specs/multi-gpu-sensores-selecao.md` (uma fonte só).
+7. **Diagnóstico de treino só difusão** (`models/loop.py` + `models/qwen_image.py`); sensores de sistema reusam `docs/archive/specs/multi-gpu-sensores-selecao.md` (uma fonte só).
 8. **Dependência de deploy:** fatias que tocam `services/orchestrator`/engines só sobem no nó GPU após o cutover bloqueado de `feat/no-gpu-reuso-dataset-embeds` (`tasks/active.md:15`); implementação/merge em `develop` liberados.
 
 ---
@@ -117,10 +119,10 @@ WHERE j.id = s.job_id;
 O formato aceito espelha `normalize_metrics_to_array` (`metrics.rs:11-22`: array, `{"items":[...]}` ou objeto único). O SQL acima é ilustrativo: casts diretos (`(item->>'epoch')::INTEGER` com `1.0`) abortariam o boot via `sqlx::migrate!` — a 0021 real guarda com `jsonb_typeof` + `numeric`/`trunc` e cai no fallback (`epoch` NULL, `step` 0).
 
 ```sql
--- migration posterior (gate manual após contagem legado == tabela) — PENDENTE
+-- migration posterior (gate manual após contagem legado == tabela) — PENDENTE (backlog)
 ALTER TABLE jobs DROP COLUMN metrics;
 ```
-Estado atual: `jobs.metrics` está **congelada** — nenhum código lê ou escreve a coluna; o drop aguarda o gate.
+Estado atual: `jobs.metrics` está **congelada** — nenhum código lê ou escreve a coluna; o drop aguarda o gate (dívida em `tasks/backlog.md`).
 
 ```sql
 -- 0022_job_alerts.sql (fatia 3c)
@@ -143,7 +145,7 @@ CREATE INDEX job_alerts_job_fired_idx ON job_alerts (job_id, fired_at DESC);
 -- jobs.started_at (1º report running): referência de telemetry_stale sem pontos
 ALTER TABLE jobs ADD COLUMN started_at TIMESTAMPTZ;
 ```
-O CHECK aceita `vram_high`/`disk_high`. `disk_high` está implementada (3a, `f7f886b`: heartbeat com disco do nó); `vram_high` **não** (sem VRAM por job no heartbeat) — depende da spec multi-GPU.
+O CHECK aceita `vram_high`/`disk_high`. `disk_high` está implementada (3a, `f7f886b`: heartbeat com disco do nó); `vram_high` também (B3 `e05cecc` da spec multi-GPU: VRAM por placa no heartbeat).
 
 ### 3.2. `pg_notify` (implementado)
 
@@ -264,11 +266,11 @@ Formato: dono · branch · arquivos · depende de · aceite (binário; smoke rea
 ### Onda 3 — Sensores, diagnóstico, alertas (3a → 3b → 3c)
 
 **3a — Métricas de sistema em série temporal**  
-@engines (CPU/RAM/disco no engine-kit) + @backend (persistência dos sensores de GPU) · `feat/system-metrics-sensors` · `engines/engine-kit/src/engine_kit/sensors.py`, `engines/engine-kit/src/engine_kit/telemetry.py`, `crates/heph-contracts/src/telemetry.rs`, manager (grava sensores de GPU do job como pontos `sys.gpu.*`) · depende: 0a, 1a, e a coleta por GPU de `tasks/specs/multi-gpu-sensores-selecao.md` §3.1 (`GpuDeviceTelemetry`)  
+@engines (CPU/RAM/disco no engine-kit) + @backend (persistência dos sensores de GPU) · `feat/system-metrics-sensors` · `engines/engine-kit/src/engine_kit/sensors.py`, `engines/engine-kit/src/engine_kit/telemetry.py`, `crates/heph-contracts/src/telemetry.rs`, manager (grava sensores de GPU do job como pontos `sys.gpu.*`) · depende: 0a, 1a, e a coleta por GPU de `docs/archive/specs/multi-gpu-sensores-selecao.md` §3.1 (`GpuDeviceTelemetry`)  
 - GPU util/power/temp/VRAM vêm **só** do coletor da spec multi-GPU (uma fonte só); engine-kit não abre `pynvml`/`nvidia-smi`.
 - [x] CPU/RAM/disco (`f7f886b`): engine-kit emite `systemMetrics {cpuPct, ramUsedGb, diskReadMbS, diskWriteMbS}` via `/proc` (cpuPct normalizado por núcleos, ramUsedGb = RSS); orchestrator grava pontos `sys.cpu_pct|sys.ram_used_gb|sys.disk_read_mb_s|sys.disk_write_mb_s`; heartbeat com `disk_total_gb`/`disk_used_gb` (statvfs do workdir); `/api/orchestrators` com `diskTotalGb`/`diskUsedGb`.
-- [ ] Job real no nó GPU: `telemetry.jsonl` tem `systemMetrics` em ≥70% das linhas de step (prova no nó pendente do deploy pós-cutover).
-- [ ] GPU util/potência/temperatura por job: `GET /api/jobs/:id/metrics?keys=sys.gpu.util_pct,sys.gpu.temp_c` devolve série não vazia, da GPU em que o job rodou — depende de `tasks/specs/multi-gpu-sensores-selecao.md` §3.1.
+- ↪ **Migrado para `tasks/backlog.md` (não provado):** job real no nó GPU com `systemMetrics` em ≥70% das linhas de step do `telemetry.jsonl` — prova formal não registrada (pontos `sys.*` observados nos smokes `b9fa1646` e 2026-10-03).
+- [x] GPU util/potência/temperatura por job (B3 `e05cecc`): smoke real 2026-10-03 com `sys.gpu.util_pct|temp_c|power_w|vram_used_mb` (11 pontos cada, util 0–100, 46–61 °C, 17–77 W) e `GET /api/jobs/:id/metrics?keys=sys.gpu.util_pct,sys.gpu.temp_c` não vazio, da GPU em que o job rodou.
 
 **3b — Diagnóstico de treino (só difusão)**  
 @engines · `feat/training-diagnostics` · `engines/trainer-difusao/src/trainer_difusao/models/loop.py`, `engines/trainer-difusao/src/trainer_difusao/models/qwen_image.py`, `engines/engine-kit/src/engine_kit/telemetry.py`, `crates/heph-contracts/src/telemetry.rs` · depende: 0a, 3a (deploy: §5)  
@@ -278,13 +280,13 @@ Formato: dono · branch · arquivos · depende de · aceite (binário; smoke rea
 
 **3c — Alertas (regras no manager + persistência + rota + badge)**  
 @backend + @frontend · `feat/alerts-and-thresholds` · `services/manager/src/alerts/{mod.rs,rules.rs}`, migration `0022_job_alerts.sql`, `services/api-principal/src/jobs/handlers/alerts.rs`, openapi, badge/lista em `apps/web/` (card e detalhe do job) · depende: 1b, 3a, 3b  
-- Regras implementadas: `nan_detected` (`nan_count`/`inf_count` > 0, achatados de `diagnostics` pelo orchestrator), `telemetry_stale` (job `running` sem ponto novo há ≥ `ALERT_STALE_SECS`, default 300; referência `COALESCE(last_ts, started_at, created_at)`), `disk_high` (`f7f886b`; disco do nó via heartbeat: warning ≥ `ALERT_DISK_RATIO` 0.85, critical ≥0.95 e volta a warning abaixo de 0.90, resolve abaixo de ratio − `ALERT_DISK_HYSTERESIS` 0.05; nó sem telemetria = no-op). `telemetry_stale` absorve o item 5.3 de `backend-autonomia`. **Não implementada** (depende de `tasks/specs/multi-gpu-sensores-selecao.md` — sem VRAM por job): `vram_high` (`ALERT_VRAM_RATIO`, default 0.95).
+- Regras implementadas: `nan_detected` (`nan_count`/`inf_count` > 0, achatados de `diagnostics` pelo orchestrator), `telemetry_stale` (job `running` sem ponto novo há ≥ `ALERT_STALE_SECS`, default 300; referência `COALESCE(last_ts, started_at, created_at)`), `disk_high` (`f7f886b`; disco do nó via heartbeat: warning ≥ `ALERT_DISK_RATIO` 0.85, critical ≥0.95 e volta a warning abaixo de 0.90, resolve abaixo de ratio − `ALERT_DISK_HYSTERESIS` 0.05; nó sem telemetria = no-op), `vram_high` (B3 `e05cecc`; VRAM da placa do job: warning ≥ `ALERT_VRAM_RATIO` 0.90, critical ≥ `ALERT_VRAM_CRITICAL_RATIO` 0.95 e volta a warning abaixo de 0.90, resolve abaixo de ratio − `ALERT_VRAM_HYSTERESIS` 0.05; nó sem `gpu_devices` = no-op). `telemetry_stale` absorve o item 5.3 de `backend-autonomia`.
 - [x] Loss NaN injetado → `nan_detected` aparece em `GET /api/jobs/:id/alerts` e chega como evento SSE `alerts`.
 - [x] Job `running` sem telemetria por mais que o limiar → `telemetry_stale`; telemetria volta → `resolvedAt` preenchido.
 - [x] Reavaliar a mesma regra não cria segundo alerta ativo (índice parcial).
 - [x] Web mostra badge de alertas no job selecionado (detalhe); clique abre a lista; atualização via evento SSE `alerts` (snapshot `JobAlertsResponse`). *(3c-UI)*
 - [x] Regra `disk_high` com histerese (`f7f886b`).
-- [ ] Regra `vram_high` (depende de `tasks/specs/multi-gpu-sensores-selecao.md`).
+- [x] Regra `vram_high` com histerese (B3 `e05cecc`; teste com banco cobre disparo/critical/volta/resolução; smoke real 2026-10-03 sem disparo falso).
 
 ### Onda 4 — Gráficos e comparação (4a → 4b → 4c)
 

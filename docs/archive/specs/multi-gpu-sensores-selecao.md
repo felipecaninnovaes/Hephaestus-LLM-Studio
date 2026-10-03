@@ -1,8 +1,10 @@
 # Spec — Sensores de GPU e Seleção Multi-GPU
 
+> Archived 2026-10-03 | Todos os itens fechados; resíduos (daemon frio, imagens sumidas no nó) migrados para `tasks/backlog.md`
+
 **Data:** 2026-10-02 (revisão; substitui a versão de 2026-09-25)
 **Autor:** @orchestrator (plano do @planner + decisões do usuário)
-**Status:** Aprovada — decisões do usuário 2026-10-02
+**Status:** Concluída 2026-10-03 — fatias B1 `519cd9e`, B2 `f83ddb1`, B3 `e05cecc`, F1 `95da793`, F2 `691468d`, I1 `2cc03b8` + fix `047a827` (headroom só no automático), todas com `@reviewer` APROVA, em `develop`/`origin`; deploy dev + docker-04 e smoke real (§7) em 2026-10-03.
 **Nó de referência:** VM `docker-04` (`10.15.50.114`)
 - GPU0 NVIDIA GeForce RTX 3060 12 GB — `GPU-1c1e01c2-4192-8f38-1a8a-33fb78b06f17`
 - GPU1 NVIDIA GeForce GTX 1660 Super 6 GB — `GPU-c83cc056-07f7-d31e-cc98-7486ddac0296`
@@ -30,6 +32,9 @@ Objetivos:
 2. **GPU escolhível por job** (`gpuDevice`). Sem `gpuDevice`: **menor GPU cujo `vram_total` (MiB) ≥ required_gb** da vram-table; empate → menor `vram_used`; required desconhecido → maior GPU.
 3. **Daemon de difusão fixado** via `DIFFUSION_DAEMON_GPU_DEVICE` (UUID; no docker-04 = 3060). `maybe_preempt_daemon` (`services/orchestrator/src/daemon/lifecycle.rs:70-91`) só derruba o daemon se a GPU do job == GPU do daemon; se uma das duas for desconhecida, mantém o comportamento atual (derruba).
 4. **GPU manual abaixo do mínimo da vram-table → HTTP 400 `insufficient_gpu_vram`**; a UI desabilita a placa.
+
+### 2.1b Usuário (2026-10-03) — fix `047a827`
+5. **Manual valida contra `vram_min_gb` SEM headroom; automático usa `vram_min_gb + headroom_gb`.** `VramTable::resolve_min_gb` (`services/manager/src/policy/vram.rs:38`) no create (`services/manager/src/jobs/create.rs:111-112`); com GPU manual a eleição não filtra o nó pelo required com headroom (`services/manager/src/dispatch/election.rs:70-75`). Motivo: no smoke, sd15 (min 5 + headroom 2 = 7 GB) nunca cabia na 1660S de 6 GB nem escolhida à mão.
 
 ### 2.2 Orchestrator
 - Identificador canônico = **UUID** (`GPU-…`). Índice (`"0"`, `"1"`) aceito só na entrada; o manager resolve para UUID no create pelo `TelemetryCache` do nó e grava o UUID. Formato: `^GPU-[0-9a-fA-F-]{8,60}$` ou `^[0-9]{1,2}$`, ≤64 chars; senão 400 `invalid_gpu_device`.
@@ -87,8 +92,8 @@ Objetivos:
 
 ### 5.2 Seleção e eleição
 1. Submit (api-principal) valida formato; `gpuDevice` sem `orchestratorId` → 400.
-2. Create (manager): índice → UUID via `TelemetryCache` do nó; GPU ausente → 400 `unknown_gpu_device`; `vram_total` < required da vram-table → 400 `insufficient_gpu_vram`; grava `jobs.gpu_device`.
-3. Eleição: mantém 1 job/nó (decisão 1). Manual: checa a VRAM daquela GPU. Automático: menor GPU que cabe (decisão 2), grava `jobs.gpu_device`. Nó sem `gpu_devices`: fallback atual, `gpu_device` NULL.
+2. Create (manager): índice → UUID via `TelemetryCache` do nó; GPU ausente → 400 `unknown_gpu_device`; `vram_total` < `vram_min_gb` da vram-table (sem headroom, decisão 5) → 400 `insufficient_gpu_vram`; grava `jobs.gpu_device`.
+3. Eleição: mantém 1 job/nó (decisão 1). Manual: GPU já validada no create, nó não é filtrado pelo required com headroom. Automático: menor GPU com `vram_total` ≥ `vram_min_gb + headroom_gb` (decisão 2), grava `jobs.gpu_device`. Nó sem `gpu_devices`: fallback atual, `gpu_device` NULL.
 4. `DispatchRequest.gpu_device` → executor `--gpus "device=<UUID>"` (fallback `ORCH_GPU_DEVICES`).
 5. Antes do job, `maybe_preempt_daemon(target_gpu)`: derruba só se a GPU for a do daemon ou uma delas for desconhecida.
 6. Requeue: manual mantida; automática re-escolhida.
@@ -118,17 +123,28 @@ Objetivos:
 
 Ordem: B1 → B2 → (B3, I1); F1 após B1; F2 após B2 e F1. Cada fatia fecha com veredito do `@reviewer`.
 
+Entregas (todas `@reviewer` APROVA, em `develop`/`origin`):
+- B1 `519cd9e` — `GpuSampler` single-flight, heartbeat com `gpu_devices`, migration 0023, `gpuDevices` em `/api/orchestrators` e telemetria; `vram_total_gb` = maior GPU (`services/manager/src/nodes/heartbeat.rs:56-62`).
+- B2 merge `f83ddb1` — `gpuDevice` nos 5 submits + 4 códigos 400, índice→UUID, migration 0024 `jobs.gpu_device`, eleição por GPU, `--gpus device=<UUID>` + `NVIDIA_VISIBLE_DEVICES`, `DIFFUSION_DAEMON_GPU_DEVICE`, preempção só na mesma GPU.
+- B3 merge `e05cecc` — `sys.gpu.util_pct|temp_c|power_w|vram_used_mb` por job (só reports com step, lidos do `GpuSampler`); `vram_high` com histerese (envs `ALERT_VRAM_RATIO`/`ALERT_VRAM_CRITICAL_RATIO`/`ALERT_VRAM_HYSTERESIS`).
+- F1 `95da793` — `MultiGpuRack` + `ThermalBadge` no `OrchestratorCard`.
+- F2 merge `691468d` — `GpuDeviceSelect` nos 5 fluxos; `gpuDevice` no `JobCard`; mensagens pt-BR dos 4 códigos 400.
+- I1 `2cc03b8` — `DIFFUSION_DAEMON_GPU_DEVICE` nos 2 composes; `env.gpu.example` com UUIDs.
+- Fix `047a827` (`fix/manual-gpu-vram-min`) — decisão 5.
+
 ---
 
-## 7. Aceite final (smoke real no docker-04, conduzido pelo orchestrator, logs brutos)
+## 7. Aceite final (smoke real no docker-04, conduzido pelo orchestrator, logs brutos — 2026-10-03; 10 jobs de smoke apagados ao final)
 
-1. `/api/orchestrators` mostra 2 placas com UUID, VRAM, W, %, °C.
-2. Job manual na 1660S (UUID) → `docker inspect` do container mostra `DeviceIDs=[GPU-c83cc056-07f7-d31e-cc98-7486ddac0296]`; `nvidia-smi` dentro do container lista só a 1660S.
-3. Job automático pequeno (≤6 GB na vram-table) cai na 1660S; um que exige >6 GB cai na 3060.
-4. Daemon de difusão quente na 3060 não é derrubado por job na 1660S; é derrubado por job na 3060.
-5. GPU manual abaixo do mínimo → 400 `insufficient_gpu_vram`.
-6. `GET /api/jobs/:id/metrics?keys=sys.gpu.util_pct,sys.gpu.temp_c` não vazio e coerente com a placa do job.
-7. `vram_high` dispara/resolve com histerese (teste com banco; no smoke, ao menos não dispara falso).
+1. [x] `/api/orchestrators` mostra 2 placas com UUID, VRAM, W, %, °C (deploy B1).
+2. [x] Job manual na 1660S (UUID): container com `DeviceIDs=["GPU-c83c…"]`; `nvidia-smi -L` dentro do container lista só a 1660 SUPER; treino sd15 concluído; `sys.gpu.*` da 1660S (util 100%, até 79 W, 54 °C, 3691 MiB). Também: `gpuDevice: "0"` gravado como UUID da 3060 já no create, container com `DeviceIDs=["GPU-1c1e…"]` e `NVIDIA_VISIBLE_DEVICES=GPU-1c1e…`.
+3. [x] Automático: sd15 (min 5 + headroom 2 = 7 GB) cai na 3060 — correto pela política; a 1660S (6 GB) só recebe automático com `vram_min_gb` ≤ 4 GB. Placement na 1660S provado pelo manual (item 2) após o fix `047a827`.
+4. [x] Daemon (`DIFFUSION_DAEMON_ENABLED=1` ligado no nó) sobe com `DeviceIDs=["GPU-1c1e…"]` (3060), geração quente em ~3 s; job na 1660S → log "diffusion daemon mantido ativo em GPU diferente da do job", daemon vivo; job na 3060 com daemon ocioso há >300 s → "preempting idle diffusion daemon before training job". Nuance (pré-existente, mantida): só preempta na mesma GPU **e** se ocioso há > `idle_ttl/2` (300 s com TTL 600); usado há menos que isso, o daemon convive com o treino na mesma placa (`services/orchestrator/src/daemon/state.rs:96-101`).
+5. [x] FLUX manual na 1660S → 400 `insufficient_gpu_vram`; `"foo bar"` → `invalid_gpu_device`; sem `orchestratorId` → `gpu_device_requires_orchestrator`; UUID inexistente → `unknown_gpu_device`; nenhum job criado.
+6. [x] `sys.gpu.util_pct|temp_c|power_w|vram_used_mb` com 11 pontos cada (util 0–100, 46–61 °C, 17–77 W, VRAM até 2687 MiB) e `GET /api/jobs/:id/metrics?keys=sys.gpu.util_pct,sys.gpu.temp_c` não vazio, coerente com a placa do job.
+7. [x] `vram_high`: disparo/critical/volta/resolução cobertos por teste com banco (B3, 167 `manager_db --ignored`); no smoke, nenhum `vram_high` falso.
+
+Achados do smoke levados ao backlog: 1ª geração com daemon frio falha ("error sending request"/broken pipe) enquanto o daemon baixa/carrega o modelo; imagens/tags de rollback sumiram do docker-04 ~2026-10-03T00:50Z.
 
 ---
 

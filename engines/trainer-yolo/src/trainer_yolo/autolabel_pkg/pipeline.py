@@ -9,7 +9,6 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any
 
 from engine_kit.runtime import die as _die
 from engine_kit.telemetry import TelemetryEmitter
@@ -55,8 +54,6 @@ def _autolabel_pipeline(cfg: dict, output_dir: Path) -> None:
     total_imgs = len(sorted_filenames)
 
     captions_path = output_dir / "captions.jsonl"
-    metrics_path = output_dir / "metrics.jsonl"
-    metrics_path.write_text("", encoding="utf-8")
 
     emitter = TelemetryEmitter(output_dir)
     emitter.emit(
@@ -117,43 +114,15 @@ def _autolabel_pipeline(cfg: dict, output_dir: Path) -> None:
             f.write(line + "\n")
             f.flush()
 
-            progress = (idx + 1) / total_imgs if total_imgs > 0 else 1.0
-            metric_entry = {
-                "epoch": idx + 1,
-                "step": total_imgs,
-                "progress": progress,
-                "box_loss": 0.0,
-                "cls_loss": 0.0,
-                "dfl_loss": 0.0,
-                "mAP50": 0.0,
-                "mAP50-95": 0.0,
-                "images_done": idx + 1,
-                "images_total": total_imgs,
-                "model": model,
-            }
-            with open(metrics_path, "a", encoding="utf-8") as mf:
-                mf.write(json.dumps(metric_entry) + "\n")
-                mf.flush()
-
-    if total_imgs == 0:
-        with open(metrics_path, "w", encoding="utf-8") as mf:
-            mf.write(
-                json.dumps(
-                    {
-                        "epoch": 1,
-                        "step": 0,
-                        "progress": 1.0,
-                        "box_loss": 0.0,
-                        "cls_loss": 0.0,
-                        "dfl_loss": 0.0,
-                        "mAP50": 0.0,
-                        "mAP50-95": 0.0,
-                        "images_done": 0,
-                        "images_total": 0,
-                        "model": model,
-                    }
-                )
-                + "\n"
+            # Progress linear de 0.05 a ~0.99 durante o processamento das imagens
+            step_num = idx + 1
+            progress = 0.05 + 0.94 * (step_num / total_imgs)
+            emitter.emit(
+                phase="generating",
+                message=f"Anotando imagem {step_num}/{total_imgs}: {fname}",
+                progress=progress,
+                step=step_num,
+                total_steps=total_imgs,
             )
 
     emitter.emit(

@@ -413,3 +413,136 @@ def test_autolabel_openai_with_reasoning_effort(tmp_path: Path):
     finally:
         server.shutdown()
         server.server_close()
+
+def test_autolabel_telemetry_progress_and_metrics_contract(tmp_path: Path):
+    """Verifica que o autolabel reporta progresso por imagem na telemetria canônica
+    (step 1..N, totalSteps, progresso crescente, phase 'generating') e que nenhuma linha
+    contém chaves YOLO fabricadas (box_loss, mAP50, etc.)."""
+    ds = _make_autolabel_dataset(tmp_path, ["img_01.jpg", "img_02.jpg", "img_03.jpg"])
+    out = tmp_path / "output_telemetry"
+    cfg_path = _make_config(tmp_path, ds, out, prompt="Teste telemetria")
+    cfg = load_and_validate_autolabel_config(cfg_path)
+
+    _mock_autolabel(cfg, out)
+
+    telem_file = out / "telemetry.jsonl"
+    assert telem_file.is_file(), "telemetry.jsonl deve existir"
+
+    telem_lines = [json.loads(line) for line in telem_file.read_text(encoding="utf-8").strip().splitlines()]
+    # 1 preparing + 3 generating (1 por imagem) + 1 completed = 5 eventos
+    assert len(telem_lines) == 5
+
+    # Evento 0: preparing
+    assert telem_lines[0]["phase"] == "preparing"
+    assert telem_lines[0]["progress"] == 0.05
+
+    # Eventos 1..3: generating por imagem
+    generating_events = telem_lines[1:4]
+    prev_progress = 0.05
+    for idx, ev in enumerate(generating_events, start=1):
+        assert ev["phase"] == "generating"
+        assert ev["step"] == idx
+        assert ev["totalSteps"] == 3
+        assert ev["progress"] > prev_progress
+        assert ev["progress"] < 1.0
+        assert f"Anotando imagem {idx}/3:" in ev["phaseMessage"]
+        assert f"img_0{idx}.jpg" in ev["phaseMessage"]
+        prev_progress = ev["progress"]
+
+    # Evento final: completed
+    assert telem_lines[4]["phase"] == "completed"
+    assert telem_lines[4]["progress"] == 1.0
+
+    # Nenhuma linha em telemetry.jsonl contém métricas YOLO fabricadas
+    for ev in telem_lines:
+        assert "box_loss" not in ev
+        assert "cls_loss" not in ev
+        assert "dfl_loss" not in ev
+        assert "mAP50" not in ev
+        assert "mAP50-95" not in ev
+        metrics_dict = ev.get("metrics") or {}
+        assert "box_loss" not in metrics_dict
+        assert "mAP50" not in metrics_dict
+
+    # Verifica o espelho em metrics.jsonl gerado pelo TelemetryEmitter
+    metrics_file = out / "metrics.jsonl"
+    assert metrics_file.is_file(), "metrics.jsonl deve ser gerado pelo espelho do emitter"
+    metrics_lines = [json.loads(line) for line in metrics_file.read_text(encoding="utf-8").strip().splitlines()]
+    assert len(metrics_lines) == 5
+    for m in metrics_lines:
+        assert "box_loss" not in m
+        assert "cls_loss" not in m
+        assert "dfl_loss" not in m
+        assert "mAP50" not in m
+        assert "mAP50-95" not in m
+
+
+def test_autolabel_retains_progress_on_midway_die(tmp_path: Path):
+    """Verifica que quando o autolabel falha no meio, o último progresso real
+    fica registrado na telemetria antes da finalização."""
+    import http.server
+    import threading
+
+    request_count = 0
+
+    class FlakyOpenAIHandler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            nonlocal request_count
+            request_count += 1
+            length = int(self.headers.get("Content-Length", 0))
+            self.rfile.read(length)
+            if request_count == 1:
+                # Imagem 1: sucesso
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                res = {"choices": [{"message": {"role": "assistant", "content": "Legenda 1"}}]}
+                self.wfile.write(json.dumps(res).encode("utf-8"))
+            else:
+                # Imagem 2: erro fatal
+                self.send_response(500)
+                self.end_headers()
+
+        def log_message(self, format, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), FlakyOpenAIHandler)
+    port = server.server_address[1]
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+
+    try:
+        ds = _make_autolabel_dataset(tmp_path, ["img_01.jpg", "img_02.jpg", "img_03.jpg"])
+        out = tmp_path / "output_fail"
+        cfg = {
+            "job_id": "job-openai-mid-fail",
+            "engine": "autolabel",
+            "model": "openai",
+            "mode": "autolabel",
+            "dataset_path": str(ds),
+            "output_path": str(out),
+            "seed": 42,
+            "autolabel": {
+                "prompt": "Teste",
+                "api_key": "sk-dummy-test-key",
+                "api_base": f"http://127.0.0.1:{port}/v1",
+                "openai_model": "gpt-4o-mini",
+            },
+        }
+        with pytest.raises(SystemExit):
+            _mock_autolabel(cfg, out)
+
+        telem_file = out / "telemetry.jsonl"
+        assert telem_file.is_file()
+        telem_lines = [json.loads(line) for line in telem_file.read_text(encoding="utf-8").strip().splitlines()]
+        # Evento 0: preparing
+        # Evento 1: generating img_01 (step=1) antes de falhar na img_02
+        assert len(telem_lines) == 2
+        assert telem_lines[0]["phase"] == "preparing"
+        assert telem_lines[1]["phase"] == "generating"
+        assert telem_lines[1]["step"] == 1
+        assert telem_lines[1]["totalSteps"] == 3
+        assert "Anotando imagem 1/3: img_01.jpg" in telem_lines[1]["phaseMessage"]
+    finally:
+        server.shutdown()
+        server.server_close()

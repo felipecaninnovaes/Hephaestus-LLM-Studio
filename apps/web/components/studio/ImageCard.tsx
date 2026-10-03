@@ -49,7 +49,7 @@ export function ImageCard({
   const [thumbFailed, setThumbFailed] = useState(false);
   const isClickable = Boolean(onClick) && variant !== "trash";
   const heightClass = density === "compact" ? "h-24 sm:h-28" : "h-28 sm:h-36";
-  const imageSrc = !thumbFailed && item.thumbUrl ? item.thumbUrl : item.url;
+  const imageSrc = thumbFailed ? item.url : item.thumbUrl;
   return (
     <div
       className={`group relative ${heightClass} overflow-hidden rounded-xl border bg-zinc-900/90 transition-all ${
@@ -78,7 +78,7 @@ export function ImageCard({
         loading="lazy"
         decoding="async"
         onError={() => {
-          if (!thumbFailed && item.thumbUrl) {
+          if (!thumbFailed) {
             setThumbFailed(true);
           }
         }}

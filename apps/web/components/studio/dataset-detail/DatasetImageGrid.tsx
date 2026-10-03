@@ -318,33 +318,33 @@ export function DatasetImageGrid({
             : "grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4"
         }
       >
-          <button
-            type="button"
-            onClick={onUploadClick}
-            disabled={uploading}
-            aria-label="Adicionar imagens"
-            className={`group relative flex flex-col items-center justify-center rounded-xl border border-dashed border-zinc-800 bg-zinc-950/40 hover:border-brand-500/70 hover:bg-brand-500/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 transition-all text-center p-3 cursor-pointer disabled:opacity-60 disabled:pointer-events-none ${
-              density === "compact" ? "h-24 sm:h-28" : "h-28 sm:h-36"
-            }`}
-          >
-            <div className="flex size-9 sm:size-10 items-center justify-center rounded-xl border border-white/10 bg-zinc-900/80 text-zinc-300 group-hover:border-brand-500/40 group-hover:bg-brand-500/15 group-hover:text-brand-300 transition-colors">
-              {uploading ? (
-                <Spinner className="size-4 sm:size-5 text-brand-400" />
-              ) : (
-                <IconPlus className="size-4 sm:size-5 stroke-[2.2]" />
-              )}
-            </div>
-            <div className="mt-2 flex flex-col items-center gap-0.5 px-1 max-w-full">
-              <span className="font-mono text-2xs sm:text-xs font-semibold text-zinc-200 group-hover:text-white truncate">
-                {uploading ? "Enviando…" : "Adicionar imagens"}
-              </span>
-              <span className="font-mono text-3xs text-zinc-500 group-hover:text-zinc-400">
-                {uploading
-                  ? `${uploadSent} de ${uploadCount}`
-                  : "Arraste ou clique"}
-              </span>
-            </div>
-          </button>
+        <button
+          type="button"
+          onClick={onUploadClick}
+          disabled={uploading}
+          aria-label="Adicionar imagens"
+          className={`group relative flex flex-col items-center justify-center rounded-xl border border-dashed border-zinc-800 bg-zinc-950/40 hover:border-brand-500/70 hover:bg-brand-500/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 transition-all text-center p-3 cursor-pointer disabled:opacity-60 disabled:pointer-events-none ${
+            density === "compact" ? "h-24 sm:h-28" : "h-28 sm:h-36"
+          }`}
+        >
+          <div className="flex size-9 sm:size-10 items-center justify-center rounded-xl border border-white/10 bg-zinc-900/80 text-zinc-300 group-hover:border-brand-500/40 group-hover:bg-brand-500/15 group-hover:text-brand-300 transition-colors">
+            {uploading ? (
+              <Spinner className="size-4 sm:size-5 text-brand-400" />
+            ) : (
+              <IconPlus className="size-4 sm:size-5 stroke-[2.2]" />
+            )}
+          </div>
+          <div className="mt-2 flex flex-col items-center gap-0.5 px-1 max-w-full">
+            <span className="font-mono text-2xs sm:text-xs font-semibold text-zinc-200 group-hover:text-white truncate">
+              {uploading ? "Enviando…" : "Adicionar imagens"}
+            </span>
+            <span className="font-mono text-3xs text-zinc-500 group-hover:text-zinc-400">
+              {uploading
+                ? `${uploadSent} de ${uploadCount}`
+                : "Arraste ou clique"}
+            </span>
+          </div>
+        </button>
         {items.map((item) => (
           <ImageCard
             key={item.id}

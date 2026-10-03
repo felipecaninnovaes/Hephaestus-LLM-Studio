@@ -139,7 +139,7 @@ function ImageTableRow({
   category,
 }: ImageTableRowProps) {
   const [thumbFailed, setThumbFailed] = useState(false);
-  const imageSrc = !thumbFailed && item.thumbUrl ? item.thumbUrl : item.url;
+  const imageSrc = thumbFailed ? item.url : item.thumbUrl;
 
   return (
     <tr
@@ -173,7 +173,7 @@ function ImageTableRow({
           loading="lazy"
           decoding="async"
           onError={() => {
-            if (!thumbFailed && item.thumbUrl) {
+            if (!thumbFailed) {
               setThumbFailed(true);
             }
           }}

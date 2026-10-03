@@ -55,9 +55,11 @@ function toPersistedLogLine(l: JobLogLine, key: string): LogLine {
         ? "ORCH"
         : phase.includes("sample") || phase === "generating"
           ? "DIFFUSION"
-          : phase === "training" || phase.includes("epoch")
-            ? "TRAIN"
-            : "ENGINE";
+          : phase === "labeling" || phase.includes("label") || phase.includes("annotat")
+            ? "AUTOLABEL"
+            : phase === "training" || phase.includes("epoch")
+              ? "TRAIN"
+              : "ENGINE";
   return {
     id: `hist-${key}`,
     timestamp: ts.text,
@@ -110,7 +112,9 @@ export function JobLogViewer({
         ? "ORCH"
         : currentPhase?.includes("sample") || currentPhase === "generating"
           ? "DIFFUSION"
-          : "ENGINE";
+          : currentPhase === "labeling" || currentPhase?.includes("label") || currentPhase?.includes("annotat")
+            ? "AUTOLABEL"
+            : "ENGINE";
 
     const text = currentMsg || `Fase: ${currentPhase}`;
     const nowTime = new Date().toLocaleTimeString("pt-BR", { hour12: false });

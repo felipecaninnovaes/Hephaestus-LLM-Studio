@@ -138,8 +138,9 @@ function ImageTableRow({
   onDelete,
   category,
 }: ImageTableRowProps) {
-  const [thumbFailed, setThumbFailed] = useState(false);
-  const imageSrc = thumbFailed ? item.url : item.thumbUrl;
+  const [failedThumbId, setFailedThumbId] = useState<string | null>(null);
+  const isThumbFailed = failedThumbId === item.id;
+  const imageSrc = isThumbFailed ? item.url : item.thumbUrl;
 
   return (
     <tr
@@ -173,8 +174,8 @@ function ImageTableRow({
           loading="lazy"
           decoding="async"
           onError={() => {
-            if (!thumbFailed) {
-              setThumbFailed(true);
+            if (failedThumbId !== item.id) {
+              setFailedThumbId(item.id);
             }
           }}
           className="size-10 rounded-lg object-cover border border-zinc-800 bg-zinc-900"

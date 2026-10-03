@@ -46,10 +46,11 @@ export function ImageCard({
   onQuickLook,
   density = "normal",
 }: ImageCardProps) {
-  const [thumbFailed, setThumbFailed] = useState(false);
+  const [failedThumbId, setFailedThumbId] = useState<string | null>(null);
   const isClickable = Boolean(onClick) && variant !== "trash";
   const heightClass = density === "compact" ? "h-24 sm:h-28" : "h-28 sm:h-36";
-  const imageSrc = thumbFailed ? item.url : item.thumbUrl;
+  const isThumbFailed = failedThumbId === item.id;
+  const imageSrc = isThumbFailed ? item.url : item.thumbUrl;
   return (
     <div
       className={`group relative ${heightClass} overflow-hidden rounded-xl border bg-zinc-900/90 transition-all ${
@@ -78,8 +79,8 @@ export function ImageCard({
         loading="lazy"
         decoding="async"
         onError={() => {
-          if (!thumbFailed) {
-            setThumbFailed(true);
+          if (failedThumbId !== item.id) {
+            setFailedThumbId(item.id);
           }
         }}
         className="absolute inset-0 h-full w-full object-cover"

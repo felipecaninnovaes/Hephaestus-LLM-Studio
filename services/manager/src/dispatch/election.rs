@@ -67,6 +67,15 @@ pub async fn select_eligible_orchestrator(
 
     // 1. Tenta nó indicado pelo orchestrator_hint se presente.
     if let Some(hint_id) = hint {
+        // Se houver GPU manual especificada, a VRAM da placa já foi validada no create
+        // sem headroom contra vram_min_gb. Para a elegibilidade do nó no dispatch,
+        // não filtramos por required_gb (com headroom) quando manual_gpu_device.is_some().
+        let effective_required_gb = if manual_gpu_device.is_some() {
+            None
+        } else {
+            required_gb
+        };
+
         let hinted: Option<(Uuid, String, Option<serde_json::Value>)> = sqlx::query_as(
             "SELECT o.id, o.endpoint, o.gpu_devices FROM orchestrators o \
              WHERE o.id = $1 AND o.status = 'online' \
@@ -77,7 +86,7 @@ pub async fn select_eligible_orchestrator(
              FOR UPDATE OF o",
         )
         .bind(hint_id)
-        .bind(required_gb)
+        .bind(effective_required_gb)
         .fetch_optional(&mut *conn)
         .await
         .map_err(|e| ManagerError::Internal(format!("find hinted orchestrator: {e}")))?;

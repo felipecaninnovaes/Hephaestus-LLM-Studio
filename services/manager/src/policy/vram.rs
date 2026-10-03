@@ -32,6 +32,16 @@ pub struct VramEntry {
 }
 
 impl VramTable {
+    /// Retorna apenas o vram_min_gb (sem headroom) para uma combinação (engine, model, mode).
+    /// Usado na validação de GPU manual (ADR-0015 / S4).
+    /// Entrada faltante ⇒ None (permissivo).
+    pub fn resolve_min_gb(&self, engine: &str, model: &str, mode: &str) -> Option<i32> {
+        self.entries
+            .iter()
+            .find(|e| e.engine == engine && e.model == model && e.mode == mode)
+            .map(|e| e.vram_min_gb)
+    }
+
     /// Resolve o requisito VRAM para um job: vram_min_gb + headroom.
     /// Entrada faltante ⇒ None (permissivo).
     pub fn resolve_required_gb(&self, engine: &str, model: &str, mode: &str) -> Option<i32> {

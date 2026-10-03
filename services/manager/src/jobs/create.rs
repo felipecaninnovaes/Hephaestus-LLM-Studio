@@ -108,12 +108,12 @@ pub async fn create_job_with_context(
         let target_device =
             matched.ok_or_else(|| ManagerError::InvalidRequest("unknown_gpu_device".into()))?;
 
-        // Checagem de VRAM mínima da vram-table
-        let required_gb = vram_table.resolve_required_gb(&req.engine, &req.model, &req.mode);
-        if let Some(req_gb) = required_gb {
+        // Checagem de VRAM mínima da vram-table (sem headroom na seleção manual, ADR-0015 / S4)
+        let min_gb = vram_table.resolve_min_gb(&req.engine, &req.model, &req.mode);
+        if let Some(min_gb) = min_gb {
             let vram_mib = target_device.vram_total;
             let vram_gb = (vram_mib as f64) / 1024.0;
-            if vram_gb < (req_gb as f64) {
+            if vram_gb < (min_gb as f64) {
                 return Err(ManagerError::InvalidRequest("insufficient_gpu_vram".into()));
             }
         }

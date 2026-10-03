@@ -4455,11 +4455,26 @@ fn vram_table_parse_ok() {
     assert_eq!(vt.defaults.headroom_gb, 2);
     assert!(!vt.entries.is_empty());
 
-    // yolo11n train: 6 + 2 = 8.
+    // yolo11n train: min 6, required 6 + 2 = 8.
+    assert_eq!(vt.resolve_min_gb("yolo", "yolo11n", "train"), Some(6));
     assert_eq!(vt.resolve_required_gb("yolo", "yolo11n", "train"), Some(8));
-    // yolo11m train: 10 + 2 = 12.
+    // yolo11m train: min 10, required 10 + 2 = 12.
+    assert_eq!(vt.resolve_min_gb("yolo", "yolo11m", "train"), Some(10));
     assert_eq!(vt.resolve_required_gb("yolo", "yolo11m", "train"), Some(12));
+    // sd15 train: min 5, required 5 + 2 = 7.
+    assert_eq!(vt.resolve_min_gb("diffusion", "sd15", "train"), Some(5));
+    assert_eq!(
+        vt.resolve_required_gb("diffusion", "sd15", "train"),
+        Some(7)
+    );
+    // flux train: min 8, required 8 + 2 = 10.
+    assert_eq!(vt.resolve_min_gb("diffusion", "flux", "train"), Some(8));
+    assert_eq!(
+        vt.resolve_required_gb("diffusion", "flux", "train"),
+        Some(10)
+    );
     // Engine desconhecido → None (permissivo).
+    assert_eq!(vt.resolve_min_gb("autotracker", "x", "train"), None);
     assert_eq!(vt.resolve_required_gb("autotracker", "x", "train"), None);
 }
 
@@ -9431,6 +9446,154 @@ async fn b2_resolve_gpu_device_index_to_uuid_e_manual_insufficient_vram() {
     assert_eq!(
         err,
         manager::ManagerError::InvalidRequest("insufficient_gpu_vram".into())
+    );
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn b2_manual_gpu_without_headroom_and_automatic_election_with_headroom() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let orch_id = uuid::Uuid::new_v4();
+    let gpu0_1660s = "GPU-c83cc056-07f7-d31e-cc98-7486ddac0296";
+
+    // Nó cuja ÚNICA placa é de 6144 MiB (6GB total vram_total_gb: 6)
+    let gpu_devices = serde_json::json!([
+        { "index": 0, "uuid": gpu0_1660s, "name": "NVIDIA GeForce GTX 1660 SUPER", "vram_total": 6144, "vram_used": 1024 }
+    ]);
+
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status, vram_total_gb, gpu_devices) \
+         VALUES ($1, 'docker-04', 'http://10.15.50.114:8082', 'remoto', 'online', 6, $2)",
+    )
+    .bind(orch_id)
+    .bind(&gpu_devices)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    let cache = manager::new_telemetry_cache();
+    // sd15 train: min 5, headroom 2 -> required 7
+    // flux train: min 8, headroom 2 -> required 10
+    let vram_table = manager::VramTable::parse(
+        "defaults:\n  headroom_gb: 2\nentries:\n  - { engine: diffusion, model: sd15, mode: train, vram_min_gb: 5 }\n  - { engine: diffusion, model: flux, mode: train, vram_min_gb: 8 }\n",
+    )
+    .unwrap();
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    // 1. GPU manual: flux train (min 8) na placa de 6144 MiB -> 400 insufficient_gpu_vram
+    let req_flux_manual = manager::CreateJobRequest {
+        kind: "diffusion_train".into(),
+        engine: "diffusion".into(),
+        model: "flux".into(),
+        mode: "train".into(),
+        dataset_id: Some(ds_id.to_string()),
+        dataset_version_id: None,
+        package_ref: None,
+        config_yaml: None,
+        params: None,
+        vram_min_gb: None,
+        weights_id: None,
+        orchestrator_hint: Some(orch_id.to_string()),
+        gpu_device: Some("0".to_string()),
+    };
+    let err_flux = manager::create_job_with_context(&p, &cache, &vram_table, req_flux_manual)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err_flux,
+        manager::ManagerError::InvalidRequest("insufficient_gpu_vram".into())
+    );
+
+    // 2. GPU manual: sd15 train (min 5) com GPU manual de 6144 MiB (index 0 / 1660S) é ACEITO
+    // e despachado com gpu_device = UUID dela, passando pela eleição real (sem travar em waiting_vram por causa de headroom)
+    let req_sd15_manual = manager::CreateJobRequest {
+        kind: "diffusion_train".into(),
+        engine: "diffusion".into(),
+        model: "sd15".into(),
+        mode: "train".into(),
+        dataset_id: Some(ds_id.to_string()),
+        dataset_version_id: None,
+        package_ref: None,
+        config_yaml: None,
+        params: None,
+        vram_min_gb: None,
+        weights_id: None,
+        orchestrator_hint: Some(orch_id.to_string()),
+        gpu_device: Some("0".to_string()),
+    };
+    let resp_manual = manager::create_job_with_context(&p, &cache, &vram_table, req_sd15_manual)
+        .await
+        .expect("sd15 manual na 1660S deve ser aceito sem headroom");
+    let manual_job_id: uuid::Uuid = resp_manual.job_id.parse().unwrap();
+
+    let disp_manual =
+        manager::dispatch_next_with_cache(&p, &orch, "docker", "/data", "img", &vram_table, &cache)
+            .await
+            .unwrap();
+    assert!(disp_manual, "sd15 manual deve ser despachado no nó de 6GB");
+
+    let manual_row: (String, Option<String>) =
+        sqlx::query_as("SELECT status, gpu_device FROM jobs WHERE id = $1")
+            .bind(manual_job_id)
+            .fetch_one(&p)
+            .await
+            .unwrap();
+    assert_eq!(manual_row.0, "dispatched");
+    assert_eq!(manual_row.1.as_deref(), Some(gpu0_1660s));
+
+    // Finaliza o job manual para liberar o slot do nó
+    sqlx::query("UPDATE jobs SET status = 'done' WHERE id = $1")
+        .bind(manual_job_id)
+        .execute(&p)
+        .await
+        .unwrap();
+
+    // 3. Eleição automática: sd15 train (min 5 + headroom 2 = 7) NÃO cabe no nó de 6GB (6GB < 7GB),
+    // portanto a eleição automática NÃO despacha e o job fica esperando com queue_reason = 'waiting_vram'
+    let req_sd15_auto = manager::CreateJobRequest {
+        kind: "diffusion_train".into(),
+        engine: "diffusion".into(),
+        model: "sd15".into(),
+        mode: "train".into(),
+        dataset_id: Some(ds_id.to_string()),
+        dataset_version_id: None,
+        package_ref: None,
+        config_yaml: None,
+        params: None,
+        vram_min_gb: None,
+        weights_id: None,
+        orchestrator_hint: None,
+        gpu_device: None,
+    };
+    let resp_auto = manager::create_job_with_context(&p, &cache, &vram_table, req_sd15_auto)
+        .await
+        .unwrap();
+    let auto_job_id: uuid::Uuid = resp_auto.job_id.parse().unwrap();
+
+    let disp_auto =
+        manager::dispatch_next_with_cache(&p, &orch, "docker", "/data", "img", &vram_table, &cache)
+            .await
+            .unwrap();
+    assert!(
+        !disp_auto,
+        "sd15 automático não deve ser despachado por falta de VRAM com headroom"
+    );
+
+    let auto_row: (String, Option<String>) =
+        sqlx::query_as("SELECT status, queue_reason FROM jobs WHERE id = $1")
+            .bind(auto_job_id)
+            .fetch_one(&p)
+            .await
+            .unwrap();
+    assert_eq!(auto_row.0, "queued");
+    assert_eq!(
+        auto_row.1.as_deref(),
+        Some("waiting_vram"),
+        "sd15 automático deve registrar queue_reason = waiting_vram"
     );
 }
 

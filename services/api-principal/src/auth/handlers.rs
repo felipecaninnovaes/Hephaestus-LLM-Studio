@@ -297,6 +297,7 @@ mod tests {
             manager: std::sync::Arc::new(crate::jobs::manager_client::MockManager::default()),
             model_download_allowed_hosts: vec![],
             job_events: crate::jobs::events_hub::JobEventsHub::new(),
+            thumb_semaphore: crate::datasets::thumb::default_thumb_semaphore(),
         };
         let resp = login(
             axum::extract::State(state),

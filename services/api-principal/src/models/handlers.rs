@@ -993,6 +993,7 @@ mod tests {
             manager: std::sync::Arc::new(manager),
             model_download_allowed_hosts: vec![],
             job_events: crate::jobs::events_hub::JobEventsHub::new(),
+            thumb_semaphore: crate::datasets::thumb::default_thumb_semaphore(),
         }
     }
 
@@ -1013,6 +1014,7 @@ mod tests {
             manager: std::sync::Arc::new(manager),
             model_download_allowed_hosts: hosts,
             job_events: crate::jobs::events_hub::JobEventsHub::new(),
+            thumb_semaphore: crate::datasets::thumb::default_thumb_semaphore(),
         }
     }
 

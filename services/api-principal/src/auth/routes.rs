@@ -44,6 +44,11 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
         &[200, 401, 404, 503],
     ),
     (
+        "GET",
+        "/api/datasets/:id/images/:imageId/thumb",
+        &[200, 401, 404, 415, 503],
+    ),
+    (
         "PUT",
         "/api/datasets/:id/images/:imageId/boxes",
         &[200, 400, 401, 404],
@@ -412,6 +417,10 @@ pub fn build(state: AppState) -> axum::Router {
         .route(
             "/api/datasets/:id/images/:imageId/data",
             get(datasets::handlers::get_data),
+        )
+        .route(
+            "/api/datasets/:id/images/:imageId/thumb",
+            get(datasets::handlers::get_thumb),
         )
         .route(
             "/api/datasets/:id/images/:imageId/boxes",

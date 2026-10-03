@@ -1311,6 +1311,7 @@ mod tests {
             manager: std::sync::Arc::new(crate::jobs::manager_client::MockManager::default()),
             model_download_allowed_hosts: vec![],
             job_events: crate::jobs::events_hub::JobEventsHub::new(),
+            thumb_semaphore: crate::datasets::thumb::default_thumb_semaphore(),
         };
         let resp = package_dataset(
             axum::extract::State(state),
@@ -1336,6 +1337,7 @@ mod tests {
             manager: std::sync::Arc::new(crate::jobs::manager_client::MockManager::default()),
             model_download_allowed_hosts: vec![],
             job_events: crate::jobs::events_hub::JobEventsHub::new(),
+            thumb_semaphore: crate::datasets::thumb::default_thumb_semaphore(),
         };
         let resp = package_dataset(
             axum::extract::State(state),
@@ -1469,6 +1471,7 @@ mod tests {
             manager: std::sync::Arc::new(crate::jobs::manager_client::MockManager::default()),
             model_download_allowed_hosts: vec![],
             job_events: crate::jobs::events_hub::JobEventsHub::new(),
+            thumb_semaphore: crate::datasets::thumb::default_thumb_semaphore(),
         };
         let tmp = tempfile::TempDir::new().expect("tempdir");
         tokio::fs::create_dir_all(tmp.path().join("images"))
@@ -1529,6 +1532,7 @@ mod tests {
             manager: std::sync::Arc::new(crate::jobs::manager_client::MockManager::default()),
             model_download_allowed_hosts: vec![],
             job_events: crate::jobs::events_hub::JobEventsHub::new(),
+            thumb_semaphore: crate::datasets::thumb::default_thumb_semaphore(),
         };
         let tmp = tempfile::TempDir::new().expect("tempdir");
         tokio::fs::create_dir_all(tmp.path().join("images"))

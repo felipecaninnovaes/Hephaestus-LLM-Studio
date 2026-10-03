@@ -299,6 +299,7 @@ pub struct ImageResponse {
     pub media_type: String,
     pub split: String,
     pub url: String,
+    pub thumb_url: String,
     pub created_at: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub boxes_count: Option<i64>,
@@ -318,6 +319,7 @@ impl From<ImageRow> for ImageResponse {
             media_type: row.media_type,
             split: row.split,
             url: String::new(),
+            thumb_url: String::new(),
             created_at: row.created_at,
             boxes_count: None,
             caption: None,
@@ -427,14 +429,31 @@ pub struct ImageDetailResponse {
     pub media_type: String,
     pub split: String,
     pub url: String,
+    pub thumb_url: String,
     pub created_at: DateTime<Utc>,
     pub boxes: Vec<BoxResponse>,
     pub caption: Option<CaptionResponse>,
 }
 
-impl From<(ImageRow, Vec<BoxResponse>, Option<CaptionResponse>, String)> for ImageDetailResponse {
-    fn from(parts: (ImageRow, Vec<BoxResponse>, Option<CaptionResponse>, String)) -> Self {
-        let (row, boxes, caption, url) = parts;
+impl
+    From<(
+        ImageRow,
+        Vec<BoxResponse>,
+        Option<CaptionResponse>,
+        String,
+        String,
+    )> for ImageDetailResponse
+{
+    fn from(
+        parts: (
+            ImageRow,
+            Vec<BoxResponse>,
+            Option<CaptionResponse>,
+            String,
+            String,
+        ),
+    ) -> Self {
+        let (row, boxes, caption, url, thumb_url) = parts;
         Self {
             id: row.id.to_string(),
             filename: row.filename,
@@ -445,6 +464,7 @@ impl From<(ImageRow, Vec<BoxResponse>, Option<CaptionResponse>, String)> for Ima
             media_type: row.media_type,
             split: row.split,
             url,
+            thumb_url,
             created_at: row.created_at,
             boxes,
             caption,

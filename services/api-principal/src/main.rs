@@ -229,6 +229,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         manager,
         model_download_allowed_hosts: load_download_allowed_hosts(),
         job_events: job_events.clone(),
+        thumb_semaphore: api_principal::datasets::thumb::default_thumb_semaphore(),
     };
 
     // 7b. Listener único de `job_events` (pg_notify, fatia 1b) + poller de

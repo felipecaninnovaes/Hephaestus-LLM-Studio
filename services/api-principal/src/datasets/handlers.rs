@@ -527,6 +527,10 @@ pub async fn delete_trash(State(state): State<AppState>, Path(id): Path<String>)
         if let Err(e) = state.storage.delete_prefix(&prefix).await {
             eprintln!("aviso: sweep da lixeira {prefix} falhou ({e}) — objetos reapáveis");
         }
+        let thumb_key = format!("datasets/{ds_id}/thumbs/{img_id}.jpg");
+        if let Err(e) = state.storage.delete(&thumb_key).await {
+            eprintln!("aviso: sweep de thumb {thumb_key} falhou ({e}) — objeto reapável");
+        }
     }
     StatusCode::NO_CONTENT.into_response()
 }
@@ -1145,6 +1149,7 @@ pub async fn list_images(
             created_at,
         });
         resp.url = url;
+        resp.thumb_url = format!("/api/datasets/{ds_id}/images/{img_id}/thumb");
         resp.boxes_count = boxes_count;
         resp.caption = caption;
         out.push(resp);
@@ -1262,6 +1267,7 @@ pub async fn get_image(
         box_rows.into_iter().map(BoxResponse::from).collect(),
         caption_row.map(CaptionResponse::from),
         url,
+        format!("/api/datasets/{ds_id}/images/{img_id}/thumb"),
     ));
     (StatusCode::OK, Json(detail)).into_response()
 }
@@ -1328,6 +1334,134 @@ pub async fn get_data(
             ),
         ],
         bytes,
+    )
+        .into_response()
+}
+/// GET /api/datasets/:id/images/:imageId/thumb — proxy binário da miniatura (lado maior ≤ 512px).
+pub async fn get_thumb(
+    State(state): State<AppState>,
+    Path((id, image_id)): Path<(String, String)>,
+) -> Response {
+    let ds_id: Uuid = match parse_id(&id) {
+        Some(v) => v,
+        None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
+    };
+    let img_id: Uuid = match parse_id(&image_id) {
+        Some(v) => v,
+        None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
+    };
+
+    let row: Option<(String,)> = match sqlx::query_as(
+        "SELECT object_key FROM images WHERE id = $1 AND dataset_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(img_id)
+    .bind(ds_id)
+    .fetch_optional(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => return internal(),
+    };
+    let (object_key,) = match row {
+        Some(r) => r,
+        None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
+    };
+
+    let thumb_key = format!("datasets/{ds_id}/thumbs/{img_id}.jpg");
+
+    // 1. Tentar servir thumbnail já persistida no storage
+    match state.storage.get(&thumb_key).await {
+        Ok(bytes) => {
+            return (
+                StatusCode::OK,
+                [
+                    (axum::http::header::CONTENT_TYPE, "image/jpeg"),
+                    (
+                        axum::http::header::CACHE_CONTROL,
+                        "public, max-age=31536000, immutable",
+                    ),
+                ],
+                bytes,
+            )
+                .into_response();
+        }
+        Err(StorageError::NotFound) => {}
+        Err(StorageError::Unavailable(_)) => {
+            return err(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "storage_unavailable",
+                MSG_STORAGE_UNAVAILABLE,
+            );
+        }
+    }
+
+    // 2. Buscar imagem original
+    let original_bytes = match state.storage.get(&object_key).await {
+        Ok(b) => b,
+        Err(StorageError::NotFound) => {
+            return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND);
+        }
+        Err(StorageError::Unavailable(_)) => {
+            return err(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "storage_unavailable",
+                MSG_STORAGE_UNAVAILABLE,
+            );
+        }
+    };
+
+    // 3. Semáforo para limitar processamento concorrente
+    let _permit = match state.thumb_semaphore.acquire().await {
+        Ok(p) => p,
+        Err(_) => return internal(),
+    };
+
+    // 4. Gerar miniatura em tokio::task::spawn_blocking
+    let gen_res = tokio::task::spawn_blocking(move || {
+        super::thumb::generate_thumb_from_bytes(
+            &original_bytes,
+            super::thumb::DEFAULT_THUMB_MAX_SIDE,
+        )
+    })
+    .await;
+
+    let thumb_bytes = match gen_res {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(_)) => {
+            return err(
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "thumb_unavailable",
+                crate::error::MSG_THUMB_UNAVAILABLE,
+            );
+        }
+        Err(_) => return internal(),
+    };
+
+    // 5. Persistir no storage (falha no put = aviso e ainda serve os bytes)
+    match tempfile::NamedTempFile::new() {
+        Ok(mut tmp) => {
+            use std::io::Write as _;
+            if let Err(e) = tmp.write_all(&thumb_bytes) {
+                tracing::warn!(%thumb_key, error = %e, "falha ao escrever temp file para thumb");
+            } else if let Err(e) = state.storage.put(&thumb_key, tmp.path()).await {
+                tracing::warn!(%thumb_key, error = %e, "falha ao persistir thumb no storage");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(%thumb_key, error = %e, "falha ao criar temp file para thumb");
+        }
+    }
+
+    (
+        StatusCode::OK,
+        [
+            (axum::http::header::CONTENT_TYPE, "image/jpeg"),
+            (
+                axum::http::header::CACHE_CONTROL,
+                "public, max-age=31536000, immutable",
+            ),
+        ],
+        thumb_bytes,
     )
         .into_response()
 }

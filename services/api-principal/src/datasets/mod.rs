@@ -9,3 +9,4 @@ pub mod import;
 pub mod models;
 pub mod normalize;
 pub mod package;
+pub mod thumb;

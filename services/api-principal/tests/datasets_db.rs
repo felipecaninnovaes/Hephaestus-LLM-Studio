@@ -93,6 +93,7 @@ async fn state() -> AppState {
         manager: std::sync::Arc::new(api_principal::jobs::manager_client::MockManager::default()),
         model_download_allowed_hosts: vec![],
         job_events: api_principal::jobs::events_hub::JobEventsHub::new(),
+        thumb_semaphore: api_principal::datasets::thumb::default_thumb_semaphore(),
     }
 }
 
@@ -1569,6 +1570,90 @@ async fn t0003_data_proxy() {
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(json(&body)["code"], "storage_unavailable");
+    // --- Testes de miniatura (GET /thumb) ---
+    // (a) 1ª chamada gera miniatura sob demanda, retorna 200 image/jpeg com headers corretos e persiste no S3.
+    let (status, headers, thumb_body_1) = call(
+        app.clone(),
+        Request::builder()
+            .method("GET")
+            .uri(format!("/api/datasets/{ds}/images/{img}/thumb"))
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers
+            .get(http::header::CONTENT_TYPE)
+            .expect("content-type")
+            .to_str()
+            .expect("content-type str"),
+        "image/jpeg"
+    );
+    let cc = headers
+        .get(http::header::CACHE_CONTROL)
+        .expect("cache-control")
+        .to_str()
+        .expect("cache-control str");
+    assert!(cc.contains("public"));
+    assert!(cc.contains("max-age=31536000"));
+    assert!(cc.contains("immutable"));
+    assert!(!thumb_body_1.is_empty());
+
+    // (b) 2ª chamada serve diretamente do storage (mesmos bytes).
+    let (status, headers_2, thumb_body_2) = call(
+        app.clone(),
+        Request::builder()
+            .method("GET")
+            .uri(format!("/api/datasets/{ds}/images/{img}/thumb"))
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(thumb_body_1, thumb_body_2);
+    assert_eq!(
+        headers_2
+            .get(http::header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "image/jpeg"
+    );
+
+    // (c) 404 para imagem sem objeto original.
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("GET")
+            .uri(format!("/api/datasets/{ds}/images/{img2}/thumb"))
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(json(&body)["code"], "not_found");
+
+    // (d) 415 thumb_unavailable quando o objeto original não decodifica como imagem.
+    let img_corrupt = insert_image(&st.pool, ds_id, "corrupt.jpg", 14).await;
+    let corrupt_key = format!("datasets/{ds_id}/images/{img_corrupt}/corrupt.jpg");
+    mock.put_bytes(&corrupt_key, b"nao eh imagem".to_vec())
+        .await;
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("GET")
+            .uri(format!("/api/datasets/{ds}/images/{img_corrupt}/thumb"))
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    assert_eq!(json(&body)["code"], "thumb_unavailable");
 }
 
 #[tokio::test]
@@ -5396,6 +5481,7 @@ async fn state_with_manager(
         manager: manager_arc.clone(),
         model_download_allowed_hosts: vec![],
         job_events: api_principal::jobs::events_hub::JobEventsHub::new(),
+        thumb_semaphore: api_principal::datasets::thumb::default_thumb_semaphore(),
     };
     (st, storage, manager_arc)
 }
@@ -6129,6 +6215,7 @@ async fn state_with_seeded_storage(
         manager: manager_arc,
         model_download_allowed_hosts: vec![],
         job_events: api_principal::jobs::events_hub::JobEventsHub::new(),
+        thumb_semaphore: api_principal::datasets::thumb::default_thumb_semaphore(),
     }
 }
 

@@ -76,6 +76,8 @@ pub async fn sweep_expired_trash(state: &AppState) -> Result<u64, sqlx::Error> {
     for (img_id, ds_id) in old_images {
         let prefix = format!("datasets/{ds_id}/images/{img_id}/");
         let _ = state.storage.delete_prefix(&prefix).await;
+        let thumb_key = format!("datasets/{ds_id}/thumbs/{img_id}.jpg");
+        let _ = state.storage.delete(&thumb_key).await;
     }
     Ok(count)
 }

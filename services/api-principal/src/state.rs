@@ -28,4 +28,6 @@ pub struct AppState {
     /// task de fundo (`jobs::events_hub::run_job_events_listener`), nunca
     /// construído por handler.
     pub job_events: std::sync::Arc<crate::jobs::events_hub::JobEventsHub>,
+    /// Semáforo de controle de concorrência para decodificação e resize de miniaturas.
+    pub thumb_semaphore: std::sync::Arc<tokio::sync::Semaphore>,
 }

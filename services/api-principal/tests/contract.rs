@@ -49,6 +49,7 @@ fn setup_state() -> AppState {
         manager: std::sync::Arc::new(api_principal::jobs::manager_client::MockManager::default()),
         model_download_allowed_hosts: vec![],
         job_events: api_principal::jobs::events_hub::JobEventsHub::new(),
+        thumb_semaphore: api_principal::datasets::thumb::default_thumb_semaphore(),
     }
 }
 
@@ -551,6 +552,8 @@ async fn detail_and_data_reject_non_uuid_before_anything() {
         format!("/api/datasets/00000000-0000-0000-0000-000000000000/images/nao-e-uuid"),
         "/api/datasets/nao-e-uuid/images/00000000-0000-0000-0000-000000000000/data".to_string(),
         format!("/api/datasets/00000000-0000-0000-0000-000000000000/images/nao-e-uuid/data"),
+        "/api/datasets/nao-e-uuid/images/00000000-0000-0000-0000-000000000000/thumb".to_string(),
+        format!("/api/datasets/00000000-0000-0000-0000-000000000000/images/nao-e-uuid/thumb"),
     ] {
         let (status, _, body) = call(
             app.clone(),

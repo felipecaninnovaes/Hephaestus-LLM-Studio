@@ -343,6 +343,7 @@ async fn run_search(
             created_at,
         });
         resp.url = url;
+        resp.thumb_url = format!("/api/datasets/{ds_id}/images/{img_id}/thumb");
         out.push(SearchItem {
             image: resp,
             score: 1.0 - c.dist,

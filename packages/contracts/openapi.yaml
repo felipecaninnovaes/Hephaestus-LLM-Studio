@@ -1417,6 +1417,54 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/datasets/{id}/images/{imageId}/thumb:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: >
+          PK do dataset. Valor que não parseia como UUID responde 404 `not_found`.
+      - name: imageId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: >
+          PK da imagem. Valor que não parseia como UUID responde 404 `not_found`.
+    get:
+      operationId: getImageThumb
+      tags: [datasets]
+      summary: Proxy binário da miniatura da imagem (thumbnail)
+      description: |
+        Miniatura da imagem gerada sob demanda e persistida em S3 (`image/jpeg`,
+        maior lado ≤ 512px preservando aspect ratio). `Cache-Control: public,
+        max-age=31536000, immutable`.
+      responses:
+        "200":
+          description: Miniatura em JPEG.
+          content:
+            image/jpeg:
+              schema: { type: string, format: binary }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Dataset/imagem inexistente, id/imageId não-UUID ou objeto ausente no storage (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "415":
+          description: "Original não decodifica como imagem (`code: thumb_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Backend de objetos indisponível (`code: storage_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /api/jobs:
     get:
       operationId: listJobs
@@ -3286,7 +3334,7 @@ components:
       properties:
         code:
           type: string
-          enum: [invalid_request, invalid_credentials, unauthorized, setup_required, not_found, slug_conflict, storage_unavailable, classes_in_use, index_not_ready, embedding_unavailable, import_invalid, engine_unsupported, queue_unavailable, dataset_not_ready, job_not_abortable, job_not_done, job_not_terminal, pairing_invalid, model_download_failed, model_download_disabled, invalid_gpu_device, gpu_device_requires_orchestrator, unknown_gpu_device, insufficient_gpu_vram, internal]
+          enum: [invalid_request, invalid_credentials, unauthorized, setup_required, not_found, slug_conflict, storage_unavailable, classes_in_use, index_not_ready, embedding_unavailable, import_invalid, engine_unsupported, queue_unavailable, dataset_not_ready, job_not_abortable, job_not_done, job_not_terminal, pairing_invalid, model_download_failed, model_download_disabled, invalid_gpu_device, gpu_device_requires_orchestrator, unknown_gpu_device, insufficient_gpu_vram, thumb_unavailable, internal]
           description: "Código estável para máquina — a UI decide a mensagem por `code`, nunca por `message`; o cliente DEVE ter ramo default: o enum cresce por fatia (aditivo na 0.2.0: `not_found`, `slug_conflict`; na 0.3.0: `storage_unavailable`, ADR-0003 D10; na 0.3.0, fatia 3g.1: `classes_in_use`; na 0.5.0, fatia 3f.5: `index_not_ready`, `embedding_unavailable`, ADR-0004 D5; na 0.6.0, fatia 3e: `import_invalid`; na 0.7.0, fatia 4: `engine_unsupported`, `queue_unavailable`, `dataset_not_ready`, `job_not_abortable`; na 0.8.0, fatia 5: `job_not_done`; na 0.10.0, fatia H: `pairing_invalid`, ADR-0011 D5; na 0.11.0, fatia I: `model_download_failed`, `model_download_disabled`, ADR-0012 D4/E1)."
         message:
           type: string
@@ -4370,7 +4418,7 @@ components:
 
     Image:
       type: object
-      required: [id, filename, objectKey, bytes, width, height, mediaType, split, url, createdAt]
+      required: [id, filename, objectKey, bytes, width, height, mediaType, split, url, thumbUrl, createdAt]
       description: "Imagem indexada (ADR-0003 D2/D5; md5/sha256 ficam no banco, fora do wire)."
       properties:
         id: { type: string, format: uuid }
@@ -4392,6 +4440,9 @@ components:
           type: string
           description: Presigned no endpoint público (D3) ou fallback `/data` da 3b.5.
         createdAt: { type: string, format: date-time }
+        thumbUrl:
+          type: string
+          description: URL fixa do proxy `/api/datasets/{id}/images/{imageId}/thumb`.
         boxesCount:
           type: integer
           format: int64
@@ -4605,7 +4656,7 @@ components:
 
     ImageDetail:
       type: object
-      required: [id, filename, objectKey, bytes, width, height, mediaType, split, url, createdAt, boxes, caption]
+      required: [id, filename, objectKey, bytes, width, height, mediaType, split, url, thumbUrl, createdAt, boxes, caption]
       description: "Image + boxes + caption (ADR-0003 delta; flat, sem aninhamento)."
       properties:
         id: { type: string, format: uuid }
@@ -4627,6 +4678,9 @@ components:
           type: string
           description: Presigned no endpoint público (D3) ou fallback `/data` da 3b.5.
         createdAt: { type: string, format: date-time }
+        thumbUrl:
+          type: string
+          description: URL fixa do proxy `/api/datasets/{id}/images/{imageId}/thumb`.
         boxes:
           type: array
           items: { $ref: "#/components/schemas/Box" }

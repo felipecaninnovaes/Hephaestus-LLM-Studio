@@ -795,6 +795,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/datasets/{id}/images/{imageId}/thumb": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description PK do dataset. Valor que não parseia como UUID responde 404 `not_found`. */
+                id: string;
+                /** @description PK da imagem. Valor que não parseia como UUID responde 404 `not_found`. */
+                imageId: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Proxy binário da miniatura da imagem (thumbnail)
+         * @description Miniatura da imagem gerada sob demanda e persistida em S3 (`image/jpeg`,
+         *     maior lado ≤ 512px preservando aspect ratio). `Cache-Control: public,
+         *     max-age=31536000, immutable`.
+         */
+        get: operations["getImageThumb"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/jobs": {
         parameters: {
             query?: never;
@@ -1847,7 +1874,7 @@ export interface components {
              * @description Código estável para máquina — a UI decide a mensagem por `code`, nunca por `message`; o cliente DEVE ter ramo default: o enum cresce por fatia (aditivo na 0.2.0: `not_found`, `slug_conflict`; na 0.3.0: `storage_unavailable`, ADR-0003 D10; na 0.3.0, fatia 3g.1: `classes_in_use`; na 0.5.0, fatia 3f.5: `index_not_ready`, `embedding_unavailable`, ADR-0004 D5; na 0.6.0, fatia 3e: `import_invalid`; na 0.7.0, fatia 4: `engine_unsupported`, `queue_unavailable`, `dataset_not_ready`, `job_not_abortable`; na 0.8.0, fatia 5: `job_not_done`; na 0.10.0, fatia H: `pairing_invalid`, ADR-0011 D5; na 0.11.0, fatia I: `model_download_failed`, `model_download_disabled`, ADR-0012 D4/E1).
              * @enum {string}
              */
-            code: "invalid_request" | "invalid_credentials" | "unauthorized" | "setup_required" | "not_found" | "slug_conflict" | "storage_unavailable" | "classes_in_use" | "index_not_ready" | "embedding_unavailable" | "import_invalid" | "engine_unsupported" | "queue_unavailable" | "dataset_not_ready" | "job_not_abortable" | "job_not_done" | "job_not_terminal" | "pairing_invalid" | "model_download_failed" | "model_download_disabled" | "invalid_gpu_device" | "gpu_device_requires_orchestrator" | "unknown_gpu_device" | "insufficient_gpu_vram" | "internal";
+            code: "invalid_request" | "invalid_credentials" | "unauthorized" | "setup_required" | "not_found" | "slug_conflict" | "storage_unavailable" | "classes_in_use" | "index_not_ready" | "embedding_unavailable" | "import_invalid" | "engine_unsupported" | "queue_unavailable" | "dataset_not_ready" | "job_not_abortable" | "job_not_done" | "job_not_terminal" | "pairing_invalid" | "model_download_failed" | "model_download_disabled" | "invalid_gpu_device" | "gpu_device_requires_orchestrator" | "unknown_gpu_device" | "insufficient_gpu_vram" | "thumb_unavailable" | "internal";
             /** @description Humano-curto, ESTÁTICO por code; nunca contém hash, token, segredo ou existência de usuário. */
             message: string;
         };
@@ -2694,6 +2721,8 @@ export interface components {
             url: string;
             /** Format: date-time */
             createdAt: string;
+            /** @description URL fixa do proxy `/api/datasets/{id}/images/{imageId}/thumb`. */
+            thumbUrl: string;
             /**
              * Format: int64
              * @description Contagem de bounding boxes anotadas (opcional, enriquecido na listagem).
@@ -2852,6 +2881,8 @@ export interface components {
             url: string;
             /** Format: date-time */
             createdAt: string;
+            /** @description URL fixa do proxy `/api/datasets/{id}/images/{imageId}/thumb`. */
+            thumbUrl: string;
             /** @description Anotações da imagem (ordem determinística por id). */
             boxes: components["schemas"]["Box"][];
             /** @description Legenda da imagem (null quando ausente). */
@@ -5185,6 +5216,67 @@ export interface operations {
                 };
             };
             /** @description Backend de objetos indisponível (`code: storage_unavailable`, ADR-0003 D10). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getImageThumb: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description PK do dataset. Valor que não parseia como UUID responde 404 `not_found`. */
+                id: string;
+                /** @description PK da imagem. Valor que não parseia como UUID responde 404 `not_found`. */
+                imageId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Miniatura em JPEG. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/jpeg": string;
+                };
+            };
+            /** @description Sem sessão válida (`code: unauthorized`). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Dataset/imagem inexistente, id/imageId não-UUID ou objeto ausente no storage (`code: not_found`). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Original não decodifica como imagem (`code: thumb_unavailable`). */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Backend de objetos indisponível (`code: storage_unavailable`). */
             503: {
                 headers: {
                     [name: string]: unknown;

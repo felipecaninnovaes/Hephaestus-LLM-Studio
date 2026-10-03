@@ -57,3 +57,5 @@ pub const MSG_MODEL_DOWNLOAD_FAILED: &str = "model download failed";
 pub const MSG_MODEL_DOWNLOAD_DISABLED: &str = "model download disabled";
 /// 409 de job em estado não-terminal, delete não possível (AC-003).
 pub const MSG_JOB_NOT_TERMINAL: &str = "only terminal jobs (done|failed|cancelled) can be deleted";
+/// 415 de miniatura não decodificável.
+pub const MSG_THUMB_UNAVAILABLE: &str = "thumb unavailable";

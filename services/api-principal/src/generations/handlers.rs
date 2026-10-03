@@ -266,19 +266,9 @@ pub async fn get_generation_data(
         .into_response()
 }
 
-/// Gera miniatura JPEG otimizada (max_side preservando aspect ratio).
+/// Gera miniatura JPEG otimizada reaproveitando o helper compartilhado.
 fn generate_thumb_from_bytes(bytes: &[u8], max_side: u32) -> Result<Vec<u8>, ()> {
-    let cursor = std::io::Cursor::new(bytes);
-    let reader = image::ImageReader::new(cursor)
-        .with_guessed_format()
-        .map_err(|_| ())?;
-    let dyn_img = reader.decode().map_err(|_| ())?;
-    let thumb = dyn_img.thumbnail(max_side, max_side);
-    let mut out = std::io::Cursor::new(Vec::new());
-    thumb
-        .write_to(&mut out, image::ImageFormat::Jpeg)
-        .map_err(|_| ())?;
-    Ok(out.into_inner())
+    crate::datasets::thumb::generate_thumb_from_bytes(bytes, max_side).map_err(|_| ())
 }
 
 /// GET /api/generations/:id/thumb — proxy binário da miniatura da imagem gerada.
@@ -562,6 +552,7 @@ mod tests {
             manager: std::sync::Arc::new(manager),
             model_download_allowed_hosts: vec![],
             job_events: crate::jobs::events_hub::JobEventsHub::new(),
+            thumb_semaphore: crate::datasets::thumb::default_thumb_semaphore(),
         }
     }
 
@@ -583,6 +574,7 @@ mod tests {
             manager: std::sync::Arc::new(manager),
             model_download_allowed_hosts: vec![],
             job_events: crate::jobs::events_hub::JobEventsHub::new(),
+            thumb_semaphore: crate::datasets::thumb::default_thumb_semaphore(),
         };
         (state, storage)
     }

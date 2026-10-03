@@ -1,22 +1,24 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { IconTarget } from "@/components/icons";
-import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
-import { Slider } from "@/components/ui/Slider";
+import { Modal } from "@/components/ui/Modal";
 import { Select, type SelectOption } from "@/components/ui/Select";
+import { Slider } from "@/components/ui/Slider";
+import { showToast } from "@/components/ui/Toast";
 import { ApiError } from "@/lib/api";
 import { startAutotrackerJob } from "@/lib/autotracker";
-import { listModels } from "@/lib/models";
-import {
-  autotrackerErrorMessage,
-  modelSourceLabel,
-  type Model,
-} from "@/types/studio";
-import { showToast } from "@/components/ui/Toast";
 import { openActionCenter } from "@/lib/events";
+import { listModels } from "@/lib/models";
+import type { Orchestrator } from "@/lib/monitoring";
+import {
+	autotrackerErrorMessage,
+	type Model,
+	modelSourceLabel,
+} from "@/types/studio";
+import GpuDeviceSelect from "./GpuDeviceSelect";
 import NodeSelect from "./NodeSelect";
 
 const CONF_MIN = 0.3;
@@ -25,243 +27,275 @@ const CONF_DEFAULT = 0.65;
 const CONF_STEP = 0.01;
 
 interface Props {
-  open: boolean;
-  datasetId: string;
-  datasetTitle: string;
-  onClose: () => void;
-  onJobCreated: () => void;
+	open: boolean;
+	datasetId: string;
+	datasetTitle: string;
+	onClose: () => void;
+	onJobCreated: () => void;
 }
 
 export default function AutoTrackerModal({
-  open,
-  datasetId,
-  datasetTitle,
-  onClose,
-  onJobCreated,
+	open,
+	datasetId,
+	datasetTitle,
+	onClose,
+	onJobCreated,
 }: Props) {
-  const router = useRouter();
-  const [conf, setConf] = useState<number>(CONF_DEFAULT);
-  const [busy, setBusy] = useState(false);
-  const [topError, setTopError] = useState<string | null>(null);
-  const sliderRef = useRef<HTMLInputElement>(null);
+	const router = useRouter();
+	const [conf, setConf] = useState<number>(CONF_DEFAULT);
+	const [busy, setBusy] = useState(false);
+	const [topError, setTopError] = useState<string | null>(null);
+	const sliderRef = useRef<HTMLInputElement>(null);
 
-  /* ── Available models (world + yolo detection) ── */
-  const [availableModels, setAvailableModels] = useState<Model[]>([]);
-  const [modelsLoading, setModelsLoading] = useState(false);
-  const [selectedModelId, setSelectedModelId] = useState<string>("");
-  const [selectedOrchestratorId, setSelectedOrchestratorId] = useState<string | null>(null);
+	/* ── Available models (world + yolo detection) ── */
+	const [availableModels, setAvailableModels] = useState<Model[]>([]);
+	const [modelsLoading, setModelsLoading] = useState(false);
+	const [selectedModelId, setSelectedModelId] = useState<string>("");
+	const [selectedOrchestratorId, setSelectedOrchestratorId] = useState<
+		string | null
+	>(null);
+	const [selectedGpuDevice, setSelectedGpuDevice] = useState<string | null>(
+		null,
+	);
+	const [orchestratorsList, setOrchestratorsList] = useState<Orchestrator[]>(
+		[],
+	);
+	useEffect(() => {
+		if (!open) return;
+		let active = true;
+		setModelsLoading(true);
+		listModels()
+			.then((res) => {
+				if (active) {
+					setAvailableModels(
+						res.items.filter(
+							(m) => m.engine === "world" || m.engine === "yolo",
+						),
+					);
+					setModelsLoading(false);
+				}
+			})
+			.catch(() => {
+				if (active) {
+					setAvailableModels([]);
+					setModelsLoading(false);
+				}
+			});
+		return () => {
+			active = false;
+		};
+	}, [open]);
 
-  useEffect(() => {
-    if (!open) return;
-    let active = true;
-    setModelsLoading(true);
-    listModels()
-      .then((res) => {
-        if (active) {
-          setAvailableModels(
-            res.items.filter((m) => m.engine === "world" || m.engine === "yolo"),
-          );
-          setModelsLoading(false);
-        }
-      })
-      .catch(() => {
-        if (active) {
-          setAvailableModels([]);
-          setModelsLoading(false);
-        }
-      });
-    return () => {
-      active = false;
-    };
-  }, [open]);
+	useEffect(() => {
+		if (!open) return;
+		setConf(CONF_DEFAULT);
+		setSelectedModelId("");
+		setSelectedOrchestratorId(null);
+		setSelectedGpuDevice(null);
+		setTopError(null);
+		setBusy(false);
+		const t = setTimeout(() => sliderRef.current?.focus(), 30);
+		return () => clearTimeout(t);
+	}, [open]);
 
-  useEffect(() => {
-    if (!open) return;
-    setConf(CONF_DEFAULT);
-    setSelectedModelId("");
-    setSelectedOrchestratorId(null);
-    setTopError(null);
-    setBusy(false);
-    const t = setTimeout(() => sliderRef.current?.focus(), 30);
-    return () => clearTimeout(t);
-  }, [open]);
+	const modelOptions = useMemo<SelectOption<string>[]>(() => {
+		const mockOpt: SelectOption<string> = {
+			value: "",
+			label: "Mock (determinístico)",
+			description: "Gera bounding boxes determinísticas — sem modelo real.",
+		};
+		const modelOpts: SelectOption<string>[] = availableModels.map((m) => ({
+			value: m.id,
+			label: m.name,
+			badge: (
+				<div className="flex items-center gap-1.5">
+					{m.engine === "world" ? (
+						<span className="rounded-full border border-sky-500/35 bg-sky-500/10 px-1.5 py-0.5 font-mono text-3xs text-sky-400">
+							World
+						</span>
+					) : (
+						<span className="rounded-full border border-zinc-700/60 bg-zinc-800/40 px-1.5 py-0.5 font-mono text-3xs text-zinc-300">
+							YOLO
+						</span>
+					)}
+					<span
+						className={`rounded-full border px-1.5 py-0.5 font-mono text-3xs ${
+							m.source === "train"
+								? "border-brand-500/35 bg-brand-500/10 text-brand-400"
+								: "border-white/15 bg-white/[0.06] text-zinc-300"
+						}`}
+					>
+						{modelSourceLabel(m.source)}
+					</span>
+				</div>
+			),
+		}));
+		return [mockOpt, ...modelOpts];
+	}, [availableModels]);
 
-  const modelOptions = useMemo<SelectOption<string>[]>(() => {
-    const mockOpt: SelectOption<string> = {
-      value: "",
-      label: "Mock (determinístico)",
-      description: "Gera bounding boxes determinísticas — sem modelo real.",
-    };
-    const modelOpts: SelectOption<string>[] = availableModels.map((m) => ({
-      value: m.id,
-      label: m.name,
-      badge: (
-        <div className="flex items-center gap-1.5">
-          {m.engine === "world" ? (
-            <span className="rounded-full border border-sky-500/35 bg-sky-500/10 px-1.5 py-0.5 font-mono text-3xs text-sky-400">
-              World
-            </span>
-          ) : (
-            <span className="rounded-full border border-zinc-700/60 bg-zinc-800/40 px-1.5 py-0.5 font-mono text-3xs text-zinc-300">
-              YOLO
-            </span>
-          )}
-          <span
-            className={`rounded-full border px-1.5 py-0.5 font-mono text-3xs ${
-              m.source === "train"
-                ? "border-brand-500/35 bg-brand-500/10 text-brand-400"
-                : "border-white/15 bg-white/[0.06] text-zinc-300"
-            }`}
-          >
-            {modelSourceLabel(m.source)}
-          </span>
-        </div>
-      ),
-    }));
-    return [mockOpt, ...modelOpts];
-  }, [availableModels]);
+	if (!open) return null;
 
-  if (!open) return null;
+	async function handleSubmit(e: React.FormEvent) {
+		e.preventDefault();
+		setTopError(null);
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setTopError(null);
+		if (conf < CONF_MIN || conf > CONF_MAX) {
+			setTopError(`Confiança deve estar entre ${CONF_MIN} e ${CONF_MAX}.`);
+			return;
+		}
 
-    if (conf < CONF_MIN || conf > CONF_MAX) {
-      setTopError(`Confiança deve estar entre ${CONF_MIN} e ${CONF_MAX}.`);
-      return;
-    }
+		setBusy(true);
+		try {
+			const result = await startAutotrackerJob({
+				datasetId,
+				model: "mock",
+				conf,
+				...(selectedModelId ? { modelId: selectedModelId } : {}),
+				...(selectedOrchestratorId
+					? { orchestratorId: selectedOrchestratorId }
+					: {}),
+				...(selectedOrchestratorId && selectedGpuDevice
+					? { gpuDevice: selectedGpuDevice }
+					: {}),
+			});
+			showToast(
+				result.status === "preparing"
+					? "AutoTracker aceito — preparando pacote (empacotando dataset…). Acompanhe no Centro de Ações."
+					: `AutoTracker iniciado (posição ${result.queuePosition ?? "—"} na fila).`,
+				"success",
+			);
+			onClose();
+			onJobCreated();
+			openActionCenter();
+		} catch (err) {
+			if (err instanceof ApiError) {
+				if (err.code === "unauthorized" || err.status === 401) {
+					router.replace("/login");
+					return;
+				}
+				if (err.code === "not_found") {
+					if (selectedModelId) {
+						setTopError("Modelo não encontrado — atualize a lista.");
+					} else {
+						setTopError("Recurso não encontrado.");
+					}
+				} else {
+					setTopError(autotrackerErrorMessage(err.code));
+				}
+				return;
+			}
+			setTopError("Falha ao criar job de AutoTracker.");
+		} finally {
+			setBusy(false);
+		}
+	}
 
-    setBusy(true);
-    try {
-      const result = await startAutotrackerJob({
-        datasetId,
-        model: "mock",
-        conf,
-        ...(selectedModelId ? { modelId: selectedModelId } : {}),
-        ...(selectedOrchestratorId ? { orchestratorId: selectedOrchestratorId } : {}),
-      });
-      showToast(
-        result.status === "preparing"
-          ? "AutoTracker aceito — preparando pacote (empacotando dataset…). Acompanhe no Centro de Ações."
-          : `AutoTracker iniciado (posição ${result.queuePosition ?? "—"} na fila).`,
-        "success",
-      );
-      onClose();
-      onJobCreated();
-      openActionCenter();
-    } catch (err) {
-      if (err instanceof ApiError) {
-        if (err.code === "unauthorized" || err.status === 401) {
-          router.replace("/login");
-          return;
-        }
-        if (err.code === "not_found") {
-          if (selectedModelId) {
-            setTopError("Modelo não encontrado — atualize a lista.");
-          } else {
-            setTopError("Recurso não encontrado.");
-          }
-        } else {
-          setTopError(autotrackerErrorMessage(err.code));
-        }
-        return;
-      }
-      setTopError("Falha ao criar job de AutoTracker.");
-    } finally {
-      setBusy(false);
-    }
-  }
+	return (
+		<Modal
+			open={open}
+			onClose={onClose}
+			title="AutoTracker"
+			description={
+				<span
+					className="block truncate font-mono text-3xs text-zinc-400"
+					title={datasetTitle}
+				>
+					{datasetTitle}
+				</span>
+			}
+			icon={<IconTarget className="h-4 w-4" />}
+			maxWidth="md"
+			busy={busy}
+			ariaLabel="AutoTracker"
+		>
+			<form onSubmit={handleSubmit} className="space-y-4 text-xs">
+				{topError && (
+					<p
+						role="alert"
+						className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300 backdrop-blur-sm"
+					>
+						{topError}
+					</p>
+				)}
 
-  return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title="AutoTracker"
-      description={
-        <span
-          className="block truncate font-mono text-3xs text-zinc-400"
-          title={datasetTitle}
-        >
-          {datasetTitle}
-        </span>
-      }
-      icon={<IconTarget className="h-4 w-4" />}
-      maxWidth="md"
-      busy={busy}
-      ariaLabel="AutoTracker"
-    >
-      <form onSubmit={handleSubmit} className="space-y-4 text-xs">
-        {topError && (
-          <p
-            role="alert"
-            className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300 backdrop-blur-sm"
-          >
-            {topError}
-          </p>
-        )}
+				{/* Modelo */}
+				<Select
+					id="at-model"
+					label="Modelo"
+					options={modelOptions}
+					value={selectedModelId}
+					onChange={setSelectedModelId}
+					placeholder="Selecione um modelo…"
+					loading={modelsLoading}
+					loadingText="Carregando modelos…"
+					fontMono
+					disabled={busy}
+					size="default"
+				/>
 
-        {/* Modelo */}
-        <Select
-          id="at-model"
-          label="Modelo"
-          options={modelOptions}
-          value={selectedModelId}
-          onChange={setSelectedModelId}
-          placeholder="Selecione um modelo…"
-          loading={modelsLoading}
-          loadingText="Carregando modelos…"
-          fontMono
-          disabled={busy}
-          size="default"
-        />
+				{availableModels.length === 0 && !modelsLoading && (
+					<p className="font-mono text-2xs text-zinc-500">
+						Envie ou baixe pesos em{" "}
+						<span className="text-zinc-400">Modelos &amp; Pesos</span> para usar
+						um modelo real.
+					</p>
+				)}
 
-        {availableModels.length === 0 && !modelsLoading && (
-          <p className="font-mono text-2xs text-zinc-500">
-            Envie ou baixe pesos em{" "}
-            <span className="text-zinc-400">Modelos &amp; Pesos</span> para usar
-            um modelo real.
-          </p>
-        )}
+				{/* Confiança (slider) */}
+				<Slider
+					ref={sliderRef}
+					id="at-conf"
+					label="Confiança mínima"
+					min={CONF_MIN}
+					max={CONF_MAX}
+					step={CONF_STEP}
+					value={conf}
+					onChange={setConf}
+					formatValue={(v) => v.toFixed(2)}
+					disabled={busy}
+				/>
 
-        {/* Confiança (slider) */}
-        <Slider
-          ref={sliderRef}
-          id="at-conf"
-          label="Confiança mínima"
-          min={CONF_MIN}
-          max={CONF_MAX}
-          step={CONF_STEP}
-          value={conf}
-          onChange={setConf}
-          formatValue={(v) => v.toFixed(2)}
-          disabled={busy}
-        />
+				{/* Nó de Execução (ADR-0015 D2) */}
+				<NodeSelect
+					value={selectedOrchestratorId}
+					onChange={(nodeId) => {
+						setSelectedOrchestratorId(nodeId);
+						setSelectedGpuDevice(null);
+					}}
+					onOrchestratorsLoaded={setOrchestratorsList}
+					disabled={busy}
+					size="default"
+				/>
 
-        {/* Nó de Execução (ADR-0015 D2) */}
-        <NodeSelect
-          value={selectedOrchestratorId}
-          onChange={setSelectedOrchestratorId}
-          disabled={busy}
-          size="default"
-        />
+				{/* GPU de Execução (Fatia F2) */}
+				<GpuDeviceSelect
+					orchestratorId={selectedOrchestratorId}
+					devices={
+						orchestratorsList.find((o) => o.id === selectedOrchestratorId)
+							?.gpuDevices ?? null
+					}
+					value={selectedGpuDevice}
+					onChange={setSelectedGpuDevice}
+					disabled={busy}
+					size="default"
+				/>
 
-        {/* CTA */}
-        <div className="flex justify-end space-x-2 pt-2">
-          <Button
-            type="button"
-            variant="ghost"
-            size="md"
-            onClick={onClose}
-            disabled={busy}
-          >
-            Cancelar
-          </Button>
-          <Button type="submit" variant="primary" size="lg" loading={busy}>
-            Executar
-          </Button>
-        </div>
-      </form>
-    </Modal>
-  );
+				{/* CTA */}
+				<div className="flex justify-end space-x-2 pt-2">
+					<Button
+						type="button"
+						variant="ghost"
+						size="md"
+						onClick={onClose}
+						disabled={busy}
+					>
+						Cancelar
+					</Button>
+					<Button type="submit" variant="primary" size="lg" loading={busy}>
+						Executar
+					</Button>
+				</div>
+			</form>
+		</Modal>
+	);
 }

@@ -1,33 +1,43 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  IconPlay,
-  IconDatabase,
-  IconAlertTriangle,
-  IconInfo,
-  IconZap,
+	IconAlertTriangle,
+	IconDatabase,
+	IconInfo,
+	IconPlay,
+	IconZap,
 } from "@/components/icons";
 import { Button, getButtonClasses } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import { Select, type SelectOption, type SelectRefHandle } from "@/components/ui/Select";
-import { startYoloJob } from "@/lib/jobs";
+import {
+	Select,
+	type SelectOption,
+	type SelectRefHandle,
+} from "@/components/ui/Select";
+import { showToast } from "@/components/ui/Toast";
 import { useHardwareTelemetry } from "@/hooks/useHardwareTelemetry";
 import { useVramEstimator } from "@/hooks/useVramEstimator";
-import { listDatasets, canTrainYolo, trainDisabledReason } from "@/lib/datasets";
-import { listModels } from "@/lib/models";
-import { formatBytes } from "@/lib/format";
 import { ApiError } from "@/lib/api";
-import { jobErrorMessage } from "@/types/studio";
-import { showToast } from "@/components/ui/Toast";
-import NodeSelect from "./NodeSelect";
-import type { Dataset, Model, Telemetry, YoloAugment } from "@/types/studio";
 import {
-  YoloHyperparameters,
-  EPOCHS_MIN,
-  EPOCHS_MAX,
-  type YoloHyperparametersValues,
+	canTrainYolo,
+	listDatasets,
+	trainDisabledReason,
+} from "@/lib/datasets";
+import { formatBytes } from "@/lib/format";
+import { startYoloJob } from "@/lib/jobs";
+import { listModels } from "@/lib/models";
+import type { Orchestrator } from "@/lib/monitoring";
+import type { Dataset, Model, Telemetry, YoloAugment } from "@/types/studio";
+import { jobErrorMessage } from "@/types/studio";
+import GpuDeviceSelect from "./GpuDeviceSelect";
+import NodeSelect from "./NodeSelect";
+import {
+	EPOCHS_MAX,
+	EPOCHS_MIN,
+	YoloHyperparameters,
+	type YoloHyperparametersValues,
 } from "./YoloHyperparameters";
 
 /**
@@ -35,542 +45,599 @@ import {
  * resolução e estados de momentos do otimizador selecionado.
  */
 export function estimateYoloVramGb(
-  model: string,
-  batch: number,
-  imgsz: number,
-  optimizer: string,
+	model: string,
+	batch: number,
+	imgsz: number,
+	optimizer: string,
 ): number {
-  let baseWeightsGb = 1.2;
-  let activationFactor = 1.0;
+	let baseWeightsGb = 1.2;
+	let activationFactor = 1.0;
 
-  if (model === "yolo11n") {
-    baseWeightsGb = 0.8;
-    activationFactor = 0.6;
-  } else if (model === "yolo11m") {
-    baseWeightsGb = 1.6;
-    activationFactor = 1.0;
-  } else if (model === "yolo11x") {
-    baseWeightsGb = 3.2;
-    activationFactor = 1.8;
-  } else if (model === "yolov9-c") {
-    baseWeightsGb = 2.2;
-    activationFactor = 1.3;
-  } else if (model === "yolo11-seg") {
-    baseWeightsGb = 2.0;
-    activationFactor = 1.5;
-  }
+	if (model === "yolo11n") {
+		baseWeightsGb = 0.8;
+		activationFactor = 0.6;
+	} else if (model === "yolo11m") {
+		baseWeightsGb = 1.6;
+		activationFactor = 1.0;
+	} else if (model === "yolo11x") {
+		baseWeightsGb = 3.2;
+		activationFactor = 1.8;
+	} else if (model === "yolov9-c") {
+		baseWeightsGb = 2.2;
+		activationFactor = 1.3;
+	} else if (model === "yolo11-seg") {
+		baseWeightsGb = 2.0;
+		activationFactor = 1.5;
+	}
 
-  const resFactor = (imgsz / 640) ** 2;
-  const batchMemory = (batch / 16) * 1.8 * activationFactor * resFactor;
+	const resFactor = (imgsz / 640) ** 2;
+	const batchMemory = (batch / 16) * 1.8 * activationFactor * resFactor;
 
-  let optOverhead = 0.4;
-  if (optimizer === "AdamW") optOverhead = 0.8;
-  if (optimizer === "Muon") optOverhead = 1.2;
-  if (optimizer === "SGD") optOverhead = 0.3;
+	let optOverhead = 0.4;
+	if (optimizer === "AdamW") optOverhead = 0.8;
+	if (optimizer === "Muon") optOverhead = 1.2;
+	if (optimizer === "SGD") optOverhead = 0.3;
 
-  return Math.round((baseWeightsGb + batchMemory + optOverhead) * 10) / 10;
+	return Math.round((baseWeightsGb + batchMemory + optOverhead) * 10) / 10;
 }
 
 interface Props {
-  onJobCreated?: (jobId: string) => void;
-  initialTelemetry?: Telemetry | null;
-  initialDatasetId?: string;
-  initialParams?: Partial<YoloHyperparametersValues>;
-  initialWeightsId?: string;
-  initialOutputName?: string;
+	onJobCreated?: (jobId: string) => void;
+	initialTelemetry?: Telemetry | null;
+	initialDatasetId?: string;
+	initialParams?: Partial<YoloHyperparametersValues>;
+	initialWeightsId?: string;
+	initialOutputName?: string;
 }
 
 export default function ForjaYoloSetup({
-  onJobCreated,
-  initialDatasetId,
-  initialParams,
-  initialWeightsId,
-  initialOutputName,
+	onJobCreated,
+	initialDatasetId,
+	initialParams,
+	initialWeightsId,
+	initialOutputName,
 }: Props) {
-  const firstRef = useRef<SelectRefHandle>(null);
+	const firstRef = useRef<SelectRefHandle>(null);
 
-  // Datasets
-  const [datasets, setDatasets] = useState<Dataset[]>([]);
-  const [datasetsLoading, setDatasetsLoading] = useState(true);
-  const [selectedDatasetId, setSelectedDatasetId] = useState<string>(
-    initialDatasetId ?? "",
-  );
+	// Datasets
+	const [datasets, setDatasets] = useState<Dataset[]>([]);
+	const [datasetsLoading, setDatasetsLoading] = useState(true);
+	const [selectedDatasetId, setSelectedDatasetId] = useState<string>(
+		initialDatasetId ?? "",
+	);
 
-  // Models (for weights selector)
-  const [yoloModels, setYoloModels] = useState<Model[]>([]);
-  const [selectedWeightId, setSelectedWeightId] = useState<string>(
-    initialWeightsId ?? "",
-  );
-  const [selectedOrchestratorId, setSelectedOrchestratorId] = useState<string | null>(null);
+	// Models (for weights selector)
+	const [yoloModels, setYoloModels] = useState<Model[]>([]);
+	const [selectedWeightId, setSelectedWeightId] = useState<string>(
+		initialWeightsId ?? "",
+	);
+	const [selectedOrchestratorId, setSelectedOrchestratorId] = useState<
+		string | null
+	>(null);
+	const [selectedGpuDevice, setSelectedGpuDevice] = useState<string | null>(
+		null,
+	);
+	const [orchestratorsList, setOrchestratorsList] = useState<Orchestrator[]>(
+		[],
+	);
+	// Form fields — mirrors TrainYoloModal defaults
+	const [params, setParams] = useState<YoloHyperparametersValues>({
+		model: initialParams?.model ?? "yolo11m",
+		epochs: initialParams?.epochs ?? 100,
+		batch: initialParams?.batch ?? 16,
+		imgsz: initialParams?.imgsz ?? 640,
+		lr0: initialParams?.lr0 ?? "0.01",
+		optimizer: initialParams?.optimizer ?? "AdamW",
+		augment: {
+			mosaic: initialParams?.augment?.mosaic ?? true,
+			mixupFlip: initialParams?.augment?.mixupFlip ?? true,
+		},
+	});
+	const [outputName, setOutputName] = useState(initialOutputName ?? "");
+	const [busy, setBusy] = useState(false);
+	const [topError, setTopError] = useState<string | null>(null);
 
-  // Form fields — mirrors TrainYoloModal defaults
-  const [params, setParams] = useState<YoloHyperparametersValues>({
-    model: initialParams?.model ?? "yolo11m",
-    epochs: initialParams?.epochs ?? 100,
-    batch: initialParams?.batch ?? 16,
-    imgsz: initialParams?.imgsz ?? 640,
-    lr0: initialParams?.lr0 ?? "0.01",
-    optimizer: initialParams?.optimizer ?? "AdamW",
-    augment: {
-      mosaic: initialParams?.augment?.mosaic ?? true,
-      mixupFlip: initialParams?.augment?.mixupFlip ?? true,
-    },
-  });
-  const [outputName, setOutputName] = useState(initialOutputName ?? "");
-  const [busy, setBusy] = useState(false);
-  const [topError, setTopError] = useState<string | null>(null);
+	// /treino injeta o rerun lido de `heph_rerun_yolo` via props — o form monta
+	// antes dos valores chegarem. Aplica uma única vez, sem sobrescrever
+	// edições posteriores do usuário.
+	const rerunAppliedRef = useRef(false);
+	useEffect(() => {
+		if (rerunAppliedRef.current) return;
+		const hasRerun =
+			(initialDatasetId ?? "") !== "" ||
+			initialParams !== undefined ||
+			(initialWeightsId ?? "") !== "" ||
+			(initialOutputName ?? "") !== "";
+		if (!hasRerun) return;
+		rerunAppliedRef.current = true;
+		if (initialDatasetId) setSelectedDatasetId(initialDatasetId);
+		if (initialParams) {
+			setParams((prev) => ({
+				...prev,
+				...initialParams,
+				augment: { ...prev.augment, ...initialParams.augment },
+			}));
+		}
+		if (initialWeightsId) setSelectedWeightId(initialWeightsId);
+		if (initialOutputName) setOutputName(initialOutputName);
+	}, [initialDatasetId, initialParams, initialWeightsId, initialOutputName]);
 
-  // /treino injeta o rerun lido de `heph_rerun_yolo` via props — o form monta
-  // antes dos valores chegarem. Aplica uma única vez, sem sobrescrever
-  // edições posteriores do usuário.
-  const rerunAppliedRef = useRef(false);
-  useEffect(() => {
-    if (rerunAppliedRef.current) return;
-    const hasRerun =
-      (initialDatasetId ?? "") !== "" ||
-      initialParams !== undefined ||
-      (initialWeightsId ?? "") !== "" ||
-      (initialOutputName ?? "") !== "";
-    if (!hasRerun) return;
-    rerunAppliedRef.current = true;
-    if (initialDatasetId) setSelectedDatasetId(initialDatasetId);
-    if (initialParams) {
-      setParams((prev) => ({
-        ...prev,
-        ...initialParams,
-        augment: { ...prev.augment, ...initialParams.augment },
-      }));
-    }
-    if (initialWeightsId) setSelectedWeightId(initialWeightsId);
-    if (initialOutputName) setOutputName(initialOutputName);
-  }, [initialDatasetId, initialParams, initialWeightsId, initialOutputName]);
+	// Telemetria de hardware e VRAM do nó
+	const { telemetry, nodeVramTotalGb, deviceLabel } = useHardwareTelemetry();
 
-  // Telemetria de hardware e VRAM do nó
-  const { telemetry, nodeVramTotalGb, deviceLabel } = useHardwareTelemetry();
+	// Estimativa preditiva de VRAM em GB
+	const estimatedVram = useMemo(
+		() =>
+			estimateYoloVramGb(
+				params.model,
+				params.batch,
+				params.imgsz,
+				params.optimizer,
+			),
+		[params.model, params.batch, params.imgsz, params.optimizer],
+	);
 
-  // Estimativa preditiva de VRAM em GB
-  const estimatedVram = useMemo(
-    () => estimateYoloVramGb(params.model, params.batch, params.imgsz, params.optimizer),
-    [params.model, params.batch, params.imgsz, params.optimizer],
-  );
+	const { oomRisk } = useVramEstimator(estimatedVram, nodeVramTotalGb, 0.8);
 
+	const handleParamChange = <K extends keyof YoloHyperparametersValues>(
+		key: K,
+		val: YoloHyperparametersValues[K],
+	) => {
+		setParams((prev) => ({ ...prev, [key]: val }));
+	};
 
-  const { oomRisk } = useVramEstimator(estimatedVram, nodeVramTotalGb, 0.8);
+	function handleAutoFixSafeParams() {
+		setParams((prev) => ({
+			...prev,
+			batch: 16,
+			imgsz: 640,
+			model: prev.model === "yolo11x" ? "yolo11m" : prev.model,
+		}));
+		showToast(
+			"Hiperparâmetros ajustados para o perfil seguro de VRAM (Batch 16, ImgSz 640).",
+			"info",
+		);
+	}
 
-  const handleParamChange = <K extends keyof YoloHyperparametersValues>(
-    key: K,
-    val: YoloHyperparametersValues[K],
-  ) => {
-    setParams((prev) => ({ ...prev, [key]: val }));
-  };
+	// Load YOLO datasets
+	useEffect(() => {
+		let cancelled = false;
+		async function load() {
+			try {
+				const all = await listDatasets();
+				if (!cancelled) {
+					setDatasets(all.filter((d) => d.category === "yolo"));
+				}
+			} catch {
+				// Best-effort — lista fica vazia
+			} finally {
+				if (!cancelled) setDatasetsLoading(false);
+			}
+		}
+		load();
+		return () => {
+			cancelled = true;
+		};
+	}, []);
 
-  function handleAutoFixSafeParams() {
-    setParams((prev) => ({
-      ...prev,
-      batch: 16,
-      imgsz: 640,
-      model: prev.model === "yolo11x" ? "yolo11m" : prev.model,
-    }));
-    showToast(
-      "Hiperparâmetros ajustados para o perfil seguro de VRAM (Batch 16, ImgSz 640).",
-      "info",
-    );
-  }
+	// Load YOLO models for weights selector
+	useEffect(() => {
+		let cancelled = false;
+		async function load() {
+			try {
+				const res = await listModels();
+				if (!cancelled) {
+					setYoloModels(res.items.filter((m) => m.engine === "yolo"));
+				}
+			} catch {
+				// Best-effort — dropdown mostra só "Do zero"
+			}
+		}
+		load();
+		return () => {
+			cancelled = true;
+		};
+	}, []);
 
-  // Load YOLO datasets
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      try {
-        const all = await listDatasets();
-        if (!cancelled) {
-          setDatasets(all.filter((d) => d.category === "yolo"));
-        }
-      } catch {
-        // Best-effort — lista fica vazia
-      } finally {
-        if (!cancelled) setDatasetsLoading(false);
-      }
-    }
-    load();
-    return () => { cancelled = true; };
-  }, []);
+	// Auto-focus first field
+	useEffect(() => {
+		const t = setTimeout(() => firstRef.current?.focus(), 30);
+		return () => clearTimeout(t);
+	}, []);
 
-  // Load YOLO models for weights selector
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      try {
-        const res = await listModels();
-        if (!cancelled) {
-          setYoloModels(res.items.filter((m) => m.engine === "yolo"));
-        }
-      } catch {
-        // Best-effort — dropdown mostra só "Do zero"
-      }
-    }
-    load();
-    return () => { cancelled = true; };
-  }, []);
+	const eligibleDatasets = datasets.filter(canTrainYolo);
+	const hasEligibleDataset = eligibleDatasets.length > 0;
 
-  // Auto-focus first field
-  useEffect(() => {
-    const t = setTimeout(() => firstRef.current?.focus(), 30);
-    return () => clearTimeout(t);
-  }, []);
+	const selectedDataset = useMemo(
+		() => datasets.find((d) => d.id === selectedDatasetId),
+		[datasets, selectedDatasetId],
+	);
 
-  const eligibleDatasets = datasets.filter(canTrainYolo);
-  const hasEligibleDataset = eligibleDatasets.length > 0;
+	const defaultSuggestedOutputName = useMemo(() => {
+		const dsSlug = selectedDataset?.slug || "dataset";
+		return `${dsSlug}-${params.model}-best.pt`;
+	}, [selectedDataset, params.model]);
 
-  const selectedDataset = useMemo(
-    () => datasets.find((d) => d.id === selectedDatasetId),
-    [datasets, selectedDatasetId],
-  );
+	const datasetOptions = useMemo<SelectOption<string>[]>(() => {
+		return datasets.map((d) => {
+			const ready = canTrainYolo(d);
+			const reason = ready ? null : trainDisabledReason(d);
+			return {
+				value: d.id,
+				label: d.title,
+				badge: (
+					<span className="flex items-center gap-1.5 font-mono text-2xs text-zinc-400">
+						<span className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-zinc-300">
+							{d.imagesCount} imgs
+						</span>
+						<span className="text-zinc-500">·</span>
+						<span className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-zinc-300">
+							{d.classes.length} cls
+						</span>
+					</span>
+				),
+				disabled: !ready,
+				disabledReason: reason ?? undefined,
+				icon: <IconDatabase className="w-3.5 h-3.5 text-brand-400" />,
+			};
+		});
+	}, [datasets]);
 
-  const defaultSuggestedOutputName = useMemo(() => {
-    const dsSlug = selectedDataset?.slug || "dataset";
-    return `${dsSlug}-${params.model}-best.pt`;
-  }, [selectedDataset, params.model]);
+	const weightOptions = useMemo<SelectOption<string>[]>(() => {
+		return yoloModels.map((m) => ({
+			value: m.id,
+			label: `${m.name} · ${formatBytes(m.bytes)}`,
+			badge:
+				m.source === "train" ? (
+					<span className="rounded-full border border-brand-500/30 bg-brand-500/10 px-1.5 py-0.5 font-mono text-3xs text-brand-400">
+						Treino
+					</span>
+				) : undefined,
+		}));
+	}, [yoloModels]);
 
-  const datasetOptions = useMemo<SelectOption<string>[]>(() => {
-    return datasets.map((d) => {
-      const ready = canTrainYolo(d);
-      const reason = ready ? null : trainDisabledReason(d);
-      return {
-        value: d.id,
-        label: d.title,
-        badge: (
-          <span className="flex items-center gap-1.5 font-mono text-2xs text-zinc-400">
-            <span className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-zinc-300">
-              {d.imagesCount} imgs
-            </span>
-            <span className="text-zinc-500">·</span>
-            <span className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-zinc-300">
-              {d.classes.length} cls
-            </span>
-          </span>
-        ),
-        disabled: !ready,
-        disabledReason: reason ?? undefined,
-        icon: <IconDatabase className="w-3.5 h-3.5 text-brand-400" />,
-      };
-    });
-  }, [datasets]);
+	const parsedLr0 = parseFloat(params.lr0);
+	const epochsValid =
+		Number.isInteger(params.epochs) &&
+		params.epochs >= EPOCHS_MIN &&
+		params.epochs <= EPOCHS_MAX;
+	const lr0Valid =
+		!isNaN(parsedLr0) && parsedLr0 >= 1e-5 && parsedLr0 <= 0.1 + 1e-9;
+	const canSubmit =
+		hasEligibleDataset && selectedDatasetId && epochsValid && lr0Valid && !busy;
 
-  const weightOptions = useMemo<SelectOption<string>[]>(() => {
-    return yoloModels.map((m) => ({
-      value: m.id,
-      label: `${m.name} · ${formatBytes(m.bytes)}`,
-      badge: m.source === "train" ? (
-        <span className="rounded-full border border-brand-500/30 bg-brand-500/10 px-1.5 py-0.5 font-mono text-3xs text-brand-400">
-          Treino
-        </span>
-      ) : undefined,
-    }));
-  }, [yoloModels]);
+	async function handleSubmit(e: React.FormEvent) {
+		e.preventDefault();
+		setTopError(null);
 
-  const parsedLr0 = parseFloat(params.lr0);
-  const epochsValid = Number.isInteger(params.epochs) && params.epochs >= EPOCHS_MIN && params.epochs <= EPOCHS_MAX;
-  const lr0Valid = !isNaN(parsedLr0) && parsedLr0 >= 1e-5 && parsedLr0 <= 0.1 + 1e-9;
-  const canSubmit = hasEligibleDataset && selectedDatasetId && epochsValid && lr0Valid && !busy;
+		if (!selectedDatasetId) {
+			setTopError("Selecione um dataset.");
+			return;
+		}
+		if (!epochsValid) {
+			setTopError(`Epochs deve ser entre ${EPOCHS_MIN} e ${EPOCHS_MAX}.`);
+			return;
+		}
+		if (!lr0Valid) {
+			setTopError("lr0 deve estar entre 0.00001 e 0.1.");
+			return;
+		}
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setTopError(null);
+		setBusy(true);
+		try {
+			const result = await startYoloJob({
+				datasetId: selectedDatasetId,
+				model: params.model,
+				epochs: params.epochs,
+				batch: params.batch,
+				imgsz: params.imgsz,
+				lr0: parsedLr0,
+				optimizer: params.optimizer,
+				augment: params.augment,
+				weights: selectedWeightId || null,
+				orchestratorId: selectedOrchestratorId || null,
+				gpuDevice: selectedOrchestratorId ? selectedGpuDevice || null : null,
+				outputName: outputName.trim() || undefined,
+			});
+			showToast(
+				`Job de treino criado (posição ${result.queuePosition ?? "—"} na fila).`,
+				"success",
+			);
+			// Reset form
+			setSelectedDatasetId("");
+			setSelectedWeightId("");
+			setSelectedOrchestratorId(null);
+			setSelectedGpuDevice(null);
+			setOutputName("");
+			setParams({
+				model: "yolo11m",
+				epochs: 100,
+				batch: 16,
+				imgsz: 640,
+				lr0: "0.01",
+				optimizer: "AdamW",
+				augment: { mosaic: true, mixupFlip: true },
+			});
+			onJobCreated?.(result.jobId);
+		} catch (err) {
+			if (err instanceof ApiError) {
+				// B1: este é submit de JOB — jobErrorMessage como fonte primária.
+				if (selectedWeightId && err.code === "not_found") {
+					setTopError(
+						"Modelo de pesos não encontrado — remova a seleção de pesos iniciais e tente de novo.",
+					);
+				} else {
+					setTopError(jobErrorMessage(err.code));
+				}
+				return;
+			}
+			setTopError("Falha ao criar job de treino.");
+		} finally {
+			setBusy(false);
+		}
+	}
 
-    if (!selectedDatasetId) {
-      setTopError("Selecione um dataset.");
-      return;
-    }
-    if (!epochsValid) {
-      setTopError(`Epochs deve ser entre ${EPOCHS_MIN} e ${EPOCHS_MAX}.`);
-      return;
-    }
-    if (!lr0Valid) {
-      setTopError("lr0 deve estar entre 0.00001 e 0.1.");
-      return;
-    }
+	// ── Empty state: no eligible datasets ──
+	if (!datasetsLoading && !hasEligibleDataset) {
+		return (
+			<div className="flex flex-col items-center gap-3 rounded-2xl p-10 text-center">
+				<span className="mx-auto mb-1 flex h-12 w-12 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900 text-zinc-400">
+					<IconDatabase className="h-6 w-6 text-zinc-700" />
+				</span>
+				<p className="text-sm font-medium text-zinc-200">
+					Nenhum dataset YOLO elegível
+				</p>
+				<p className="text-xs text-zinc-400">
+					Crie ou prepare um dataset YOLO com pelo menos 1 classe e 1 imagem
+					para treinar.
+				</p>
+				<Link
+					href="/datasets"
+					className={getButtonClasses({ variant: "primary", size: "md" })}
+				>
+					<IconDatabase className="h-3.5 w-3.5" />
+					Ir para Datasets
+				</Link>
+			</div>
+		);
+	}
 
-    setBusy(true);
-    try {
-      const result = await startYoloJob({
-        datasetId: selectedDatasetId,
-        model: params.model,
-        epochs: params.epochs,
-        batch: params.batch,
-        imgsz: params.imgsz,
-        lr0: parsedLr0,
-        optimizer: params.optimizer,
-        augment: params.augment,
-        weights: selectedWeightId || null,
-        orchestratorId: selectedOrchestratorId || null,
-        outputName: outputName.trim() || undefined,
-      });
-      showToast(
-        `Job de treino criado (posição ${result.queuePosition ?? "—"} na fila).`,
-        "success",
-      );
-      // Reset form
-      setSelectedDatasetId("");
-      setSelectedWeightId("");
-      setSelectedOrchestratorId(null);
-      setOutputName("");
-      setParams({
-        model: "yolo11m",
-        epochs: 100,
-        batch: 16,
-        imgsz: 640,
-        lr0: "0.01",
-        optimizer: "AdamW",
-        augment: { mosaic: true, mixupFlip: true },
-      });
-      onJobCreated?.(result.jobId);
-    } catch (err) {
-      if (err instanceof ApiError) {
-        // B1: este é submit de JOB — jobErrorMessage como fonte primária.
-        if (selectedWeightId && err.code === "not_found") {
-          setTopError(
-            "Modelo de pesos não encontrado — remova a seleção de pesos iniciais e tente de novo.",
-          );
-        } else {
-          setTopError(jobErrorMessage(err.code));
-        }
-        return;
-      }
-      setTopError("Falha ao criar job de treino.");
-    } finally {
-      setBusy(false);
-    }
-  }
+	return (
+		<form onSubmit={handleSubmit} className="space-y-5 text-xs">
+			{/* Header */}
+			<div className="flex items-center gap-3">
+				<div className="flex h-8 w-8 items-center justify-center rounded-lg border border-brand-500/30 bg-brand-500/15 backdrop-blur-sm text-brand-400">
+					<IconPlay className="h-4 w-4" />
+				</div>
+				<div>
+					<h2 className="font-display text-sm font-bold text-white">
+						Setup do Treino YOLO
+					</h2>
+					<p className="font-mono text-2xs text-zinc-400">
+						Configure e inicie um novo treinamento
+					</p>
+				</div>
+			</div>
 
-  // ── Empty state: no eligible datasets ──
-  if (!datasetsLoading && !hasEligibleDataset) {
-    return (
-      <div className="flex flex-col items-center gap-3 rounded-2xl p-10 text-center">
-        <span className="mx-auto mb-1 flex h-12 w-12 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900 text-zinc-400">
-          <IconDatabase className="h-6 w-6 text-zinc-700" />
-        </span>
-        <p className="text-sm font-medium text-zinc-200">
-          Nenhum dataset YOLO elegível
-        </p>
-        <p className="text-xs text-zinc-400">
-          Crie ou prepare um dataset YOLO com pelo menos 1 classe e 1 imagem para treinar.
-        </p>
-        <Link
-          href="/datasets"
-          className={getButtonClasses({ variant: "primary", size: "md" })}
-        >
-          <IconDatabase className="h-3.5 w-3.5" />
-          Ir para Datasets
-        </Link>
-      </div>
-    );
-  }
+			{topError && (
+				<p
+					role="alert"
+					className="rounded-lg border border-rose-500/30 bg-rose-500/10 backdrop-blur-sm px-3 py-2 text-xs text-rose-300"
+				>
+					{topError}
+				</p>
+			)}
 
-  return (
-    <form onSubmit={handleSubmit} className="space-y-5 text-xs">
-      {/* Header */}
-      <div className="flex items-center gap-3">
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-brand-500/30 bg-brand-500/15 backdrop-blur-sm text-brand-400">
-          <IconPlay className="h-4 w-4" />
-        </div>
-        <div>
-          <h2 className="font-display text-sm font-bold text-white">
-            Setup do Treino YOLO
-          </h2>
-          <p className="font-mono text-2xs text-zinc-400">
-            Configure e inicie um novo treinamento
-          </p>
-        </div>
-      </div>
+			{/* Dataset selector */}
+			<Select
+				id="setup-dataset"
+				ref={firstRef}
+				label="Dataset"
+				options={datasetOptions}
+				value={selectedDatasetId}
+				onChange={(val) => setSelectedDatasetId(val)}
+				placeholder="Selecione um dataset…"
+				loading={datasetsLoading}
+				loadingText="Carregando datasets…"
+				emptyText="Nenhum dataset YOLO elegível encontrado"
+				disabled={busy}
+				searchable={datasets.length > 5}
+				fontMono
+			/>
 
-      {topError && (
-        <p
-          role="alert"
-          className="rounded-lg border border-rose-500/30 bg-rose-500/10 backdrop-blur-sm px-3 py-2 text-xs text-rose-300"
-        >
-          {topError}
-        </p>
-      )}
+			{/* Weights selector (fine-tune) */}
+			<Select
+				id="setup-weights"
+				label="Pesos iniciais"
+				options={weightOptions}
+				value={selectedWeightId}
+				onChange={(val) => setSelectedWeightId(val)}
+				placeholder="Do zero (pré-treinado)"
+				disabled={busy}
+				searchable={yoloModels.length > 5}
+				fontMono
+			/>
 
-      {/* Dataset selector */}
-      <Select
-        id="setup-dataset"
-        ref={firstRef}
-        label="Dataset"
-        options={datasetOptions}
-        value={selectedDatasetId}
-        onChange={(val) => setSelectedDatasetId(val)}
-        placeholder="Selecione um dataset…"
-        loading={datasetsLoading}
-        loadingText="Carregando datasets…"
-        emptyText="Nenhum dataset YOLO elegível encontrado"
-        disabled={busy}
-        searchable={datasets.length > 5}
-        fontMono
-      />
+			{/* Nome do Modelo (outputName — ADR-0022 D1/D4) */}
+			<div className="space-y-1.5">
+				<label
+					htmlFor="setup-output-name"
+					className="block text-xs font-medium text-zinc-300"
+				>
+					Nome do Modelo / Adaptador{" "}
+					<span className="text-zinc-500 font-normal">(opcional)</span>
+				</label>
+				<Input
+					id="setup-output-name"
+					type="text"
+					placeholder={defaultSuggestedOutputName}
+					value={outputName}
+					onChange={(e) => setOutputName(e.target.value)}
+					disabled={busy}
+					className="font-mono text-xs"
+				/>
+				<p className="text-2xs font-mono text-zinc-500">
+					Nome personalizado para o arquivo .pt. Se omitido, o estúdio gerará um
+					nome semântico inteligente.
+				</p>
+			</div>
 
-      {/* Weights selector (fine-tune) */}
-      <Select
-        id="setup-weights"
-        label="Pesos iniciais"
-        options={weightOptions}
-        value={selectedWeightId}
-        onChange={(val) => setSelectedWeightId(val)}
-        placeholder="Do zero (pré-treinado)"
-        disabled={busy}
-        searchable={yoloModels.length > 5}
-        fontMono
-      />
+			{/* Shared YOLO Hyperparameters Form */}
+			<YoloHyperparameters
+				values={params}
+				onChange={handleParamChange}
+				disabled={busy}
+			/>
 
-      {/* Nome do Modelo (outputName — ADR-0022 D1/D4) */}
-      <div className="space-y-1.5">
-        <label htmlFor="setup-output-name" className="block text-xs font-medium text-zinc-300">
-          Nome do Modelo / Adaptador <span className="text-zinc-500 font-normal">(opcional)</span>
-        </label>
-        <Input
-          id="setup-output-name"
-          type="text"
-          placeholder={defaultSuggestedOutputName}
-          value={outputName}
-          onChange={(e) => setOutputName(e.target.value)}
-          disabled={busy}
-          className="font-mono text-xs"
-        />
-        <p className="text-2xs font-mono text-zinc-500">
-          Nome personalizado para o arquivo .pt. Se omitido, o estúdio gerará um nome semântico inteligente.
-        </p>
-      </div>
+			{/* Nó de Execução (ADR-0015 D2) */}
+			<NodeSelect
+				value={selectedOrchestratorId}
+				onChange={(nodeId) => {
+					setSelectedOrchestratorId(nodeId);
+					setSelectedGpuDevice(null);
+				}}
+				onOrchestratorsLoaded={setOrchestratorsList}
+				disabled={busy}
+				size="default"
+			/>
 
-      {/* Shared YOLO Hyperparameters Form */}
-      <YoloHyperparameters
-        values={params}
-        onChange={handleParamChange}
-        disabled={busy}
-      />
+			{/* GPU de Execução (Fatia F2) */}
+			<GpuDeviceSelect
+				orchestratorId={selectedOrchestratorId}
+				devices={
+					orchestratorsList.find((o) => o.id === selectedOrchestratorId)
+						?.gpuDevices ?? null
+				}
+				value={selectedGpuDevice}
+				onChange={setSelectedGpuDevice}
+				vramMinGb={estimatedVram}
+				disabled={busy}
+				size="default"
+			/>
 
-      {/* Nó de Execução (ADR-0015 D2) */}
-      <NodeSelect
-        value={selectedOrchestratorId}
-        onChange={setSelectedOrchestratorId}
-        disabled={busy}
-        size="default"
-      />
+			{/* Previsão de VRAM & Alertas Preventivos de CUDA OOM */}
+			<div
+				className={`rounded-xl border p-3 space-y-2.5 transition backdrop-blur-sm ${
+					oomRisk === "danger"
+						? "border-rose-500/40 bg-rose-500/[0.06]"
+						: oomRisk === "warning"
+							? "border-status-alert/35 bg-status-alert/[0.05]"
+							: "border-white/10 bg-white/[0.02]"
+				}`}
+			>
+				<div className="flex items-center justify-between font-mono text-2xs">
+					<span className="tracking-caps font-medium uppercase text-zinc-400 flex items-center gap-1.5">
+						<IconZap className="size-3.5 text-brand-400" />
+						VRAM Estimada
+					</span>
+					<span
+						className={`font-semibold ${
+							oomRisk === "danger"
+								? "text-rose-400"
+								: oomRisk === "warning"
+									? "text-amber-300"
+									: "text-zinc-100"
+						}`}
+					>
+						~{estimatedVram} GB{" "}
+						{nodeVramTotalGb ? `/ ${nodeVramTotalGb} GB` : ""}
+					</span>
+				</div>
 
-      {/* Previsão de VRAM & Alertas Preventivos de CUDA OOM */}
-      <div
-        className={`rounded-xl border p-3 space-y-2.5 transition backdrop-blur-sm ${
-          oomRisk === "danger"
-            ? "border-rose-500/40 bg-rose-500/[0.06]"
-            : oomRisk === "warning"
-              ? "border-status-alert/35 bg-status-alert/[0.05]"
-              : "border-white/10 bg-white/[0.02]"
-        }`}
-      >
-        <div className="flex items-center justify-between font-mono text-2xs">
-          <span className="tracking-caps font-medium uppercase text-zinc-400 flex items-center gap-1.5">
-            <IconZap className="size-3.5 text-brand-400" />
-            VRAM Estimada
-          </span>
-          <span
-            className={`font-semibold ${
-              oomRisk === "danger"
-                ? "text-rose-400"
-                : oomRisk === "warning"
-                  ? "text-amber-300"
-                  : "text-zinc-100"
-            }`}
-          >
-            ~{estimatedVram} GB {nodeVramTotalGb ? `/ ${nodeVramTotalGb} GB` : ""}
-          </span>
-        </div>
+				{/* Barra de Consumo de VRAM */}
+				<div className="h-1.5 w-full overflow-hidden rounded-full bg-black/40 border border-white/10">
+					<div
+						className={`h-full rounded-full transition-all duration-300 motion-reduce:transition-none ${
+							oomRisk === "danger"
+								? "bg-rose-500"
+								: oomRisk === "warning"
+									? "bg-amber-400"
+									: "bg-brand-500"
+						}`}
+						style={{
+							width: `${Math.min(
+								100,
+								Math.max(
+									6,
+									Math.round((estimatedVram / (nodeVramTotalGb || 16)) * 100),
+								),
+							)}%`,
+						}}
+					/>
+				</div>
 
-        {/* Barra de Consumo de VRAM */}
-        <div className="h-1.5 w-full overflow-hidden rounded-full bg-black/40 border border-white/10">
-          <div
-            className={`h-full rounded-full transition-all duration-300 motion-reduce:transition-none ${
-              oomRisk === "danger"
-                ? "bg-rose-500"
-                : oomRisk === "warning"
-                  ? "bg-amber-400"
-                  : "bg-brand-500"
-            }`}
-            style={{
-              width: `${Math.min(
-                100,
-                Math.max(6, Math.round((estimatedVram / (nodeVramTotalGb || 16)) * 100)),
-              )}%`,
-            }}
-          />
-        </div>
+				{/* Dispositivo de Destino */}
+				<div className="flex items-center justify-between font-mono text-2xs text-zinc-400">
+					<span>Dispositivo:</span>
+					<span
+						className="text-zinc-300 truncate max-w-[180px]"
+						title={deviceLabel}
+					>
+						{deviceLabel}
+					</span>
+				</div>
 
-        {/* Dispositivo de Destino */}
-        <div className="flex items-center justify-between font-mono text-2xs text-zinc-400">
-          <span>Dispositivo:</span>
-          <span className="text-zinc-300 truncate max-w-[180px]" title={deviceLabel}>
-            {deviceLabel}
-          </span>
-        </div>
+				{/* Alerta Preventivo de CUDA OOM */}
+				{oomRisk !== "safe" && (
+					<div
+						className={`rounded-lg border p-2.5 space-y-2 ${
+							oomRisk === "danger"
+								? "border-rose-500/30 bg-rose-950/40 text-rose-200"
+								: "border-status-alert/30 bg-amber-950/40 text-amber-200"
+						}`}
+					>
+						<div className="flex items-start gap-2">
+							<IconAlertTriangle
+								className={`size-4 shrink-0 mt-0.5 ${
+									oomRisk === "danger" ? "text-rose-400" : "text-amber-400"
+								}`}
+							/>
+							<div className="space-y-1 font-mono text-2xs">
+								<p className="font-semibold text-white">
+									{oomRisk === "danger"
+										? "Risco Crítico de CUDA OOM"
+										: "Alerta de VRAM Elevada"}
+								</p>
+								<p className="text-zinc-300 leading-snug">
+									{oomRisk === "danger"
+										? `A combinação selecionada exige ~${estimatedVram} GB de VRAM${
+												nodeVramTotalGb
+													? ` (limite do nó: ${nodeVramTotalGb} GB)`
+													: ""
+											}. O treinamento local falhará por falta de memória na GPU.`
+										: `A estimativa de ~${estimatedVram} GB opera próxima ao limite seguro de alocação da GPU.`}
+								</p>
+							</div>
+						</div>
 
-        {/* Alerta Preventivo de CUDA OOM */}
-        {oomRisk !== "safe" && (
-          <div
-            className={`rounded-lg border p-2.5 space-y-2 ${
-              oomRisk === "danger"
-                ? "border-rose-500/30 bg-rose-950/40 text-rose-200"
-                : "border-status-alert/30 bg-amber-950/40 text-amber-200"
-            }`}
-          >
-            <div className="flex items-start gap-2">
-              <IconAlertTriangle
-                className={`size-4 shrink-0 mt-0.5 ${
-                  oomRisk === "danger" ? "text-rose-400" : "text-amber-400"
-                }`}
-              />
-              <div className="space-y-1 font-mono text-2xs">
-                <p className="font-semibold text-white">
-                  {oomRisk === "danger"
-                    ? "Risco Crítico de CUDA OOM"
-                    : "Alerta de VRAM Elevada"}
-                </p>
-                <p className="text-zinc-300 leading-snug">
-                  {oomRisk === "danger"
-                    ? `A combinação selecionada exige ~${estimatedVram} GB de VRAM${
-                        nodeVramTotalGb ? ` (limite do nó: ${nodeVramTotalGb} GB)` : ""
-                      }. O treinamento local falhará por falta de memória na GPU.`
-                    : `A estimativa de ~${estimatedVram} GB opera próxima ao limite seguro de alocação da GPU.`}
-                </p>
-              </div>
-            </div>
+						{/* Ação de Auto-Fix */}
+						<Button
+							type="button"
+							variant="secondary"
+							size="sm"
+							onClick={handleAutoFixSafeParams}
+							className="w-full font-mono text-2xs"
+						>
+							Ajustar para Perfil Seguro (Batch 16, ImgSz 640)
+						</Button>
+					</div>
+				)}
+			</div>
 
-            {/* Ação de Auto-Fix */}
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              onClick={handleAutoFixSafeParams}
-              className="w-full font-mono text-2xs"
-            >
-              Ajustar para Perfil Seguro (Batch 16, ImgSz 640)
-            </Button>
-          </div>
-        )}
-      </div>
-
-      {/* CTA */}
-      <div className="pt-2">
-        <Button
-          type="submit"
-          variant="primary"
-          size="lg"
-          disabled={!canSubmit}
-          loading={busy}
-          leftIcon={<IconPlay className="size-3.5" />}
-          className="w-full"
-        >
-          {busy ? "Iniciando…" : "Iniciar Treino"}
-        </Button>
-      </div>
-    </form>
-  );
+			{/* CTA */}
+			<div className="pt-2">
+				<Button
+					type="submit"
+					variant="primary"
+					size="lg"
+					disabled={!canSubmit}
+					loading={busy}
+					leftIcon={<IconPlay className="size-3.5" />}
+					className="w-full"
+				>
+					{busy ? "Iniciando…" : "Iniciar Treino"}
+				</Button>
+			</div>
+		</form>
+	);
 }

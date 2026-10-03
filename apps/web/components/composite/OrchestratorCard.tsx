@@ -127,14 +127,24 @@ export function OrchestratorCard({
 							{/* GPU */}
 							<MetricTile
 								label="USO DA GPU"
-								value={m.gpuLabel ?? "sem GPU"}
+								value={
+									(node.gpuDevices?.length ?? 0) > 1
+										? `${node.gpuDevices?.length} GPUs`
+										: (m.gpuLabel ?? "sem GPU")
+								}
 								highlightColor={m.gpuLabel ? "brand" : "default"}
-								subtext={m.hasGpu ? "nome da placa" : "sem GPU instalada"}
+								subtext={
+									(node.gpuDevices?.length ?? 0) > 1
+										? `${node.gpuDevices?.length} GPUs instaladas`
+										: m.hasGpu
+											? "nome da placa"
+											: "sem GPU instalada"
+								}
 							/>
 
-							{/* VRAM */}
+							{/* VRAM (pool/soma do nó) */}
 							<MetricTile
-								label="USO DA VRAM"
+								label="VRAM (POOL DO NÓ)"
 								value={
 									m.vramUsedGb && m.vramTotalGb
 										? `${m.vramUsedGb} / ${m.vramTotalGb} GB`
@@ -143,7 +153,6 @@ export function OrchestratorCard({
 								highlightColor="cyan"
 								subtext={fmt(m.vramPct, 1, "%")}
 							/>
-
 							{/* Sistema & Host */}
 							<MetricTile
 								label="SISTEMA & HOST"

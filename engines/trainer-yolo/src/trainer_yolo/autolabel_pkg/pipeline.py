@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 from engine_kit.runtime import die as _die
@@ -62,8 +63,11 @@ def _autolabel_pipeline(cfg: dict, output_dir: Path) -> None:
         progress=0.05,
     )
 
+    step_time_ema: float | None = None
+
     with open(captions_path, "w", encoding="utf-8") as f:
         for idx, fname in enumerate(sorted_filenames):
+            t0 = time.monotonic()
             img_path = image_map[fname]
             if model == "openai":
                 is_official = "api.openai.com" in api_base
@@ -114,17 +118,27 @@ def _autolabel_pipeline(cfg: dict, output_dir: Path) -> None:
             f.write(line + "\n")
             f.flush()
 
-            # Progress linear de 0.05 a ~0.99 durante o processamento das imagens
+            elapsed_img = max(0.0, time.monotonic() - t0)
+            if step_time_ema is None:
+                step_time_ema = elapsed_img
+            else:
+                step_time_ema = 0.2 * elapsed_img + 0.8 * step_time_ema
+
             step_num = idx + 1
+            remaining_imgs = total_imgs - step_num
+            eta_s = int(round(step_time_ema * remaining_imgs)) if remaining_imgs > 0 else 0
+
+            # Progress linear de 0.05 a ~0.99 durante o processamento das imagens
             progress = 0.05 + 0.94 * (step_num / total_imgs)
             emitter.emit(
-                phase="generating",
+                phase="labeling",
                 message=f"Anotando imagem {step_num}/{total_imgs}: {fname}",
                 progress=progress,
                 step=step_num,
                 total_steps=total_imgs,
+                step_time_seconds=round(step_time_ema, 4),
+                eta_seconds=eta_s,
             )
-
     emitter.emit(
         phase="completed",
         message=f"AutoLabel concluído: {total_imgs} imagens anotadas com sucesso.",

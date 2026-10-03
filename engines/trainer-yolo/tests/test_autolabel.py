@@ -416,7 +416,7 @@ def test_autolabel_openai_with_reasoning_effort(tmp_path: Path):
 
 def test_autolabel_telemetry_progress_and_metrics_contract(tmp_path: Path):
     """Verifica que o autolabel reporta progresso por imagem na telemetria canônica
-    (step 1..N, totalSteps, progresso crescente, phase 'generating') e que nenhuma linha
+    (step 1..N, totalSteps, progresso crescente, phase 'labeling') e que nenhuma linha
     contém chaves YOLO fabricadas (box_loss, mAP50, etc.)."""
     ds = _make_autolabel_dataset(tmp_path, ["img_01.jpg", "img_02.jpg", "img_03.jpg"])
     out = tmp_path / "output_telemetry"
@@ -429,18 +429,18 @@ def test_autolabel_telemetry_progress_and_metrics_contract(tmp_path: Path):
     assert telem_file.is_file(), "telemetry.jsonl deve existir"
 
     telem_lines = [json.loads(line) for line in telem_file.read_text(encoding="utf-8").strip().splitlines()]
-    # 1 preparing + 3 generating (1 por imagem) + 1 completed = 5 eventos
+    # 1 preparing + 3 labeling (1 por imagem) + 1 completed = 5 eventos
     assert len(telem_lines) == 5
 
     # Evento 0: preparing
     assert telem_lines[0]["phase"] == "preparing"
     assert telem_lines[0]["progress"] == 0.05
 
-    # Eventos 1..3: generating por imagem
-    generating_events = telem_lines[1:4]
+    # Eventos 1..3: labeling por imagem
+    labeling_events = telem_lines[1:4]
     prev_progress = 0.05
-    for idx, ev in enumerate(generating_events, start=1):
-        assert ev["phase"] == "generating"
+    for idx, ev in enumerate(labeling_events, start=1):
+        assert ev["phase"] == "labeling"
         assert ev["step"] == idx
         assert ev["totalSteps"] == 3
         assert ev["progress"] > prev_progress
@@ -475,6 +475,48 @@ def test_autolabel_telemetry_progress_and_metrics_contract(tmp_path: Path):
         assert "dfl_loss" not in m
         assert "mAP50" not in m
         assert "mAP50-95" not in m
+
+
+def test_autolabel_telemetry_eta_and_step_time(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Verifica que o autolabel calcula stepTimeSeconds e etaSeconds decrescente até 0 na última imagem."""
+    import time
+
+    # Simula passagem de tempo determinística: cada imagem consome 2.0s
+    current_time = 1000.0
+
+    def fake_monotonic():
+        nonlocal current_time
+        current_time += 1.0
+        return current_time
+
+    monkeypatch.setattr(time, "monotonic", fake_monotonic)
+
+    ds = _make_autolabel_dataset(tmp_path, ["img_01.jpg", "img_02.jpg", "img_03.jpg"])
+    out = tmp_path / "output_eta"
+    cfg_path = _make_config(tmp_path, ds, out, prompt="Teste ETA")
+    cfg = load_and_validate_autolabel_config(cfg_path)
+
+    _mock_autolabel(cfg, out)
+
+    telem_file = out / "telemetry.jsonl"
+    assert telem_file.is_file()
+
+    telem_lines = [json.loads(line) for line in telem_file.read_text(encoding="utf-8").strip().splitlines()]
+    labeling_events = telem_lines[1:4]
+
+    # Verifica presença de stepTimeSeconds e etaSeconds
+    for ev in labeling_events:
+        assert "stepTimeSeconds" in ev
+        assert ev["stepTimeSeconds"] > 0
+        assert "etaSeconds" in ev
+
+    # etaSeconds deve ser decrescente até 0 na última imagem
+    assert labeling_events[0]["step"] == 1
+    assert labeling_events[0]["etaSeconds"] > labeling_events[1]["etaSeconds"]
+    assert labeling_events[1]["step"] == 2
+    assert labeling_events[1]["etaSeconds"] > labeling_events[2]["etaSeconds"]
+    assert labeling_events[2]["step"] == 3
+    assert labeling_events[2]["etaSeconds"] == 0
 
 
 def test_autolabel_retains_progress_on_midway_die(tmp_path: Path):
@@ -536,10 +578,10 @@ def test_autolabel_retains_progress_on_midway_die(tmp_path: Path):
         assert telem_file.is_file()
         telem_lines = [json.loads(line) for line in telem_file.read_text(encoding="utf-8").strip().splitlines()]
         # Evento 0: preparing
-        # Evento 1: generating img_01 (step=1) antes de falhar na img_02
+        # Evento 1: labeling img_01 (step=1) antes de falhar na img_02
         assert len(telem_lines) == 2
         assert telem_lines[0]["phase"] == "preparing"
-        assert telem_lines[1]["phase"] == "generating"
+        assert telem_lines[1]["phase"] == "labeling"
         assert telem_lines[1]["step"] == 1
         assert telem_lines[1]["totalSteps"] == 3
         assert "Anotando imagem 1/3: img_01.jpg" in telem_lines[1]["phaseMessage"]

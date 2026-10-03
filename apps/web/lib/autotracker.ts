@@ -13,6 +13,7 @@ export function startAutotrackerJob(params: {
   conf?: number;
   modelId?: string;
   orchestratorId?: string | null;
+  gpuDevice?: string | null;
 }): Promise<SubmitJobResponse> {
   return apiFetch("/api/jobs/autotracker", {
     method: "POST",

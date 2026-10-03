@@ -1847,7 +1847,7 @@ export interface components {
              * @description Código estável para máquina — a UI decide a mensagem por `code`, nunca por `message`; o cliente DEVE ter ramo default: o enum cresce por fatia (aditivo na 0.2.0: `not_found`, `slug_conflict`; na 0.3.0: `storage_unavailable`, ADR-0003 D10; na 0.3.0, fatia 3g.1: `classes_in_use`; na 0.5.0, fatia 3f.5: `index_not_ready`, `embedding_unavailable`, ADR-0004 D5; na 0.6.0, fatia 3e: `import_invalid`; na 0.7.0, fatia 4: `engine_unsupported`, `queue_unavailable`, `dataset_not_ready`, `job_not_abortable`; na 0.8.0, fatia 5: `job_not_done`; na 0.10.0, fatia H: `pairing_invalid`, ADR-0011 D5; na 0.11.0, fatia I: `model_download_failed`, `model_download_disabled`, ADR-0012 D4/E1).
              * @enum {string}
              */
-            code: "invalid_request" | "invalid_credentials" | "unauthorized" | "setup_required" | "not_found" | "slug_conflict" | "storage_unavailable" | "classes_in_use" | "index_not_ready" | "embedding_unavailable" | "import_invalid" | "engine_unsupported" | "queue_unavailable" | "dataset_not_ready" | "job_not_abortable" | "job_not_done" | "job_not_terminal" | "pairing_invalid" | "model_download_failed" | "model_download_disabled" | "internal";
+            code: "invalid_request" | "invalid_credentials" | "unauthorized" | "setup_required" | "not_found" | "slug_conflict" | "storage_unavailable" | "classes_in_use" | "index_not_ready" | "embedding_unavailable" | "import_invalid" | "engine_unsupported" | "queue_unavailable" | "dataset_not_ready" | "job_not_abortable" | "job_not_done" | "job_not_terminal" | "pairing_invalid" | "model_download_failed" | "model_download_disabled" | "invalid_gpu_device" | "gpu_device_requires_orchestrator" | "unknown_gpu_device" | "insufficient_gpu_vram" | "internal";
             /** @description Humano-curto, ESTÁTICO por code; nunca contém hash, token, segredo ou existência de usuário. */
             message: string;
         };
@@ -1984,6 +1984,8 @@ export interface components {
              * @description ID do orquestrador preferencial para execução (ADR-0015 D2). Opcional; ausente ou null = Automático. Não-UUID ⇒ 400 `invalid_request`.
              */
             orchestratorId?: string | null;
+            /** @description Identificador opcional da GPU (UUID ou índice). Exige orchestratorId. Opcional; ausente ou null = Automático. */
+            gpuDevice?: string | null;
             /** @description Nome personalizado para o modelo/pesos finais (sem extensão). Se omitido, derivado semanticamente (ADR-0022 D1). */
             outputName?: string | null;
         };
@@ -2027,6 +2029,8 @@ export interface components {
              * @description ID do orquestrador preferencial para execução (ADR-0015 D2). Opcional; ausente ou null = Automático. Não-UUID ⇒ 400 `invalid_request`.
              */
             orchestratorId?: string | null;
+            /** @description Identificador opcional da GPU (UUID ou índice). Exige orchestratorId. Opcional; ausente ou null = Automático. */
+            gpuDevice?: string | null;
         };
         /**
          * @description Body de `POST /api/jobs/autolabel` (ADR-0016 D0, ADR-0019 AutoLabel v2). `datasetId` é
@@ -2064,6 +2068,8 @@ export interface components {
              * @description ID do orquestrador preferencial para execução (ADR-0015 D2). Opcional; ausente ou null = Automático. Não-UUID ⇒ 400 `invalid_request`.
              */
             orchestratorId?: string | null;
+            /** @description Identificador opcional da GPU (UUID ou índice). Exige orchestratorId. Opcional; ausente ou null = Automático. */
+            gpuDevice?: string | null;
             /**
              * @description Esforço de raciocínio para modelos com CoT/reasoning (ex: none para desativar raciocínio e acelerar).
              * @enum {string|null}
@@ -2144,6 +2150,8 @@ export interface components {
              * @description ID do orquestrador preferencial para execução (ADR-0015 D2). Opcional.
              */
             orchestratorId?: string | null;
+            /** @description Identificador opcional da GPU (UUID ou índice). Exige orchestratorId. Opcional; ausente ou null = Automático. */
+            gpuDevice?: string | null;
             /** @description Prompt de teste para geração de amostras de validação durante o treino. Opcional. */
             samplePrompt?: string | null;
             /**
@@ -2315,6 +2323,8 @@ export interface components {
              * @description ID do orquestrador preferencial para execução (ADR-0015 D2). Opcional.
              */
             orchestratorId?: string | null;
+            /** @description Identificador opcional da GPU (UUID ou índice). Exige orchestratorId. Opcional; ausente ou null = Automático. */
+            gpuDevice?: string | null;
             /**
              * Format: uuid
              * @description ID de input efêmero retornado por `POST /api/generations/inputs` para img2img. Mutuamente exclusivo com `initGenerationId`. Opcional.
@@ -2986,6 +2996,8 @@ export interface components {
             orchestratorKind?: "docker" | "slurm" | "local" | "remoto" | "null" | null;
             /** @description Indica se o job sofreu fallback automático após timeout no nó solicitado (ADR-0015 D3). */
             orchestratorFallback?: boolean;
+            /** @description UUID efetivo da GPU em que o job executa ou executou (nullable se CPU/mock/legado). */
+            gpuDevice?: string | null;
             /** Format: date-time */
             createdAt: string;
             /**

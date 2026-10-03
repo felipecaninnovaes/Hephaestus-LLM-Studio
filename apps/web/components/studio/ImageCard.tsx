@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import { useState } from "react";
 import {
   IconSearch,
   IconTrash,
@@ -46,9 +46,10 @@ export function ImageCard({
   onQuickLook,
   density = "normal",
 }: ImageCardProps) {
+  const [thumbFailed, setThumbFailed] = useState(false);
   const isClickable = Boolean(onClick) && variant !== "trash";
   const heightClass = density === "compact" ? "h-24 sm:h-28" : "h-28 sm:h-36";
-
+  const imageSrc = !thumbFailed && item.thumbUrl ? item.thumbUrl : item.url;
   return (
     <div
       className={`group relative ${heightClass} overflow-hidden rounded-xl border bg-zinc-900/90 transition-all ${
@@ -72,10 +73,15 @@ export function ImageCard({
         />
       )}
       <img
-        src={item.url}
+        src={imageSrc}
         alt={item.filename}
         loading="lazy"
         decoding="async"
+        onError={() => {
+          if (!thumbFailed && item.thumbUrl) {
+            setThumbFailed(true);
+          }
+        }}
         className="absolute inset-0 h-full w-full object-cover"
       />
       <div

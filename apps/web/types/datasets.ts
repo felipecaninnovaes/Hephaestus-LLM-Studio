@@ -70,6 +70,7 @@ export interface ImageItem {
   mediaType: string;
   split: string;
   url: string;
+  thumbUrl?: string | null;
   createdAt: string;
   boxesCount?: number | null;
   caption?: string | null;
@@ -112,6 +113,7 @@ export interface ImageDetail {
   mediaType: string;
   split: string;
   url: string;
+  thumbUrl?: string | null;
   createdAt: string;
   boxes: BBoxData[];
   caption: CaptionData | null;

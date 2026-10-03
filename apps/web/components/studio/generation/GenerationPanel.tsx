@@ -609,7 +609,7 @@ export function GenerationPanel() {
 						? loras.filter((l) => l.modelId)
 						: undefined,
 				orchestratorId: selectedOrchestratorId,
-				gpuDevice: selectedOrchestratorId ? selectedGpuDevice || null : null,
+				gpuDevice: (selectedOrchestratorId && selectedGpuDevice) ? selectedGpuDevice : undefined,
 			};
 
 			if (customModelId) {

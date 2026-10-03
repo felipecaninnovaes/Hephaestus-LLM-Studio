@@ -45,6 +45,7 @@ export default function NodeSelect({
           setOrchestrators(res.items || []);
           onOrchestratorsLoaded?.(res.items || []);
         }
+      } catch {
         // Silenciosamente tolera indisponibilidade do manager
       } finally {
         if (!cancelled) setLoading(false);

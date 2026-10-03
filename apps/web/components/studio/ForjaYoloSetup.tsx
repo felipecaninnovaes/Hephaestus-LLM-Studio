@@ -336,7 +336,7 @@ export default function ForjaYoloSetup({
         augment: params.augment,
         weights: selectedWeightId || null,
         orchestratorId: selectedOrchestratorId || null,
-				gpuDevice: selectedOrchestratorId ? selectedGpuDevice || null : null,
+        gpuDevice: (selectedOrchestratorId && selectedGpuDevice) ? selectedGpuDevice : undefined,
         outputName: outputName.trim() || undefined,
       });
       showToast(

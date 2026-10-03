@@ -123,7 +123,7 @@ export default function TrainYoloModal({
         optimizer: params.optimizer,
         augment: params.augment,
         orchestratorId: selectedOrchestratorId || null,
-				gpuDevice: selectedOrchestratorId ? selectedGpuDevice || null : null,
+        gpuDevice: (selectedOrchestratorId && selectedGpuDevice) ? selectedGpuDevice : undefined,
       });
       showToast(
         result.status === "preparing"

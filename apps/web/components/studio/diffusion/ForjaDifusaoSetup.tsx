@@ -898,7 +898,7 @@ export function ForjaDifusaoSetup({
         alpha: params.alpha,
         weights: selectedWeightId || null,
         orchestratorId: selectedOrchestratorId || null,
-				gpuDevice: selectedOrchestratorId ? selectedGpuDevice || null : null,
+        gpuDevice: (selectedOrchestratorId && selectedGpuDevice) ? selectedGpuDevice : undefined,
         samplePrompt:
           enableSamples && samplePrompt.trim()
             ? samplePrompt.trim()

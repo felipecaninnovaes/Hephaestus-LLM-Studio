@@ -1,3 +1,13 @@
+## Fechado — Retomada de difusão continua a curva de LR original
+- **Branch:** `fix/resume-lr-schedule-continuity` (de `develop` `82cd2b6`), ff em `develop`/`origin` em `843bc2a`.
+- **Problema (usuário, 2026-10-04):** na retomada o scheduler recomeçava do zero sobre as épocas restantes (cosine voltava ao pico + warmup), obrigando o usuário a calcular o LR à mão. **Decisão do usuário:** continuar a curva original.
+- [x] `@engines` `2e10a37` + `4dfd5f7`: `_create_lr_scheduler(..., last_step=)` posiciona o LambdaLR em `steps_per_epoch*epoch_offset` sobre o horizonte `steps_per_epoch*(epoch_offset+epochs)`; progresso/ETA/logs seguem locais (rodada 1 do orchestrator pegou progresso parando em ~46% e fallback silencioso para LR constante → `TypeError`). qwen_image usa LR constante. 271 testes.
+- [x] `@frontend` `380e593` + `a938040`: retomada preenche `epochs = max(1, (params.epochOffset ?? 0) + params.epochs - offset)` (orchestrator pegou o caso de retomada encadeada). 143 testes, tsc/biome limpos, prova visual do form com 4 épocas.
+- [x] Smoke do orchestrator (diffusers real, cosine, warmup 400, 247 passos/época, 10 épocas, offset 6): sequência de LR retomada ≡ cauda do treino contínuo, diferença máxima 0.0 em 988 passos, 1º LR 2.3218e-05.
+- [x] `@reviewer` APROVA (NITs: TypeError inalcançável pelos 4 schedulers do enum; clamp em 1). `@docs` `843bc2a`: `docs/engines/trainer-difusao.md:44`.
+- [x] Deploy no nó (`@infra`): `hephaestus/trainer-difusao:gpu` `9b1e6e02cb76`, rollback `:pre-resume-lr` (`13a5e0eb3db3`); fonte com `last_epoch` conferida pelo orchestrator dentro da imagem.
+- **Limite:** retomada real na GPU não exercitada (o usuário vai retomar o job `e8a9a944` da época 6).
+
 ## Fechado — Treino >24h morre com ENOENT em `datasets-cache` (sweeper)
 - **Branch:** `fix/sweeper-skip-active-job-datasets` (de `develop` `6252315`), ff em `develop`/`origin` em `cf8f398`.
 - **Sintoma (usuário, 2026-10-04):** FLUX.2-Klein (job `e8a9a944`, 986 imgs, 10 épocas) morre na época 7 com `[Errno 2] ... /datasets/datasets-cache/e8a9a944.../images/5503c6fb....webp`.

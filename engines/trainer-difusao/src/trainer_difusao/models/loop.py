@@ -345,19 +345,19 @@ class TrainingLoopRunner:
 
         # Scheduler e steps
         steps_per_epoch = math.ceil(len(dataloader) / tcfg.grad_accum)
+        total_train_steps = max(1, steps_per_epoch * tcfg.epochs)
         # Se epoch_offset > 0, o horizonte total da curva original é (epoch_offset + epochs)
         # e o scheduler é posicionado no step correspondente às épocas já concluídas.
-        total_epochs = tcfg.epoch_offset + tcfg.epochs
-        total_train_steps = max(1, steps_per_epoch * total_epochs)
+        # Mantemos total_train_steps inalterado para métricas de progresso/diagnóstico locais da execução.
+        schedule_total_steps = max(1, steps_per_epoch * (tcfg.epoch_offset + tcfg.epochs))
         offset_steps = steps_per_epoch * tcfg.epoch_offset
         lr_scheduler = _create_lr_scheduler(
             optimizer,
             tcfg.lr_scheduler_name,
-            total_train_steps,
+            schedule_total_steps,
             tcfg.lr_warmup_steps,
             last_step=offset_steps,
         )
-
         # Pré-computa embeddings da amostra
         sample_embeds = self.adapter.precompute_sample_embeds(comp, tcfg)
 

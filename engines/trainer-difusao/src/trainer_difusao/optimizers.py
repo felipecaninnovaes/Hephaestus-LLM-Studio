@@ -115,17 +115,24 @@ def _create_lr_scheduler(
             num_warmup_steps=warmup_steps,
             num_training_steps=max(1, total_steps),
         )
-        if last_step > 0 and scheduler is not None:
-            scheduler.last_epoch = last_step
-            for i, (param_group, base_lr) in enumerate(
-                zip(optimizer.param_groups, scheduler.base_lrs)
-            ):
-                param_group["lr"] = scheduler.lr_lambdas[i](last_step) * base_lr
-            scheduler._last_lr = [group["lr"] for group in optimizer.param_groups]
-        return scheduler
     except Exception as e:
         print(
             f"[WARN] Não foi possível instanciar scheduler '{scheduler_name}': {e}",
             flush=True,
         )
         return None
+
+    if last_step > 0 and scheduler is not None:
+        if not hasattr(scheduler, "lr_lambdas") or not hasattr(scheduler, "base_lrs"):
+            raise TypeError(
+                f"Scheduler '{scheduler_name}' ({type(scheduler).__name__}) não possui "
+                f"atributos 'lr_lambdas'/'base_lrs' necessários para posicionamento contínuo em last_step={last_step}."
+            )
+        scheduler.last_epoch = last_step
+        for i, (param_group, base_lr) in enumerate(
+            zip(optimizer.param_groups, scheduler.base_lrs)
+        ):
+            param_group["lr"] = scheduler.lr_lambdas[i](last_step) * base_lr
+        scheduler._last_lr = [group["lr"] for group in optimizer.param_groups]
+
+    return scheduler

@@ -175,7 +175,9 @@ def test_create_lr_scheduler_resume_continuity(scheduler_name):
         last_step=offset_steps,
     )
     assert sched_resumed is not None
-
+    # O LR imediatamente após a criação deve ser igual ao LR do step offset_steps da execução original
+    assert sched_resumed.get_last_lr()[0] == full_lrs[offset_steps]
+    assert opt_resumed.param_groups[0]["lr"] == full_lrs[offset_steps]
     resumed_lrs = []
     for _ in range(remaining_steps):
         resumed_lrs.append(opt_resumed.param_groups[0]["lr"])
@@ -196,3 +198,19 @@ def test_create_lr_scheduler_resume_continuity(scheduler_name):
     assert sched_zero is not None
     zero_first_lr = opt_zero.param_groups[0]["lr"]
     assert zero_first_lr == full_lrs[0]
+
+
+def test_create_lr_scheduler_non_lambdalr_raises():
+    """Garante que schedulers sem lr_lambdas lançam TypeError ao invés de degradar silenciosamente."""
+    pytest.importorskip("torch")
+    import torch
+
+    p = torch.nn.Parameter(torch.zeros(1))
+    opt = torch.optim.AdamW([p], lr=1e-4)
+
+    fake_scheduler = MagicMock()
+    del fake_scheduler.lr_lambdas  # sem lr_lambdas
+
+    with patch("diffusers.optimization.get_scheduler", return_value=fake_scheduler):
+        with pytest.raises(TypeError, match="não possui atributos 'lr_lambdas'"):
+            _create_lr_scheduler(opt, "custom", total_steps=100, warmup_steps=10, last_step=20)

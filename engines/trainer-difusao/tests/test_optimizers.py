@@ -130,3 +130,69 @@ def test_create_lr_scheduler_fallback():
     with patch.dict(sys.modules, {"diffusers": None, "diffusers.optimization": None}):
         res = _create_lr_scheduler(mock_opt, "cosine", total_steps=100, warmup_steps=10)
         assert res is None
+
+
+@pytest.mark.parametrize("scheduler_name", ["cosine", "constant_with_warmup"])
+def test_create_lr_scheduler_resume_continuity(scheduler_name):
+    """Garante que a retomada com epoch_offset continua a cauda exata da curva original."""
+    pytest.importorskip("torch")
+    pytest.importorskip("diffusers")
+    import torch
+
+    steps_per_epoch = 7
+    warmup_steps = 10
+    offset_epochs = 6
+    resume_epochs = 4
+    total_epochs = offset_epochs + resume_epochs  # 10
+    lr = 5e-5
+
+    total_steps = steps_per_epoch * total_epochs  # 70
+    offset_steps = steps_per_epoch * offset_epochs  # 42
+    remaining_steps = steps_per_epoch * resume_epochs  # 28
+
+    # 1. Execução ininterrupta de 10 épocas
+    p_full = torch.nn.Parameter(torch.zeros(1))
+    opt_full = torch.optim.AdamW([p_full], lr=lr)
+    sched_full = _create_lr_scheduler(
+        opt_full, scheduler_name, total_steps=total_steps, warmup_steps=warmup_steps, last_step=0
+    )
+    assert sched_full is not None
+
+    full_lrs = []
+    for _ in range(total_steps):
+        full_lrs.append(opt_full.param_groups[0]["lr"])
+        opt_full.step()
+        sched_full.step()
+
+    # 2. Execução retomada (offset=6, epochs=4)
+    p_resumed = torch.nn.Parameter(torch.zeros(1))
+    opt_resumed = torch.optim.AdamW([p_resumed], lr=lr)
+    sched_resumed = _create_lr_scheduler(
+        opt_resumed,
+        scheduler_name,
+        total_steps=total_steps,
+        warmup_steps=warmup_steps,
+        last_step=offset_steps,
+    )
+    assert sched_resumed is not None
+
+    resumed_lrs = []
+    for _ in range(remaining_steps):
+        resumed_lrs.append(opt_resumed.param_groups[0]["lr"])
+        opt_resumed.step()
+        sched_resumed.step()
+
+    # A sequência de LRs da retomada deve ser idêntica à cauda da ininterrupta
+    tail_lrs = full_lrs[offset_steps:]
+    assert len(tail_lrs) == len(resumed_lrs) == remaining_steps
+    assert resumed_lrs == tail_lrs
+
+    # 3. Caso offset=0 inalterado
+    p_zero = torch.nn.Parameter(torch.zeros(1))
+    opt_zero = torch.optim.AdamW([p_zero], lr=lr)
+    sched_zero = _create_lr_scheduler(
+        opt_zero, scheduler_name, total_steps=total_steps, warmup_steps=warmup_steps, last_step=0
+    )
+    assert sched_zero is not None
+    zero_first_lr = opt_zero.param_groups[0]["lr"]
+    assert zero_first_lr == full_lrs[0]

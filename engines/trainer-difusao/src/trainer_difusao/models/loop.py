@@ -304,9 +304,10 @@ class TrainingLoopRunner:
         optimizer = _create_optimizer(comp["trainable_module"], tcfg.optimizer_name, tcfg.learning_rate)
         if tcfg.optimizer_state_path:
             _load_optimizer_state(optimizer, tcfg.optimizer_state_path)
-            # O LR da nova requisição (tcfg.learning_rate) sempre prevalece sobre o
-            # persistido no optimizer state restaurado; o scheduler da retomada
-            # recomeça do zero sobre os steps desta execução (não é persistido).
+            # O LR da requisição (tcfg.learning_rate) representa o LR de pico da curva
+            # original e sempre prevalece sobre o persistido no optimizer state restaurado.
+            # Quando epoch_offset > 0, o scheduler continua a curva original a partir
+            # de steps_per_epoch * epoch_offset.
             _override_optimizer_lr(optimizer, tcfg.learning_rate)
 
         # Dataset principal
@@ -344,9 +345,17 @@ class TrainingLoopRunner:
 
         # Scheduler e steps
         steps_per_epoch = math.ceil(len(dataloader) / tcfg.grad_accum)
-        total_train_steps = max(1, steps_per_epoch * tcfg.epochs)
+        # Se epoch_offset > 0, o horizonte total da curva original é (epoch_offset + epochs)
+        # e o scheduler é posicionado no step correspondente às épocas já concluídas.
+        total_epochs = tcfg.epoch_offset + tcfg.epochs
+        total_train_steps = max(1, steps_per_epoch * total_epochs)
+        offset_steps = steps_per_epoch * tcfg.epoch_offset
         lr_scheduler = _create_lr_scheduler(
-            optimizer, tcfg.lr_scheduler_name, total_train_steps, tcfg.lr_warmup_steps
+            optimizer,
+            tcfg.lr_scheduler_name,
+            total_train_steps,
+            tcfg.lr_warmup_steps,
+            last_step=offset_steps,
         )
 
         # Pré-computa embeddings da amostra

@@ -253,9 +253,10 @@ def _override_optimizer_lr(optimizer: Any, lr: float) -> None:
     """Sobrescreve `lr` e `initial_lr` em todos os param_groups do optimizer.
 
     Usado logo após restaurar o optimizer de um checkpoint de retomada: o LR
-    da nova requisição sempre prevalece sobre o persistido no state_dict
-    restaurado. O scheduler da retomada recomeça do zero sobre os steps desta
-    execução (não é persistido)."""
+    da nova requisição representa o LR de pico da curva original e sempre
+    prevalece sobre o persistido no state_dict restaurado. Quando a retomada
+    continua o scheduler, o LR efetivo nos steps seguintes é determinado
+    pela posição correspondente na curva original."""
     for group in optimizer.param_groups:
         group["lr"] = lr
         group["initial_lr"] = lr

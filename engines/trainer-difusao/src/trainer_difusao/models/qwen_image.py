@@ -577,8 +577,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
     if optimizer_state_path:
         _load_optimizer_state(optimizer, optimizer_state_path)
         # O LR da nova requisição (learning_rate) sempre prevalece sobre o
-        # persistido no optimizer state restaurado; o scheduler (se houver)
-        # recomeça do zero sobre os steps desta execução.
+        # persistido no optimizer state restaurado.
         _override_optimizer_lr(optimizer, learning_rate)
 
     # 6. Training loop

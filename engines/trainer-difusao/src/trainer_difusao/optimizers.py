@@ -99,17 +99,30 @@ def _create_lr_scheduler(
     scheduler_name: str,
     total_steps: int,
     warmup_steps: int = 0,
+    last_step: int = 0,
 ) -> Any:
-    """Cria scheduler de taxa de aprendizado via diffusers ou torch."""
+    """Cria scheduler de taxa de aprendizado via diffusers ou torch.
+
+    Se `last_step > 0`, o scheduler é posicionado no step `last_step` da curva original,
+    mantendo o horizonte total de treino (`total_steps`) e o warmup configurados.
+    """
     try:
         from diffusers.optimization import get_scheduler
 
-        return get_scheduler(
+        scheduler = get_scheduler(
             scheduler_name.lower().strip() or "cosine",
             optimizer=optimizer,
             num_warmup_steps=warmup_steps,
             num_training_steps=max(1, total_steps),
         )
+        if last_step > 0 and scheduler is not None:
+            scheduler.last_epoch = last_step
+            for i, (param_group, base_lr) in enumerate(
+                zip(optimizer.param_groups, scheduler.base_lrs)
+            ):
+                param_group["lr"] = scheduler.lr_lambdas[i](last_step) * base_lr
+            scheduler._last_lr = [group["lr"] for group in optimizer.param_groups]
+        return scheduler
     except Exception as e:
         print(
             f"[WARN] Não foi possível instanciar scheduler '{scheduler_name}': {e}",

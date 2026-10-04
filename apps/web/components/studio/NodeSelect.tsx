@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Select, type SelectOption } from "@/components/ui/Select";
 import { IconServer } from "@/components/icons";
 import { listOrchestrators, type Orchestrator } from "@/lib/monitoring";
@@ -35,7 +35,10 @@ export default function NodeSelect({
 }: NodeSelectProps) {
   const [orchestrators, setOrchestrators] = useState<Orchestrator[]>([]);
   const [loading, setLoading] = useState(true);
-
+  const onOrchestratorsLoadedRef = useRef(onOrchestratorsLoaded);
+  useEffect(() => {
+    onOrchestratorsLoadedRef.current = onOrchestratorsLoaded;
+  });
   useEffect(() => {
     let cancelled = false;
     async function load() {
@@ -43,7 +46,7 @@ export default function NodeSelect({
         const res = await listOrchestrators();
         if (!cancelled) {
           setOrchestrators(res.items || []);
-          onOrchestratorsLoaded?.(res.items || []);
+          onOrchestratorsLoadedRef.current?.(res.items || []);
         }
       } catch {
         // Silenciosamente tolera indisponibilidade do manager

@@ -38,6 +38,10 @@ export function UPlotChart({
 }: UPlotChartProps) {
 	const containerRef = useRef<HTMLDivElement | null>(null);
 	const chartRef = useRef<uPlot | null>(null);
+	const dataRef = useRef(data);
+	useEffect(() => {
+		dataRef.current = data;
+	});
 	const onInitRef = useRef(onInit);
 	onInitRef.current = onInit;
 	const onDestroyRef = useRef(onDestroy);
@@ -99,7 +103,7 @@ export function UPlotChart({
 			},
 		};
 
-		const chart = new uPlot(mergedOpts, data, el);
+		const chart = new uPlot(mergedOpts, dataRef.current, el);
 		chartRef.current = chart;
 
 		if (onInitRef.current) {

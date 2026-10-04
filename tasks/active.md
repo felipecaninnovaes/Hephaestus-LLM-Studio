@@ -1,3 +1,12 @@
+## Fechado — Treino >24h morre com ENOENT em `datasets-cache` (sweeper)
+- **Branch:** `fix/sweeper-skip-active-job-datasets` (de `develop` `6252315`), ff em `develop`/`origin` em `cf8f398`.
+- **Sintoma (usuário, 2026-10-04):** FLUX.2-Klein (job `e8a9a944`, 986 imgs, 10 épocas) morre na época 7 com `[Errno 2] ... /datasets/datasets-cache/e8a9a944.../images/5503c6fb....webp`.
+- **Causa raiz (orchestrator, conferida no nó):** `spawn_periodic_sweeper` chamava `sweep_orphan_workdirs(workdir, 24h)` (`adapters/sweeper.rs:164,262-277`), que apaga todo `datasets-cache/<entry>` com mtime >24h sem consultar `active_jobs`. `config.yaml` do job: 2026-10-03 17:46:28Z; crash: 2026-10-04 17:46:51Z (24h+23s); dir ausente no nó.
+- [x] `@backend` `5dddcc8`: `active_job_ids` (chaves de `active_jobs`) excluídos do sweep; boot passa conjunto vazio (roda após o sweep de containers órfãos). Teste de regressão falha sem o skip; 231 testes, clippy limpo. `@reviewer` APROVA (NITs: job sai de `active_jobs` antes do upload de artefatos, `mod.rs:1150` — sem impacto no dataset; sleep real no teste).
+- [x] `@docs` `cf8f398`: `docs/services/orchestrator.md:41`, `docs/PITFALLS.md:62`.
+- [x] Deploy no nó (`@infra`): nó em `cf8f398`, imagem `104454378480`, rollback `gpu-orchestrator-gpu:pre-sweeper-active-fix` (`271e625982f3`), health 200, heartbeat online. Checkpoints `adapter_epoch_00{5,6}` + optimizer intactos para retomar.
+- **Limite:** prova em produção exige um job >24h; coberta pelo teste unitário.
+
 ## Fechado — Web: imports e variáveis sem uso (biome)
 - **Branch:** `chore/web-unused-imports` (de `develop` `5d5f5bf`). Removidos os 46 diagnósticos `noUnusedImports`/`noUnusedVariables`. Warnings do biome caíram de 100 para 54; 0 erros. Origem: `import React` default desnecessário (JSX automático) e sobras das extrações de componentes (`8006fe7` → `OrchestratorCard`; `a633f0a`/`bc5476c` → `components/studio/jobs/*`). Nenhuma UI perdida. Prop morta `initialTelemetry` removida de `ForjaYoloSetup` (nenhum chamador passava).
 - [x] `@frontend` `068e80b`: `tsc` limpo, `bun test`/`next build` verdes. `@reviewer` APROVA sem achados.

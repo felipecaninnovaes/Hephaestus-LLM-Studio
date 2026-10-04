@@ -41,6 +41,7 @@ Daemon HTTP de longa duração para inferência interativa, gerenciado pelo orch
 - **Adapters PEFT**: Injeta adaptadores de baixo posto (*Low-Rank Adaptation*) nas camadas lineares e de atenção dos modelos base.
 - **Quantização BitsAndBytes (`quantization.py`)**: Suporte a quantização de 4-bit (`nf4`, `fp4`) e 8-bit (`int8`), permitindo o fine-tuning de modelos pesados em GPUs de consumo.
 - **Configurações e Limites de VRAM**: Os limites operacionais de VRAM para cada modelo e tipo de quantização são canônicos em `packages/policies/vram-table.yaml`.
+- **Resume e LR (`TrainingLoopRunner`: flux, sd15, sdxl)**: `learningRate` do resume é o pico da curva original; o scheduler usa horizonte `steps_per_epoch * (epoch_offset + epochs)` com o warmup configurado e é posicionado em `steps_per_epoch * epoch_offset` (`_create_lr_scheduler(..., last_step=)` em `optimizers.py`), continuando o LR exatamente de onde o run interrompido parou (warmup já consumido não se repete). Progresso/ETA/logs de step ficam locais ao run; `epochs` = épocas adicionais, e o resume na web pré-preenche `(params.epochOffset ?? 0) + params.epochs - newOffset` (mín. 1). `qwen_image` usa LR constante (sem scheduler).
 
 ---
 

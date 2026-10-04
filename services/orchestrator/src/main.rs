@@ -263,6 +263,7 @@ async fn main() {
     orchestrator::sweep_orphan_workdirs(
         &std::path::PathBuf::from(&cfg.workdir),
         std::time::Duration::from_secs(86400),
+        &std::collections::HashSet::new(),
     )
     .await;
 

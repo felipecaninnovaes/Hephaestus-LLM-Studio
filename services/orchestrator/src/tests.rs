@@ -5500,11 +5500,47 @@ async fn test_sweep_orphan_workdirs_removes_expired_cache() {
 
     // Executa sweep com max_age = 0s para expirar tudo imediatamente
     tokio::time::sleep(Duration::from_millis(50)).await;
-    sweep_orphan_workdirs(temp_dir.path(), Duration::from_millis(10)).await;
+    sweep_orphan_workdirs(
+        temp_dir.path(),
+        Duration::from_millis(10),
+        &std::collections::HashSet::new(),
+    )
+    .await;
 
     assert!(
         !old_subdir.exists(),
         "diretório antigo de cache deve ser removido"
+    );
+}
+
+#[tokio::test]
+async fn test_sweep_orphan_workdirs_skips_active_job() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let cache_dir = temp_dir.path().join("datasets").join("datasets-cache");
+    tokio::fs::create_dir_all(&cache_dir).await.unwrap();
+
+    let active_job_id = "job-active-123";
+    let expired_job_id = "job-expired-456";
+
+    let active_subdir = cache_dir.join(active_job_id);
+    let expired_subdir = cache_dir.join(expired_job_id);
+    tokio::fs::create_dir(&active_subdir).await.unwrap();
+    tokio::fs::create_dir(&expired_subdir).await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut active_jobs = std::collections::HashSet::new();
+    active_jobs.insert(active_job_id.to_string());
+
+    sweep_orphan_workdirs(temp_dir.path(), Duration::from_millis(10), &active_jobs).await;
+
+    assert!(
+        active_subdir.exists(),
+        "diretório de cache de job ativo NÃO deve ser removido mesmo expirado"
+    );
+    assert!(
+        !expired_subdir.exists(),
+        "diretório de cache expirado de job não ativo deve ser removido"
     );
 }
 

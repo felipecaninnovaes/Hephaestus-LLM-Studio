@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -161,8 +162,14 @@ pub fn spawn_periodic_sweeper(
             tokio::select! {
                 _ = ticker.tick() => {
                     let _ = reconcile_orphan_containers(&active_jobs).await;
-                    sweep_orphan_workdirs(&workdir, Duration::from_secs(24 * 3600)).await;
-
+                    let active_job_ids: HashSet<String> =
+                        active_jobs.iter().map(|entry| entry.key().clone()).collect();
+                    sweep_orphan_workdirs(
+                        &workdir,
+                        Duration::from_secs(24 * 3600),
+                        &active_job_ids,
+                    )
+                    .await;
                     // Pilar A: LRU de datasets-dedup/<md5>/, pulando md5 em uso.
                     let active_md5s: std::collections::HashSet<String> = active_jobs
                         .iter()
@@ -258,11 +265,21 @@ pub async fn sweep_orphan_trainer_containers() {
     }
 }
 
-/// Varre e limpa diretórios antigos de cache de datasets no workdir (> 24h).
-pub async fn sweep_orphan_workdirs(workdir: &Path, max_age: std::time::Duration) {
+/// Varre e limpa diretórios antigos de cache de datasets no workdir (> 24h),
+/// ignorando qualquer diretório cujo nome corresponda a um job ativo.
+pub async fn sweep_orphan_workdirs(
+    workdir: &Path,
+    max_age: std::time::Duration,
+    active_job_ids: &HashSet<String>,
+) {
     let cache_dir = workdir.join("datasets").join("datasets-cache");
     if let Ok(mut entries) = tokio::fs::read_dir(&cache_dir).await {
         while let Ok(Some(entry)) = entries.next_entry().await {
+            let file_name = entry.file_name();
+            let name_str = file_name.to_string_lossy();
+            if active_job_ids.contains(name_str.as_ref()) {
+                continue;
+            }
             if let Ok(meta) = entry.metadata().await {
                 if let Ok(modified) = meta.modified() {
                     if let Ok(age) = modified.elapsed() {

@@ -1,3 +1,8 @@
+## Fechado — Web: imports e variáveis sem uso (biome)
+- **Branch:** `chore/web-unused-imports` (de `develop` `5d5f5bf`). Removidos os 46 diagnósticos `noUnusedImports`/`noUnusedVariables`. Warnings do biome caíram de 100 para 54; 0 erros. Origem: `import React` default desnecessário (JSX automático) e sobras das extrações de componentes (`8006fe7` → `OrchestratorCard`; `a633f0a`/`bc5476c` → `components/studio/jobs/*`). Nenhuma UI perdida. Prop morta `initialTelemetry` removida de `ForjaYoloSetup` (nenhum chamador passava).
+- [x] `@frontend` `068e80b`: `tsc` limpo, `bun test`/`next build` verdes. `@reviewer` APROVA sem achados.
+- **Achado p/ backlog:** existem 2 comparadores split: `components/studio/CompareSlider.tsx` (usado em `GenerationGallery.tsx:873`) e o novo `components/ui/ImageSplitCompare.tsx`. Candidato a unificação.
+
 ## Fechado — CI web: erros de lint (biome) desde a multi-GPU
 - **Branch:** `fix/web-lint-exhaustive-deps` (de `develop` `ab707d3`). Os únicos 2 ERROS do `biome lint` (os ~100 warnings não falham o CI): `useExhaustiveDependencies` em `NodeSelect.tsx:39` (entrou na F2 `ceed82c`/`cf13c62`) e `UPlotChart.tsx:51`. O fix automático (adicionar a dependência) mudaria o comportamento: refetch a cada render e recriação do uPlot a cada ponto. Corrigido com o padrão latest-ref.
 - [x] `@frontend` `27db079`: biome 0 erros (exit 0), `next build` verde, `tsc` limpo, `bun test` 135/135. `@reviewer` APROVA sem achados.

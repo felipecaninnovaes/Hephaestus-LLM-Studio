@@ -142,6 +142,9 @@ export function buildDiffusionResume(
 		// original não se aplicam (evita sobrescrever o adaptador de origem).
 		initialPreset.weights = undefined;
 		initialPreset.outputName = undefined;
+		if (typeof initialPreset.epochs === "number") {
+			initialPreset.epochs = Math.max(1, initialPreset.epochs - epochOffset);
+		}
 	}
 	return {
 		datasetId: job.datasetId,

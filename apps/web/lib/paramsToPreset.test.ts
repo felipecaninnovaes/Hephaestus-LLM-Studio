@@ -122,6 +122,38 @@ describe("buildDiffusionResume", () => {
 		expect(payloadGreater.initialPreset?.epochs).toBe(1);
 	});
 
+	it("handles chained resume correctly across intermediate checkpoints", () => {
+		// Original 10 epochs -> resumed at 6 with epochs 4 (epochOffset: 6, epochs: 4)
+		// That job reaches epoch_8 checkpoint and is resumed again.
+		// totalEpochs = priorOffset (6) + epochs (4) = 10
+		// remaining = max(1, 10 - 8) = 2 epochs.
+		const chainedJobCamel = makeJob({
+			params: {
+				...(makeJob().params as Record<string, unknown>),
+				epochOffset: 6,
+				epochs: 4,
+			},
+		});
+		const art8 = makeArtifact({
+			path: "runs/weights/epoch_008/checkpoint.safetensors",
+		});
+		const payloadCamel = buildDiffusionResume(chainedJobCamel, art8);
+		expect(payloadCamel.epochOffset).toBe(8);
+		expect(payloadCamel.initialPreset?.epochs).toBe(2);
+
+		// Also supports legacy snake_case epoch_offset
+		const chainedJobSnake = makeJob({
+			params: {
+				...(makeJob().params as Record<string, unknown>),
+				epoch_offset: 6,
+				epochs: 4,
+			},
+		});
+		const payloadSnake = buildDiffusionResume(chainedJobSnake, art8);
+		expect(payloadSnake.epochOffset).toBe(8);
+		expect(payloadSnake.initialPreset?.epochs).toBe(2);
+	});
+
 	it("handles job without params gracefully", () => {
 		const job = makeJob({ params: undefined });
 		const art = makeArtifact({ path: "runs/epoch_3/model.safetensors" });

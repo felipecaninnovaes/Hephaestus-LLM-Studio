@@ -143,7 +143,10 @@ export function buildDiffusionResume(
 		initialPreset.weights = undefined;
 		initialPreset.outputName = undefined;
 		if (typeof initialPreset.epochs === "number") {
-			initialPreset.epochs = Math.max(1, initialPreset.epochs - epochOffset);
+			const p = (job.params ?? {}) as Record<string, unknown>;
+			const priorOffset = asNumber(pick(p, "epochOffset", "epoch_offset"), 0);
+			const totalEpochs = priorOffset + initialPreset.epochs;
+			initialPreset.epochs = Math.max(1, totalEpochs - epochOffset);
 		}
 	}
 	return {

@@ -1,3 +1,11 @@
+## Fechado — Polimento visual WebUI (prints do usuário 2026-10-03)
+- **Branch:** `fix/web-ui-visual-polish` (a partir de `develop` `0aa5430`), ff em `develop`/`origin` em `fa2a46c`.
+- **Itens:** (1) "Acompanhar" ad-hoc em `JobHeroHeader.tsx` → `Button`; (2) texto vazando no `AutoLabelModal` (grade de provedores 2/3 col, sem quebra de palavra); (3) "Re-adotar"/"Revogar" no padrão em Orquestradores; (4) "Comparar A/B" vira `ImageSplitCompare` (sobreposição + divisor arrastável mouse/touch/teclado, vertical/horizontal).
+- [x] `@frontend` `65d1c94` + `fa2a46c`. Rodada 1 commitou 11 screenshots com imagens pessoais em `docs/screenshots/` → removidos via amend antes do push; depois o agente entrou em loop de screenshots e foi encerrado (o `next dev` dele em :3103 foi morto).
+- [x] `@reviewer` APROVA na rodada 2 (rodada 1: aba de grupo sem estado ativo após mudar de época; `initialPosition` sem clamp).
+- [x] Prints do usuário e `/tmp/web-ui-polish` apagados.
+- **Lição de processo:** screenshots de agentes sempre em `/tmp`, nunca no repo; uma rodada de prova visual por item.
+
 ## Fechado — Fix EACCES em `/outputs/.cache` com volumes novos no nó
 - **Branch:** `fix/orchestrator-engine-cache-dirs` (a partir de `develop` `1d0b9d4`).
 - **Sintoma (usuário, 2026-10-03 14:33 local):** `diffusion_train` no `orchestrator-gpu` morre com `[Errno 13] Permission denied: '/outputs/.cache'` logo após iniciar o container.

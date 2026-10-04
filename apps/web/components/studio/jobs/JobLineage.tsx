@@ -16,7 +16,7 @@ import {
   buildLineageLayout,
 } from "@/lib/jobLineage";
 import { getJobLineage } from "@/lib/jobs";
-import type { JobStatus, LineageGraph, LineageNode } from "@/types/studio";
+import type { JobStatus, LineageGraph } from "@/types/studio";
 
 interface JobLineageProps {
   jobId: string;

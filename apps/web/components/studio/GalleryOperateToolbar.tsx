@@ -1,6 +1,5 @@
 "use client";
 
-import React from "react";
 import { IconGrid, IconList, IconBoxSelect, IconCheck } from "@/components/icons";
 import { SubmodulePills } from "@/components/ui";
 import type { StudioClass } from "@/types/studio";

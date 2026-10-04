@@ -26,7 +26,6 @@ import {
 } from "@/lib/monitoring";
 import { Button, SegmentedControl, StatCard, GlassCard } from "@/components/ui";
 import { OrchestratorCard } from "@/components/composite/OrchestratorCard";
-import { MetricTile } from "@/components/ui/MetricTile";
 import { TruncatedText } from "@/components/ui/TruncatedText";
 import { formatBytes, formatRelativeTime } from "@/lib/format";
 import type { Dataset, Job, Telemetry } from "@/types/studio";

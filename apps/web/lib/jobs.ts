@@ -3,7 +3,6 @@ import type {
   DiffusionOptimizer,
   Job,
   JobAlertsResponse,
-  JobArtifact,
   JobArtifactsResponse,
   JobCleanupRequest,
   JobCleanupResponse,

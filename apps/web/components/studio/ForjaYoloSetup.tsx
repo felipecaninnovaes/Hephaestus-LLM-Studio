@@ -5,7 +5,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   IconAlertTriangle,
 	IconDatabase,
-  IconInfo,
 	IconPlay,
   IconZap,
 } from "@/components/icons";
@@ -29,7 +28,7 @@ import { formatBytes } from "@/lib/format";
 import { startYoloJob } from "@/lib/jobs";
 import { listModels } from "@/lib/models";
 import type { Orchestrator } from "@/lib/monitoring";
-import type { Dataset, Model, Telemetry, YoloAugment } from "@/types/studio";
+import type { Dataset, Model } from "@/types/studio";
 import { jobErrorMessage } from "@/types/studio";
 import GpuDeviceSelect from "./GpuDeviceSelect";
 import NodeSelect from "./NodeSelect";
@@ -83,7 +82,6 @@ export function estimateYoloVramGb(
 
 interface Props {
   onJobCreated?: (jobId: string) => void;
-  initialTelemetry?: Telemetry | null;
   initialDatasetId?: string;
   initialParams?: Partial<YoloHyperparametersValues>;
   initialWeightsId?: string;
@@ -163,8 +161,7 @@ export default function ForjaYoloSetup({
   }, [initialDatasetId, initialParams, initialWeightsId, initialOutputName]);
 
   // Telemetria de hardware e VRAM do nó
-  const { telemetry, nodeVramTotalGb, deviceLabel } = useHardwareTelemetry();
-
+  const { nodeVramTotalGb, deviceLabel } = useHardwareTelemetry();
   // Estimativa preditiva de VRAM em GB
   const estimatedVram = useMemo(
 		() =>

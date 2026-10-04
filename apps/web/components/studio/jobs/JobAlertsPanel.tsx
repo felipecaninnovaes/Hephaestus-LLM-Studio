@@ -1,6 +1,4 @@
 "use client";
-
-import { useState } from "react";
 import { IconAlertTriangle, IconCheck } from "@/components/icons";
 import { Badge } from "@/components/ui/Badge";
 import { Modal } from "@/components/ui/Modal";

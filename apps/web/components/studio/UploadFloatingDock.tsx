@@ -1,6 +1,5 @@
 "use client";
 
-import React from "react";
 import { IconUpload, IconCheck, IconAlertTriangle, IconX } from "@/components/icons";
 import type { UploadResultItem } from "@/types/studio";
 

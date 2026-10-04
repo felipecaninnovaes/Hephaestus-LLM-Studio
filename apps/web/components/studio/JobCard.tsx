@@ -1,20 +1,14 @@
 "use client";
 
 import type React from "react";
-import { Badge, jobStatusToBadgeVariant } from "@/components/ui/Badge";
-import { Button } from "@/components/ui/Button";
 import {
-  IconCheck,
-  IconChevronDown,
   IconDownload,
   IconRefresh,
   IconTarget,
-  IconTrash,
-  IconX,
   IconSparkles,
 } from "@/components/icons";
 import { formatBytes, formatDuration, formatRelativeTime } from "@/lib/format";
-import type { Job, JobArtifact, JobMetrics, JobStatus } from "@/types/studio";
+import type { Job, JobArtifact, JobStatus } from "@/types/studio";
 
 export const JOB_STATUS_CONFIG: Record<
   JobStatus,

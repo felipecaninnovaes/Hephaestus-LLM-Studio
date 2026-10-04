@@ -1,6 +1,6 @@
 "use client";
 
-import React, { forwardRef, type InputHTMLAttributes } from "react";
+import { forwardRef, type InputHTMLAttributes } from "react";
 
 export interface SliderProps
   extends Omit<InputHTMLAttributes<HTMLInputElement>, "type" | "onChange"> {

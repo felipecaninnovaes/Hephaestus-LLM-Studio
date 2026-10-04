@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
 	Suspense,
@@ -11,26 +10,20 @@ import {
 	useState,
 } from "react";
 import {
-	IconActivity,
 	IconCheck,
 	IconDatabase,
 	IconDownload,
 	IconLayers,
-	IconPlay,
 	IconRefresh,
 	IconSparkles,
 	IconTarget,
 	IconTrash,
-	IconX,
-	IconZap,
 } from "@/components/icons";
 import { AutolabelReviewModal } from "@/components/studio/AutolabelReviewModal";
 import { AutotrackerReviewModal } from "@/components/studio/AutotrackerReviewModal";
 import {
 	ConvergenceChart,
-	MetricSparkline,
 } from "@/components/studio/ConvergenceChart";
-import { JobListItem } from "@/components/studio/JobCard";
 import { JobCleanupDialog } from "@/components/studio/JobCleanupDialog";
 import { JobLogViewer } from "@/components/studio/JobLogViewer";
 import { JobProgressLive } from "@/components/studio/JobProgressLive";
@@ -46,8 +39,7 @@ import {
 	JobsHeader,
 	JobsSidebar,
 } from "@/components/studio/jobs";
-import { Badge, jobStatusToBadgeVariant } from "@/components/ui/Badge";
-import { Button, getButtonClasses } from "@/components/ui/Button";
+import { Button } from "@/components/ui/Button";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { Spinner } from "@/components/ui/Spinner";
 import { showToast } from "@/components/ui/Toast";
@@ -56,9 +48,8 @@ import { useJobLifecycle } from "@/hooks/useJobLifecycle";
 import { useJobMetricSeries } from "@/hooks/useJobMetricSeries";
 import { useJobTelemetry } from "@/hooks/useJobTelemetry";
 import { ApiError } from "@/lib/api";
-import { openActionCenter } from "@/lib/events";
-import { formatBytes, formatDuration } from "@/lib/format";
-import { imageProgressLabel, jobCapabilities } from "@/lib/jobCapabilities";
+import { formatDuration } from "@/lib/format";
+import { jobCapabilities } from "@/lib/jobCapabilities";
 import { trainingMetrics } from "@/lib/jobMetrics";
 import {
 	downloadJobArtifactsZip,
@@ -81,28 +72,6 @@ import type {
 
 const POLL_INTERVAL = 3000;
 
-const SPARK_COLORS: Record<string, string> = {
-	map50: "#34d399",
-	map5095: "#2dd4bf",
-	boxLoss: "#38bdf8",
-	clsLoss: "#818cf8",
-	dflLoss: "#fbbf24",
-	loss: "#818cf8",
-	lr: "#38bdf8",
-	step: "#a1a1aa",
-	epoch: "#a1a1aa",
-};
-
-const STATUS_LABEL: Record<JobStatus, string> = {
-	preparing: "Preparando",
-	queued: "Na fila",
-	dispatched: "Despachando",
-	running: "Executando",
-	cancelling: "Cancelando",
-	done: "Concluído",
-	failed: "Falhou",
-	cancelled: "Cancelado",
-};
 
 /** Status que indicam job em andamento (ativação de polling). */
 const ACTIVE_STATUSES: JobStatus[] = [

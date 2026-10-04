@@ -3,7 +3,6 @@
 import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Modal } from "@/components/ui";
 import { TruncatedText } from "@/components/ui";
 import type { Generation } from "@/types/studio";
 import { usePortalRoot } from "@/hooks/usePortalRoot";

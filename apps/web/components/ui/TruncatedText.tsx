@@ -1,4 +1,4 @@
-import React, { forwardRef, type HTMLAttributes } from "react";
+import { forwardRef, type HTMLAttributes } from "react";
 
 export interface TruncatedTextProps extends HTMLAttributes<HTMLElement> {
   text: string;

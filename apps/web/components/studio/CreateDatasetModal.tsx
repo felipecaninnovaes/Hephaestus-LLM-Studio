@@ -8,7 +8,6 @@ import {
   IconFolder,
   IconPlus,
   IconUpload,
-  IconX,
 } from "@/components/icons";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";

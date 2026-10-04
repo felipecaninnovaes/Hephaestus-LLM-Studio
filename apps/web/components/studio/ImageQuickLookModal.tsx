@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { getImage, putCaption } from "@/lib/images";
 import { copyToClipboard } from "@/lib/clipboard";
@@ -8,9 +8,7 @@ import { formatBytes } from "@/lib/format";
 import { Button } from "@/components/ui/Button";
 import {
   IconX,
-  IconChevronRight,
   IconTrash,
-  IconBoxSelect,
   IconCopy,
   IconTarget,
   IconSparkles,

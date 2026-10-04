@@ -1,6 +1,6 @@
 "use client";
 
-import React, { forwardRef, type InputHTMLAttributes } from "react";
+import { forwardRef, type InputHTMLAttributes } from "react";
 import { IconSearch, IconX } from "@/components/icons";
 import { Spinner } from "./Spinner";
 

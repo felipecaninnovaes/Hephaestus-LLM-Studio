@@ -12,27 +12,17 @@ import {
   adoptOrchestrator,
   revokeOrchestrator,
   orchestratorErrorMessage,
-  STATUS_LABELS,
-  STATUS_CLASSES,
-  nodeMetrics,
   type Orchestrator,
 } from "@/lib/monitoring";
 import { Button } from "@/components/ui/Button";
 import { OrchestratorCard } from "@/components/composite/OrchestratorCard";
-import { GlassCard } from "@/components/ui/GlassCard";
-import { MetricTile } from "@/components/ui/MetricTile";
-import { TruncatedText } from "@/components/ui/TruncatedText";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Modal } from "@/components/ui/Modal";
 import { Input } from "@/components/ui/Input";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { showToast } from "@/components/ui/Toast";
-import { formatRelativeTime } from "@/lib/format";
 
 /* ── Helpers ────────────────────────────────────────────────── */
-
-const fmt = (v: number | null | undefined, decimals = 1, suffix = ""): string =>
-  v != null ? `${v.toFixed(decimals)}${suffix}` : "—";
 
 /* ── Adopt Modal ────────────────────────────────────────────── */
 

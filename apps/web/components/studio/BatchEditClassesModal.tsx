@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { IconTag, IconTrash, IconPlus, IconSparkles } from "@/components/icons";
+import { IconTag, IconTrash, IconPlus } from "@/components/icons";
 import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
 import { Select, type SelectOption } from "@/components/ui/Select";

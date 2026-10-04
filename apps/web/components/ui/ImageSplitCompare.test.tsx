@@ -38,4 +38,24 @@ describe("ImageSplitCompare", () => {
     expect(html).toContain('aria-valuenow="40"');
     expect(html).toContain("cursor-ns-resize");
   });
+
+  it("clamps initialPosition when out of bounds (<0 and >100)", () => {
+    const htmlBelow = renderToString(
+      createElement(ImageSplitCompare, {
+        beforeSrc: "/sample-a.png",
+        afterSrc: "/sample-b.png",
+        initialPosition: -25,
+      })
+    );
+    expect(htmlBelow).toContain('aria-valuenow="0"');
+
+    const htmlAbove = renderToString(
+      createElement(ImageSplitCompare, {
+        beforeSrc: "/sample-a.png",
+        afterSrc: "/sample-b.png",
+        initialPosition: 140,
+      })
+    );
+    expect(htmlAbove).toContain('aria-valuenow="100"');
+  });
 });

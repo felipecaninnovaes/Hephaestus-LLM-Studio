@@ -45,7 +45,9 @@ export function ImageSplitCompare({
   className = "",
   aspectRatioClass = "aspect-square",
 }: ImageSplitCompareProps) {
-  const [position, setPosition] = useState(initialPosition);
+  const [position, setPosition] = useState(() =>
+    Math.min(Math.max(initialPosition, 0), 100),
+  );
   const [isDragging, setIsDragging] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -91,6 +93,10 @@ export function ImageSplitCompare({
       }
       setIsDragging(false);
     }
+  };
+
+  const handleLostPointerCapture = () => {
+    setIsDragging(false);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
@@ -146,6 +152,7 @@ export function ImageSplitCompare({
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerUp}
+      onLostPointerCapture={handleLostPointerCapture}
       className={`group relative select-none overflow-hidden rounded-xl border border-white/10 bg-black/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 touch-none ${
         isHorizontal ? "cursor-ew-resize" : "cursor-ns-resize"
       } ${aspectRatioClass} ${className}`.trim()}
@@ -188,12 +195,12 @@ export function ImageSplitCompare({
       {/* Linha divisora */}
       {isHorizontal ? (
         <div
-          className="pointer-events-none absolute inset-y-0 w-0.5 bg-brand-400/90 shadow-[0_0_8px_rgba(168,85,247,0.6)]"
+          className="pointer-events-none absolute inset-y-0 w-0.5 bg-brand-400/90 shadow-[0_0_8px_rgba(131,80,242,0.6)]"
           style={{ left: `${position}%`, transform: "translateX(-50%)" }}
         />
       ) : (
         <div
-          className="pointer-events-none absolute inset-x-0 h-0.5 bg-brand-400/90 shadow-[0_0_8px_rgba(168,85,247,0.6)]"
+          className="pointer-events-none absolute inset-x-0 h-0.5 bg-brand-400/90 shadow-[0_0_8px_rgba(131,80,242,0.6)]"
           style={{ top: `${position}%`, transform: "translateY(-50%)" }}
         />
       )}

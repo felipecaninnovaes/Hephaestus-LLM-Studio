@@ -242,7 +242,7 @@ export function SampleStepGallery({
                   type="button"
                   onClick={() => setSelectedGroupIndex(idx)}
                   className={`rounded-md px-2 py-1 font-mono text-3xs transition cursor-pointer shrink-0 ${
-                    idx === selectedGroupIndex
+                    gKey === activeGroupKey
                       ? "border border-brand-500/50 bg-brand-500/20 text-white font-semibold"
                       : "border border-white/10 bg-white/[0.03] text-zinc-400 hover:text-zinc-200"
                   }`}
@@ -271,8 +271,8 @@ export function SampleStepGallery({
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-1 text-2xs text-zinc-400 font-mono">
                 <span className="shrink-0 text-zinc-400">
                   {orientation === "horizontal"
-                    ? "Arraste esquerda ↔ direita ou use as setas"
-                    : "Arraste cima ↕ baixo ou use as setas"}
+                    ? "Arraste para esquerda/direita ou use as setas"
+                    : "Arraste para cima/baixo ou use as setas"}
                 </span>
                 <div className="flex items-center gap-2.5 shrink-0">
                   <button

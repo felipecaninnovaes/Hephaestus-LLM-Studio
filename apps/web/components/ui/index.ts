@@ -27,4 +27,5 @@ export * from "./Alert";
 export * from "./FormField";
 export * from "./Table";
 export * from "./Tooltip";
+export * from "./ImageSplitCompare";
 

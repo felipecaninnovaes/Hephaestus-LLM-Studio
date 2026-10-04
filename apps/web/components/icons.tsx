@@ -526,6 +526,14 @@ export function IconTag(props: IconProps) {
     </Base>
   );
 }
+export function IconColumns(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M12 3v18" />
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+    </Base>
+  );
+}
 
 
 

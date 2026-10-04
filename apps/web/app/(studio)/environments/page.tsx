@@ -343,7 +343,7 @@ export default function EnvironmentsPage() {
               <Button
                 type="button"
                 variant="primary"
-                size="sm"
+                size="md"
                 onClick={() => handleReAdopt(node)}
               >
                 Re-adotar
@@ -352,7 +352,7 @@ export default function EnvironmentsPage() {
               <Button
                 type="button"
                 variant="destructive"
-                size="sm"
+                size="md"
                 onClick={() => setRevokeTarget(node)}
               >
                 Revogar

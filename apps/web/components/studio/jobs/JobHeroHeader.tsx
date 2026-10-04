@@ -2,6 +2,7 @@
 
 import { IconActivity, IconTrash, IconX } from "@/components/icons";
 import { Badge, jobStatusToBadgeVariant } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
 import type { Job, JobAlert, JobStatus } from "@/types/studio";
 import { JobAlertsBadge } from "./JobAlertsPanel";
 
@@ -65,37 +66,40 @@ export function JobHeroHeader({
       </div>
       <div className="flex items-center gap-3">
         {focusMode ? (
-          <button
+          <Button
             type="button"
+            variant="secondary"
+            size="sm"
             onClick={() => onSetFocus(false)}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 min-h-[40px] text-2xs font-mono text-zinc-300 transition hover:bg-white/[0.06] active:scale-[0.985] cursor-pointer"
+            leftIcon={<IconX className="size-3.5" />}
             title="Sair do modo foco"
           >
-            <IconX className="size-3" />
             <span>Sair do foco</span>
-          </button>
+          </Button>
         ) : (
-          <button
+          <Button
             type="button"
+            variant="secondary"
+            size="sm"
             onClick={() => onSetFocus(true, selectedJob.id)}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 min-h-[40px] text-2xs font-mono text-zinc-300 transition hover:bg-white/[0.06] active:scale-[0.985] cursor-pointer"
+            leftIcon={<IconActivity className="size-3.5" />}
             title="Acompanhar este job em tela cheia"
           >
-            <IconActivity className="size-3" />
             <span>Acompanhar</span>
-          </button>
+          </Button>
         )}
         {!isActiveJob && (
-          <button
+          <Button
             type="button"
+            variant="destructive"
+            size="sm"
             onClick={() => onDelete(selectedJob)}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 min-h-[40px] text-2xs font-mono text-rose-300 transition hover:border-rose-500/40 hover:bg-rose-500/10 active:scale-[0.985] cursor-pointer"
+            leftIcon={<IconTrash className="size-3.5" />}
             aria-label="Excluir job"
             title="Excluir este job e seus artefatos"
           >
-            <IconTrash className="size-3" />
             <span>Excluir</span>
-          </button>
+          </Button>
         )}
         {selectedJobId && selectedJobId !== activeJobId && (
           <button

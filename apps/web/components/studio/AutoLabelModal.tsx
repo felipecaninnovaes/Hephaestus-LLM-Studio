@@ -619,12 +619,12 @@ export default function AutoLabelModal({
                   : "border-white/10 bg-white/[0.02] text-zinc-300 hover:border-white/20 hover:bg-white/[0.04]"
               }`}
             >
-              <div className="flex items-center justify-between w-full mb-1">
-                <span className="font-display font-semibold text-xs text-zinc-100 flex items-center gap-1.5">
-                  <IconServer className="size-3.5 text-sky-400" />
-                  OpenAI / Compatível
+              <div className="flex items-center justify-between gap-2 w-full mb-1">
+                <span className="font-display font-semibold text-xs text-zinc-100 flex items-center gap-1.5 min-w-0 truncate">
+                  <IconServer className="size-3.5 text-sky-400 shrink-0" />
+                  <span className="truncate">OpenAI / Compatível</span>
                 </span>
-                <span className="rounded-full bg-sky-500/20 border border-sky-500/30 px-1.5 py-0.5 font-mono text-4xs text-sky-300">
+                <span className="rounded-full bg-sky-500/20 border border-sky-500/30 px-1.5 py-0.5 font-mono text-4xs text-sky-300 shrink-0 whitespace-nowrap">
                   API Vision
                 </span>
               </div>
@@ -686,7 +686,7 @@ export default function AutoLabelModal({
               <span className="block font-mono text-2xs font-medium text-zinc-300">
                 Provedor / Arquitetura de API
               </span>
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                 {PROVIDER_PRESETS.map((p) => {
                   const active = selectedProvider === p.id;
                   return (
@@ -695,16 +695,16 @@ export default function AutoLabelModal({
                       type="button"
                       disabled={busy}
                       onClick={() => handleSelectProvider(p)}
-                      className={`flex flex-col items-start p-2 rounded-lg border text-left transition ${
+                      className={`flex flex-col justify-between p-2.5 rounded-lg border text-left transition min-w-0 ${
                         active
                           ? "border-sky-500/60 bg-sky-500/20 text-white shadow-sm ring-1 ring-sky-500/40"
                           : "border-white/10 bg-white/[0.02] text-zinc-400 hover:border-white/20 hover:text-zinc-200"
                       }`}
                     >
-                      <span className="font-mono font-semibold text-2xs leading-tight block">
+                      <span className="font-mono font-semibold text-2xs leading-snug block whitespace-nowrap overflow-hidden text-ellipsis">
                         {p.label}
                       </span>
-                      <span className="font-mono text-4xs text-zinc-500 mt-0.5">
+                      <span className="font-mono text-4xs text-zinc-400 mt-1 block">
                         {p.badge}
                       </span>
                     </button>

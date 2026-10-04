@@ -1,3 +1,8 @@
+## Fechado — CI web: erros de lint (biome) desde a multi-GPU
+- **Branch:** `fix/web-lint-exhaustive-deps` (de `develop` `ab707d3`). Os únicos 2 ERROS do `biome lint` (os ~100 warnings não falham o CI): `useExhaustiveDependencies` em `NodeSelect.tsx:39` (entrou na F2 `ceed82c`/`cf13c62`) e `UPlotChart.tsx:51`. O fix automático (adicionar a dependência) mudaria o comportamento: refetch a cada render e recriação do uPlot a cada ponto. Corrigido com o padrão latest-ref.
+- [x] `@frontend` `27db079`: biome 0 erros (exit 0), `next build` verde, `tsc` limpo, `bun test` 135/135. `@reviewer` APROVA sem achados.
+- Obs.: localmente, `npm run lint` tem a saída engolida por um wrapper de shell ("ESLint output (JSON parse failed…)"); o binário `node_modules/.bin/biome` direto funciona.
+
 ## Fechado — Polimento visual WebUI (prints do usuário 2026-10-03)
 - **Branch:** `fix/web-ui-visual-polish` (a partir de `develop` `0aa5430`), ff em `develop`/`origin` em `fa2a46c`.
 - **Itens:** (1) "Acompanhar" ad-hoc em `JobHeroHeader.tsx` → `Button`; (2) texto vazando no `AutoLabelModal` (grade de provedores 2/3 col, sem quebra de palavra); (3) "Re-adotar"/"Revogar" no padrão em Orquestradores; (4) "Comparar A/B" vira `ImageSplitCompare` (sobreposição + divisor arrastável mouse/touch/teclado, vertical/horizontal).

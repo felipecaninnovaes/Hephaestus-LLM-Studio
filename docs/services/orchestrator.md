@@ -38,7 +38,7 @@ O `orchestrator` implementa rotinas ativas de higienização tanto no boot quant
    - A parada é realizada graciosamente (`docker stop --time 5`) antes da remoção forçada (`docker rm --force`), prevenindo corrupção de artefatos em disco.
 3. **Sweep de Caches em Disco (`sweep_orphan_workdirs`):**
    - Inspeciona os subdiretórios de cache de datasets no diretório de trabalho (`workdir`).
-   - Apaga dados temporários com mais de 24 horas de inatividade para prevenir esgotamento de espaço em disco no nó.
+   - Apaga dados temporários com mais de 24 horas de inatividade para prevenir esgotamento de espaço em disco no nó, **exceto** `datasets-cache/<job_id>` de jobs ativos (chaves de `active_jobs`), que são sempre preservados independentemente do mtime.
 
 ## Spool Outbox Durável de Reports
 

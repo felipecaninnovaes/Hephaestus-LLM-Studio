@@ -5,6 +5,8 @@ engines:
   - { engine: clip, image: 'hephaestus/trainer-clip:local' }
 # Base: estável mais recente testado no build; registrar cuda/torch validados aqui.
 # Emenda G.7 (ADR-0010 D5): toolchain validada no smoke G.6 (TrueNAS, 2026-09-09).
-# Imagem GPU: hephaestus/trainer-yolo:gpu (Dockerfile.gpu, pytorch 2.6.0-cuda12.4-cudnn9 + ultralytics==8.3.253).
+# Base GPU compartilhada: hephaestus/engine-base-gpu:0.1.0 (engines/base-gpu/Dockerfile, pytorch 2.6.0-cuda12.4-cudnn9).
+# Imagem GPU YOLO: hephaestus/trainer-yolo:gpu (Dockerfile.gpu, ultralytics==8.3.253).
+# Imagem GPU Difusão: hephaestus/trainer-difusao:gpu (Dockerfile.gpu, diffusers@c2798cc7859f258c6cfc5b2460e82b6cac71f235).
 # Qwen-Image-2.1: transformers>=4.57.0 for native Qwen3-VL-8B support (cutover from diffusers fallback)
-toolchain_extended: { transformers: '4.57.0', qwen-vl-utils: '0.0.14' }
+toolchain_extended: { transformers: '4.57.0', qwen-vl-utils: '0.0.14', diffusers: 'c2798cc7859f258c6cfc5b2460e82b6cac71f235' }

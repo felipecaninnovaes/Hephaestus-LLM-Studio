@@ -98,6 +98,16 @@ services:
       start_period: 15s
     restart: unless-stopped
 
+  # Build-only: imagem base hephaestus/engine-base-gpu:0.1.0.
+  # Build: docker compose -p gpu --profile build build engine-base-gpu
+  engine-base-gpu:
+    profiles:
+      - build
+    image: hephaestus/engine-base-gpu:0.1.0
+    build:
+      context: ..
+      dockerfile: engines/base-gpu/Dockerfile
+
   # Build-only: imagem hephaestus/trainer-yolo:gpu (ADR-0010 D5).
   # Não inicia com `docker compose up` — só com `--profile build`.
   # Build: docker compose -p gpu --profile build build trainer-gpu

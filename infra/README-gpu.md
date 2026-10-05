@@ -205,14 +205,18 @@ ssh dockeruser@10.15.50.114 \
   'cd ~/Hephaestus-LLM-Studio && git pull'
 ```
 
-### 3.2 Build da imagem do trainer GPU
+### 3.2 Build das imagens GPU (base compartilhada primeiro)
+
+A base GPU (`hephaestus/engine-base-gpu:0.1.0`) compartilha PyTorch 2.6.0 CUDA 12.4 e libs apt, e deve ser construída antes das engines:
 
 ```bash
 ssh dockeruser@10.15.50.114 \
   'cd ~/Hephaestus-LLM-Studio && \
+   docker compose -p gpu --env-file infra/env.gpu -f infra/compose.gpu.yaml --profile build build engine-base-gpu && \
    docker compose -p gpu --env-file infra/env.gpu -f infra/compose.gpu.yaml --profile build build trainer-gpu'
 ```
 
+> Ou use o script `./scripts/build-gpu.sh` que garante a ordem correta de build automaticamente.
 > Build ~8-10GB (PyTorch + CUDA + ultralytics + peso yolo11n baked).
 > Tempo estimado: 5-15min dependendo da rede.
 > **Disco limitado (54GB livres):** buildar UMA imagem por vez (`orchestrator-gpu`

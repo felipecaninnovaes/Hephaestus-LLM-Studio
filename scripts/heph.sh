@@ -79,7 +79,7 @@ cmd_build() {
             ;;
         --gpu)
             echo "Compilando engines GPU..."
-            docker compose -f "$COMPOSE_FILE" --profile build build trainer-yolo trainer-difusao
+            "$ROOT_DIR/scripts/build-gpu.sh"
             ;;
         --all)
             echo "Compilando tudo..."

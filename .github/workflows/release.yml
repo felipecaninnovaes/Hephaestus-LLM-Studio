@@ -15,7 +15,38 @@ env:
   NAMESPACE: hephaestus
 
 jobs:
+  base-gpu:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push Base GPU
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: engines/base-gpu/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/${{ env.NAMESPACE }}-engine-base-gpu:latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/${{ env.NAMESPACE }}-engine-base-gpu:0.1.0
+            hephaestus/engine-base-gpu:latest
+            hephaestus/engine-base-gpu:0.1.0
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   build-push:
+    needs: [base-gpu]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -94,6 +125,8 @@ jobs:
           file: ${{ matrix.dockerfile }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            BASE_GPU_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/${{ env.NAMESPACE }}-engine-base-gpu:latest
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}

@@ -8,10 +8,16 @@ estocástico de ``latent_dist.sample()``. Depois do pré-compute o VAE sai da GP
 
 Layout: ``{output}/latents_cache/<namespace>/<key>.pt`` — sempre dentro do
 diretório do job (o orchestrator só abre permissões dos diretórios listados em
-``SHARED_ENGINE_CACHE_DIRS``; PITFALLS:57).
+``SHARED_ENGINE_CACHE_DIRS``; PITFALLS:57). O nome ``latents_cache`` é contrato:
+o cache é efêmero e removido pela purga pós-upload do orchestrator
+(``PURGE_STAGING_DIRS`` em ``services/orchestrator/src/storage/output_purge.rs``).
+
+Precisão (PITFALLS:78): ``mean`` é gravado em fp32 (scaling/shift/BN rodam em fp32
+como no caminho online; arredondar antes seria arredondamento duplo); ``std``
+fica no dtype de treino (só escala o ruído).
 
 * ``<namespace>`` = hash de arch + identidade do VAE (modelo, fingerprint dos
-  pesos, checkpoint custom) + dtype de armazenamento + versão do pré-processamento.
+  pesos, checkpoint custom) + dtype de armazenamento do ``std`` + versão do schema/pré-processamento.
 * ``<key>`` = hash de (conteúdo do arquivo de imagem, largura, altura do bucket).
 
 O dataset atual não aplica crop/flip aleatório por época (resize bilinear
@@ -29,7 +35,8 @@ from typing import Any, Callable, Iterator
 
 from trainer_difusao.common_pkg.metrics import _emit_metric
 
-LATENT_CACHE_SCHEMA_VERSION = 1
+# v2: ``mean`` passou a ser gravado em fp32 (v1 arredondava para o dtype de treino).
+LATENT_CACHE_SCHEMA_VERSION = 2
 LATENT_CACHE_DIRNAME = "latents_cache"
 # Pré-processamento aplicado por DiffusionDataset.load_pixel_values: RGB, resize
 # bilinear para o bucket, normalização [-1, 1]. Mudar isso invalida o cache.
@@ -199,13 +206,13 @@ class LatentCache:
             return None
 
     def put(self, key: str, mean: Any, std: Any) -> bool:
-        """Grava atomicamente (tmp + rename). Retorna False em falha de escrita."""
+        """Grava atomicamente (tmp + rename); ``mean`` sempre em fp32. False em falha de escrita."""
         try:
             import torch
 
             self.dir.mkdir(parents=True, exist_ok=True)
             tmp = self.dir / f".tmp_{key}.pt"
-            torch.save({"mean": mean.detach().cpu(), "std": std.detach().cpu()}, tmp)
+            torch.save({"mean": mean.detach().cpu().float(), "std": std.detach().cpu()}, tmp)
             os.replace(tmp, self.path_for(key))
             return True
         except Exception as exc:
@@ -265,7 +272,7 @@ def prepare_latent_cache(
                     with torch.no_grad():
                         px = ds.load_pixel_values(idx).unsqueeze(0).to(device)
                         mean, std = encode_dist(px)
-                    if not cache.put(key, mean[0].to(dtype), std[0].to(dtype)):
+                    if not cache.put(key, mean[0], std[0].to(dtype)):
                         raise RuntimeError("falha de escrita do cache de latents")
                 done += 1
                 if done % every == 0 or done == total:

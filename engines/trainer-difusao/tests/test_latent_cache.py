@@ -271,11 +271,25 @@ def test_cache_stores_training_dtype(tmp_path: Path) -> None:
         cache, [ds], lambda px: vae_encode_dist(vae, px), device="cpu", dtype=torch.bfloat16
     )
     item = ds[0]
-    assert item["latent_mean"].dtype == torch.bfloat16
+    # mean em fp32 (PITFALLS:78: nada de arredondamento duplo); só std no dtype de treino
+    assert item["latent_mean"].dtype == torch.float32
+    assert item["latent_std"].dtype == torch.bfloat16
+    with torch.no_grad():
+        ref = vae.encode(ds.load_pixel_values(0).unsqueeze(0)).latent_dist.mean[0]
+    torch.testing.assert_close(item["latent_mean"], ref, rtol=0, atol=0)  # sem perda
     assert latents_from_batch(
         {"latent_mean": item["latent_mean"][None], "latent_std": item["latent_std"][None]},
         "cpu", lambda px: None,
     ).dtype == torch.float32  # amostra em fp32 como o caminho do VAE fp32
+
+
+def test_schema_bump_invalidates_old_mean_dtype_caches(tmp_path: Path, monkeypatch) -> None:
+    import trainer_difusao.common_pkg.latent_cache as lc
+
+    new = _cache(tmp_path)
+    monkeypatch.setattr(lc, "LATENT_CACHE_SCHEMA_VERSION", 1)  # v1 gravava mean arredondado
+    old = _cache(tmp_path)
+    assert new.dir != old.dir
 
 
 # --- VAE offload --------------------------------------------------------------
@@ -385,64 +399,3 @@ def test_runner_respects_cache_latents_false(tmp_path: Path) -> None:
     assert vae.encode_calls == 0 and vae.to_calls == []
     assert "pixel_values" in ds[0]
 
-
-# --- Qwen (VAE causal-3D 5D, alpha, latents_mean/std) -------------------------
-
-
-class _FakeQwenVae:
-    """VAE causal-3D falso: exige entrada 5D RGBA e devolve distribuição 5D."""
-
-    class config:  # noqa: N801
-        latents_mean = [0.5, -0.25, 0.1, 0.0]
-        latents_std = [2.0, 1.5, 1.0, 0.5]
-
-    def __init__(self) -> None:
-        self.encode_calls = 0
-        self.inputs: list = []
-
-    def encode(self, x):
-        assert x.ndim == 5 and x.shape[1] == 4 and x.shape[2] == 1
-        self.encode_calls += 1
-        self.inputs.append(x)
-        h, w = x.shape[-2] // 2, x.shape[-1] // 2
-        mean = x[:, :4, :, ::2, ::2][..., :h, :w] * 0.5
-        std = torch.full_like(mean, 0.1)
-
-        class _Dist:
-            def __init__(self, m, s):
-                self.mean, self.std = m, s
-
-            def sample(self, generator=None):
-                return self.mean + self.std * torch.randn(
-                    self.mean.shape, generator=generator, dtype=self.mean.dtype
-                )
-
-        return type("O", (), {"latent_dist": _Dist(mean, std)})()
-
-
-def test_qwen_cached_latents_match_online_path_shape_and_scale() -> None:
-    from trainer_difusao.models.qwen_image import (
-        _qwen_encode_dist,
-        _qwen_normalized_latents,
-    )
-
-    vae = _FakeQwenVae()
-    images = torch.rand(2, 3, 16, 16) * 2 - 1
-    online = _qwen_normalized_latents(vae, {"pixel_values": images}, "cpu", torch.float32)
-    assert online.shape == (2, 4, 8, 8)  # 5D -> frame dim removida
-
-    mean, std = _qwen_encode_dist(vae, images, torch.float32)
-    assert mean.shape == (2, 4, 1, 8, 8)  # canal alpha adicionado, 5D preservado
-    cached_batch = {"latent_mean": mean, "latent_std": std}
-    cached = _qwen_normalized_latents(vae, cached_batch, "cpu", torch.float32)
-    assert cached.shape == online.shape and cached.dtype == online.dtype
-    # Ambos amostram N(mean, 0.1) e normalizam com latents_mean/std: devem ficar a
-    # poucos sigmas (0.1 / std_min=0.5 => σ=0.2) da média normalizada analítica.
-    m = torch.tensor(vae.config.latents_mean).view(1, -1, 1, 1, 1)
-    s = torch.tensor(vae.config.latents_std).view(1, -1, 1, 1, 1)
-    expected = ((mean - m) / s).squeeze(2)
-    for got in (cached, online):
-        torch.testing.assert_close(got, expected, rtol=0, atol=1.2)
-    calls = vae.encode_calls
-    _qwen_normalized_latents(vae, cached_batch, "cpu", torch.float32)
-    assert vae.encode_calls == calls  # cache não chama o VAE

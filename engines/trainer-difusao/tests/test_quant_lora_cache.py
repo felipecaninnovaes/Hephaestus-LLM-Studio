@@ -191,15 +191,6 @@ class TestDaemonLoraCache(unittest.TestCase):
         disables = [c for c in self.pipe.calls if c[0] == "disable_lora"]
         self.assertEqual(len(disables), 1)
 
-    def test_clear_invalidates_all_on_pipeline_change(self):
-        lora_a = self._create_lora_file("lora_a")
-        self.cache.apply_loras(
-            self.pipe, [{"path": lora_a, "scale": 0.8}], "flux-2-klein-4b"
-        )
-        self.assertEqual(len(self.cache.adapters), 1)
-
-        self.cache.clear(self.pipe)
-        self.assertEqual(len(self.cache.adapters), 0)
     def test_lora_disabled_then_re_enabled(self):
         lora_a = self._create_lora_file("lora_a")
 

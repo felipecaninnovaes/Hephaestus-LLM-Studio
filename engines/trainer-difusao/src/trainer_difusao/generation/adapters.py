@@ -4,6 +4,7 @@ Evita unload/reload repetidos de pesos LoRA entre requisições (ADR-0023).
 """
 from __future__ import annotations
 
+import hashlib
 import os
 from collections import OrderedDict
 from typing import Any, List
@@ -38,8 +39,6 @@ class DaemonLoraCache:
             mtime = st.st_mtime_ns
         except OSError:
             return f"{path_str}#unknown"
-
-        import hashlib
 
         h = hashlib.md5()
         try:

@@ -458,6 +458,37 @@ class TrainingLoopRunner:
         diag_tracker = DiagnosticsTracker(lora_interval_steps=max(1, total_train_steps // max(1, tcfg.epochs)))
         last_grad_norm: float = 0.0
 
+        # Sincroniza perdas e grad_norms pendentes (fecha sobre os acumuladores da época corrente)
+        def _sync_unconsumed() -> float:
+            nonlocal epoch_loss, last_loss_val, last_grad_norm
+            if not unconsumed_losses:
+                return last_loss_val if last_loss_val is not None else 0.0
+
+            loss_vals = [float(t.item()) for t in unconsumed_losses]
+            unconsumed_losses.clear()
+
+            # Mapeia grad_norms acumulados por índice de micro-step relativo
+            # unconsumed_grad_norms contém (micro_idx, grad_norm_raw)
+            gn_map: dict[int, float] = {}
+            for u_idx, raw_gn in unconsumed_grad_norms:
+                if hasattr(raw_gn, "item"):
+                    gn_val = float(raw_gn.item())
+                elif raw_gn is not None:
+                    gn_val = float(raw_gn)
+                else:
+                    gn_val = 0.0
+                gn_map[u_idx] = gn_val
+                last_grad_norm = gn_val
+            unconsumed_grad_norms.clear()
+
+            for i, l_val in enumerate(loss_vals):
+                g_norm = gn_map.get(i)
+                diag_tracker.observe_step(l_val, g_norm)
+                if not math.isnan(l_val) and not math.isinf(l_val):
+                    epoch_loss += l_val
+            last_loss_val = loss_vals[-1]
+            return last_loss_val
+
         # Loop principal de treino
         for epoch_idx in range(1, tcfg.epochs + 1):
             epoch = epoch_idx + tcfg.epoch_offset
@@ -495,37 +526,6 @@ class TrainingLoopRunner:
                 is_accum_step = (
                     steps_in_epoch % tcfg.grad_accum == 0 or steps_in_epoch == len(dataloader)
                 )
-
-                # Função auxiliar para sincronizar perdas e grad_norms pendentes
-                def _sync_unconsumed() -> float:
-                    nonlocal epoch_loss, last_loss_val, last_grad_norm
-                    if not unconsumed_losses:
-                        return last_loss_val if last_loss_val is not None else 0.0
-
-                    loss_vals = [float(t.item()) for t in unconsumed_losses]
-                    unconsumed_losses.clear()
-
-                    # Mapeia grad_norms acumulados por índice de micro-step relativo
-                    # unconsumed_grad_norms contém (micro_idx, grad_norm_raw)
-                    gn_map: dict[int, float] = {}
-                    for u_idx, raw_gn in unconsumed_grad_norms:
-                        if hasattr(raw_gn, "item"):
-                            gn_val = float(raw_gn.item())
-                        elif raw_gn is not None:
-                            gn_val = float(raw_gn)
-                        else:
-                            gn_val = 0.0
-                        gn_map[u_idx] = gn_val
-                        last_grad_norm = gn_val
-                    unconsumed_grad_norms.clear()
-
-                    for i, l_val in enumerate(loss_vals):
-                        g_norm = gn_map.get(i)
-                        diag_tracker.observe_step(l_val, g_norm)
-                        if not math.isnan(l_val) and not math.isinf(l_val):
-                            epoch_loss += l_val
-                    last_loss_val = loss_vals[-1]
-                    return last_loss_val
 
                 if is_accum_step:
                     grad_norm_raw = torch.nn.utils.clip_grad_norm_(comp["trainable_module"].parameters(), 1.0)

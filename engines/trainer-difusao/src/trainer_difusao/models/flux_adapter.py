@@ -21,6 +21,7 @@ from trainer_difusao.common import (
     _precompute_text_cache_with_cleanup,
     _validate_train_aux,
 )
+from trainer_difusao.common_pkg.latent_cache import batch_pixel_hw, batch_size_of, latents_from_batch
 from trainer_difusao.models.loop import LoraTrainConfig, ModelComponents, parse_lora_train_config
 from trainer_difusao.models.flux_pkg import (
     _custom_checkpoint_identity,
@@ -686,13 +687,16 @@ class FluxAdapter:
         latents_mean = comp["extra"]["latents_mean"]
         latents_std = comp["extra"]["latents_std"]
 
-        pixel_values = batch["pixel_values"].to(device)
         captions = batch["prompt"]
-        bsz = pixel_values.shape[0]
+        bsz = batch_size_of(batch)
+        pixel_h, pixel_w = batch_pixel_hw(batch)
 
-        # Codifica imagens com VAE (em float32 para evitar instabilidade numérica)
+        # Latents amostrados de mean/std em cache (VAE fora da GPU) ou, sem cache,
+        # codificados com o VAE em float32 para evitar instabilidade numérica
         with torch.no_grad():
-            latents = vae.encode(pixel_values.float()).latent_dist.sample()
+            latents = latents_from_batch(
+                batch, device, lambda px: vae.encode(px.float()).latent_dist.sample()
+            )
 
             if is_flux2:
                 latents = _patchify_latents_flux2(latents)
@@ -721,8 +725,8 @@ class FluxAdapter:
                 packed_latents = _pack_latents(latents)
                 img_ids = _prepare_latent_image_ids(
                     bsz,
-                    pixel_values.shape[2],
-                    pixel_values.shape[3],
+                    pixel_h,
+                    pixel_w,
                     device,
                     dtype,
                 )

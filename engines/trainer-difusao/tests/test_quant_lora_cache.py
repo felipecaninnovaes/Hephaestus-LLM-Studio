@@ -37,7 +37,12 @@ class FakePipe:
 
     def disable_lora(self):
         self.calls.append(("disable_lora",))
+        self.lora_enabled = False
         self.active_adapters = []
+
+    def enable_lora(self):
+        self.calls.append(("enable_lora",))
+        self.lora_enabled = True
 
     def delete_adapters(self, name):
         self.calls.append(("delete_adapters", name))
@@ -49,8 +54,6 @@ class FakePipe:
         self.calls.append(("unload_lora_weights",))
         self.adapters.clear()
         self.active_adapters.clear()
-
-
 class TestQuantCache(unittest.TestCase):
     def test_quant_cache_hit_and_version(self):
         with tempfile.TemporaryDirectory() as td:
@@ -187,6 +190,96 @@ class TestDaemonLoraCache(unittest.TestCase):
         self.assertEqual(self.pipe.active_adapters, [])
         disables = [c for c in self.pipe.calls if c[0] == "disable_lora"]
         self.assertEqual(len(disables), 1)
+
+    def test_clear_invalidates_all_on_pipeline_change(self):
+        lora_a = self._create_lora_file("lora_a")
+        self.cache.apply_loras(
+            self.pipe, [{"path": lora_a, "scale": 0.8}], "flux-2-klein-4b"
+        )
+        self.assertEqual(len(self.cache.adapters), 1)
+
+        self.cache.clear(self.pipe)
+        self.assertEqual(len(self.cache.adapters), 0)
+    def test_lora_disabled_then_re_enabled(self):
+        lora_a = self._create_lora_file("lora_a")
+
+        # 1. Req com LoRA
+        self.cache.apply_loras(
+            self.pipe, [{"path": lora_a, "scale": 0.8}], "flux-2-klein-4b"
+        )
+        self.assertEqual(self.pipe.active_adapters, ["cached_lora_1"])
+
+        # 2. Req sem LoRA (desativa)
+        self.cache.apply_loras(self.pipe, [], "flux-2-klein-4b")
+        self.assertEqual(self.pipe.active_adapters, [])
+        self.assertFalse(getattr(self.pipe, "lora_enabled", True))
+
+        # 3. Req seguinte com LoRA -> deve chamar enable_lora() e reativar adaptador!
+        self.cache.apply_loras(
+            self.pipe, [{"path": lora_a, "scale": 1.0}], "flux-2-klein-4b"
+        )
+        self.assertEqual(self.pipe.active_adapters, ["cached_lora_1"])
+        self.assertTrue(getattr(self.pipe, "lora_enabled", False))
+        enables = [c for c in self.pipe.calls if c[0] == "enable_lora"]
+        self.assertGreaterEqual(len(enables), 1)
+
+    def test_multi_lora_exceeding_capacity_in_single_request(self):
+        # Capacidade = 2, mas a requisição pede 3 adaptadores simultâneos
+        lora_a = self._create_lora_file("lora_a")
+        lora_b = self._create_lora_file("lora_b")
+        lora_c = self._create_lora_file("lora_c")
+
+        self.cache.apply_loras(
+            self.pipe,
+            [
+                {"path": lora_a, "scale": 0.8},
+                {"path": lora_b, "scale": 0.5},
+                {"path": lora_c, "scale": 0.3},
+            ],
+            "flux-2-klein-4b",
+        )
+        # Nenhum dos 3 deve ter sido evictado durante o carregamento da requisição
+        self.assertEqual(len(self.pipe.active_adapters), 3)
+        deletes = [c for c in self.pipe.calls if c[0] == "delete_adapters"]
+        self.assertEqual(len(deletes), 0)
+
+    def test_delete_adapter_singular_fallback(self):
+        class SingularPipe:
+            def __init__(self):
+                self.calls = []
+                self.adapters = {}
+                self.transformer = self
+
+            def load_lora_weights(self, path, adapter_name):
+                self.calls.append(("load_lora_weights", path, adapter_name))
+                self.adapters[adapter_name] = path
+
+            def set_adapters(self, names, scales=None):
+                self.calls.append(("set_adapters", list(names)))
+
+            def delete_adapter(self, name):
+                self.calls.append(("delete_adapter", name))
+                self.adapters.pop(name, None)
+
+        sing_pipe = SingularPipe()
+        cache = DaemonLoraCache(capacity=1)
+        la = self._create_lora_file("la")
+        lb = self._create_lora_file("lb")
+        cache.apply_loras(sing_pipe, [{"path": la, "scale": 1.0}], "sdxl")
+        cache.apply_loras(sing_pipe, [{"path": lb, "scale": 1.0}], "sdxl")
+        deletes = [c for c in sing_pipe.calls if c[0] == "delete_adapter"]
+        self.assertEqual(len(deletes), 1)
+
+    def test_img2img_runner_inherits_lora_adapters(self):
+        # Simula o fluxo do runner: pipe base carregado com LoRA, img2img cria novo wrapper e herda
+        base_pipe = FakePipe()
+        lora_a = self._create_lora_file("lora_a")
+        self.cache.apply_loras(base_pipe, [{"path": lora_a, "scale": 0.75}], "sdxl")
+
+        # Img2Img novo wrapper sobre components
+        img2img_pipe = FakePipe()
+        self.cache.apply_loras(img2img_pipe, [{"path": lora_a, "scale": 0.75}], "sdxl")
+        self.assertEqual(img2img_pipe.active_adapters, ["cached_lora_1"])
 
     def test_clear_invalidates_all_on_pipeline_change(self):
         lora_a = self._create_lora_file("lora_a")

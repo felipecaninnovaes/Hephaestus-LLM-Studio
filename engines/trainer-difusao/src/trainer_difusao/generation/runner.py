@@ -302,6 +302,8 @@ def _real_generate(
             f"(cache preservado), strength={init_strength}",
             flush=True,
         )
+        if call_pipe is not pipe:
+            lora_cache.apply_loras(call_pipe, loras_effective, base_model)
         try:
             from PIL import Image as _PILImage
 

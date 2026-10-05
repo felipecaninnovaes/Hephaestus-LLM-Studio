@@ -78,9 +78,10 @@ class DaemonLoraCache:
         if not loras_effective:
             self._disable_adapters(pipe, base_model)
             return
-
+        effective_capacity = max(self.capacity, len(loras_effective))
         needed_names: List[str] = []
         needed_scales: List[float] = []
+        active_keys = {self.compute_file_fingerprint(l["path"]) for l in loras_effective}
 
         for lora in loras_effective:
             path = lora["path"]
@@ -92,12 +93,20 @@ class DaemonLoraCache:
                 self.adapters.move_to_end(name)
                 self.adapters[name]["scale"] = scale
             else:
-                while len(self.adapters) >= self.capacity:
-                    evict_name, evict_info = self.adapters.popitem(last=False)
+                while len(self.adapters) >= effective_capacity:
+                    # Evict LRU that is NOT part of the currently active request
+                    evict_candidate = None
+                    for cand_name, cand_info in self.adapters.items():
+                        if cand_info["key"] not in active_keys:
+                            evict_candidate = cand_name
+                            break
+                    if evict_candidate is None:
+                        break
+                    evict_info = self.adapters.pop(evict_candidate)
                     self.key_to_name.pop(evict_info["key"], None)
-                    self._delete_adapter(pipe, base_model, evict_name)
+                    self._delete_adapter(pipe, base_model, evict_candidate)
                     print(
-                        f"[DIFFUSION-GEN] LRU eviction de LoRA: {evict_name} ({evict_info['path']})",
+                        f"[DIFFUSION-GEN] LRU eviction de LoRA: {evict_candidate} ({evict_info['path']})",
                         flush=True,
                     )
 
@@ -116,7 +125,6 @@ class DaemonLoraCache:
             needed_scales.append(scale)
 
         self._set_active_adapters(pipe, base_model, needed_names, needed_scales)
-
     def _delete_adapter(self, pipe: Any, base_model: str, name: str) -> None:
         """Deleta adaptador do pipeline ou do transformer se suportado."""
         target = (
@@ -133,12 +141,29 @@ class DaemonLoraCache:
                     f"[DIFFUSION-GEN] [AVISO] Falha ao deletar adaptador {name} em {type(target).__name__}: {e}",
                     flush=True,
                 )
+        elif hasattr(target, "delete_adapter"):
+            try:
+                target.delete_adapter(name)
+                return
+            except Exception as e:
+                print(
+                    f"[DIFFUSION-GEN] [AVISO] Falha ao deletar adaptador {name} em {type(target).__name__} (delete_adapter): {e}",
+                    flush=True,
+                )
         if hasattr(pipe, "delete_adapters") and pipe is not target:
             try:
                 pipe.delete_adapters(name)
             except Exception as e:
                 print(
                     f"[DIFFUSION-GEN] [AVISO] Falha ao deletar adaptador {name} no pipe: {e}",
+                    flush=True,
+                )
+        elif hasattr(pipe, "delete_adapter") and pipe is not target:
+            try:
+                pipe.delete_adapter(name)
+            except Exception as e:
+                print(
+                    f"[DIFFUSION-GEN] [AVISO] Falha ao deletar adaptador {name} no pipe (delete_adapter): {e}",
                     flush=True,
                 )
 
@@ -149,17 +174,14 @@ class DaemonLoraCache:
             if (base_model == "flux-2-klein-4b" and hasattr(pipe, "transformer"))
             else pipe
         )
-        applied = False
         if hasattr(target, "disable_lora"):
             try:
                 target.disable_lora()
-                applied = True
             except Exception:
                 pass
-        if not applied and hasattr(target, "set_adapters"):
+        if hasattr(target, "set_adapters"):
             try:
                 target.set_adapters([])
-                applied = True
             except Exception:
                 pass
         if hasattr(pipe, "disable_lora") and pipe is not target:
@@ -176,7 +198,6 @@ class DaemonLoraCache:
             "[DIFFUSION-GEN] Requisição sem LoRA: adaptadores desativados (disable_lora/set_adapters([])).",
             flush=True,
         )
-
     def _set_active_adapters(
         self, pipe: Any, base_model: str, names: List[str], scales: List[float]
     ) -> None:
@@ -186,6 +207,17 @@ class DaemonLoraCache:
             if (base_model == "flux-2-klein-4b" and hasattr(pipe, "transformer"))
             else pipe
         )
+        if hasattr(target, "enable_lora"):
+            try:
+                target.enable_lora()
+            except Exception:
+                pass
+        if hasattr(pipe, "enable_lora") and pipe is not target:
+            try:
+                pipe.enable_lora()
+            except Exception:
+                pass
+
         if hasattr(target, "set_adapters"):
             try:
                 target.set_adapters(names, scales)
@@ -214,6 +246,4 @@ class DaemonLoraCache:
                 f"[DIFFUSION-GEN] Multi-LoRA aplicado via pipe.set_adapters: {names}",
                 flush=True,
             )
-
-
 __all__ = ["DaemonLoraCache"]

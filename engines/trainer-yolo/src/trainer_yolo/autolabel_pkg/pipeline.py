@@ -119,90 +119,97 @@ def _autolabel_pipeline(cfg: dict, output_dir: Path) -> None:
                     raise exc
             return fname, caption, max(0.0, time.monotonic() - t_start)
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=concurrency)
-        futures: dict[str, concurrent.futures.Future] = {}
+        futures: dict[concurrent.futures.Future, str] = {}
         remaining_to_submit = list(sorted_filenames)
 
-        completed_results: dict[str, str] = {}
+        # Preenche a janela inicial com até 'concurrency' tarefas em voo
+        while len(futures) < concurrency and remaining_to_submit:
+            fname_next = remaining_to_submit.pop(0)
+            f_init = executor.submit(_label_worker, fname_next)
+            futures[f_init] = fname_next
+            if remaining_to_submit:
+                time.sleep(0.005)
+        buffer_completed: dict[str, str] = {}
+        next_flush_idx = 0
         step_num = 0
         last_completion_time = time.monotonic()
 
         with open(captions_path, "w", encoding="utf-8") as f:
             try:
-                # Processa a primeira imagem sequencialmente se ainda não submetida
-                # para garantir validação inicial de credenciais/endpoint e progresso imediato
-                if remaining_to_submit:
-                    first_fname = remaining_to_submit.pop(0)
-                    try:
-                        fname, caption, _ = _label_worker(first_fname)
-                    except Exception as exc:
-                        _die(f"AutoLabel OpenAI falhou na imagem '{first_fname}': {exc}")
-
-                    completed_results[fname] = caption
-                    step_num += 1
-                    now = time.monotonic()
-                    dt_completion = max(0.0, now - last_completion_time)
-                    last_completion_time = now
-                    step_time_ema = dt_completion
-                    remaining_imgs = total_imgs - step_num
-                    eta_s = int(round(step_time_ema * remaining_imgs)) if remaining_imgs > 0 else 0
-                    progress = 0.05 + 0.94 * (step_num / total_imgs)
-                    emitter.emit(
-                        phase="labeling",
-                        message=f"Anotando imagem {step_num}/{total_imgs}: {fname}",
-                        progress=progress,
-                        step=step_num,
-                        total_steps=total_imgs,
-                        step_time_seconds=round(step_time_ema, 4),
-                        eta_seconds=eta_s,
+                while futures:
+                    done, _ = concurrent.futures.wait(
+                        futures.keys(), return_when=concurrent.futures.FIRST_COMPLETED
                     )
+                    # Processa as tarefas concluídas priorizando a ordem de sorted_filenames se múltiplos concluírem no mesmo ciclo
+                    sorted_done = sorted(done, key=lambda f: sorted_filenames.index(futures[f]))
+                    for fut in sorted_done:
+                        fname_orig = futures.pop(fut)
+                        try:
+                            fname, caption, _ = fut.result()
+                        except Exception as exc:
+                            executor.shutdown(wait=False, cancel_futures=True)
+                            _die(f"AutoLabel OpenAI falhou na imagem '{fname_orig}': {exc}")
 
-                # Para as imagens restantes, executa no pool com concorrência configurada
-                for fname_expected in list(remaining_to_submit):
-                    while len(futures) < concurrency and remaining_to_submit:
-                        fname_next = remaining_to_submit.pop(0)
-                        futures[fname_next] = executor.submit(_label_worker, fname_next)
+                        buffer_completed[fname] = caption
+                        step_num += 1
 
-                    fut = futures.pop(fname_expected)
-                    try:
-                        fname, caption, _ = fut.result()
-                    except Exception as exc:
-                        executor.shutdown(wait=False, cancel_futures=True)
-                        _die(f"AutoLabel OpenAI falhou na imagem '{fname_expected}': {exc}")
+                        # Escreve em captions.jsonl o prefixo contíguo na ordem de sorted_filenames
+                        while next_flush_idx < total_imgs:
+                            expected_f = sorted_filenames[next_flush_idx]
+                            if expected_f in buffer_completed:
+                                line = json.dumps(
+                                    {"filename": expected_f, "caption": buffer_completed[expected_f]},
+                                    ensure_ascii=False,
+                                )
+                                f.write(line + "\n")
+                                f.flush()
+                                next_flush_idx += 1
+                            else:
+                                break
 
-                    completed_results[fname] = caption
-                    step_num += 1
-                    now = time.monotonic()
-                    dt_completion = max(0.0, now - last_completion_time)
-                    last_completion_time = now
+                        now = time.monotonic()
+                        dt_completion = max(0.0, now - last_completion_time)
+                        last_completion_time = now
 
-                    if step_time_ema is None:
-                        step_time_ema = dt_completion
-                    else:
-                        step_time_ema = 0.2 * dt_completion + 0.8 * step_time_ema
+                        if step_time_ema is None:
+                            step_time_ema = dt_completion
+                        else:
+                            step_time_ema = 0.2 * dt_completion + 0.8 * step_time_ema
 
-                    remaining_imgs = total_imgs - step_num
-                    eta_s = int(round(step_time_ema * remaining_imgs)) if remaining_imgs > 0 else 0
-                    progress = 0.05 + 0.94 * (step_num / total_imgs)
+                        remaining_imgs = total_imgs - step_num
+                        eta_s = int(round(step_time_ema * remaining_imgs)) if remaining_imgs > 0 else 0
+                        progress = 0.05 + 0.94 * (step_num / total_imgs)
 
-                    emitter.emit(
-                        phase="labeling",
-                        message=f"Anotando imagem {step_num}/{total_imgs}: {fname}",
-                        progress=progress,
-                        step=step_num,
-                        total_steps=total_imgs,
-                        step_time_seconds=round(step_time_ema, 4),
-                        eta_seconds=eta_s,
-                    )
+                        emitter.emit(
+                            phase="labeling",
+                            message=f"Anotando imagem {step_num}/{total_imgs}: {fname}",
+                            progress=progress,
+                            step=step_num,
+                            total_steps=total_imgs,
+                            step_time_seconds=round(step_time_ema, 4),
+                            eta_seconds=eta_s,
+                        )
+
+                        # Submete novas tarefas para manter a janela de até 'concurrency' em voo
+                        while len(futures) < concurrency and remaining_to_submit:
+                            fname_new = remaining_to_submit.pop(0)
+                            f_sub = executor.submit(_label_worker, fname_new)
+                            futures[f_sub] = fname_new
             finally:
                 executor.shutdown(wait=False, cancel_futures=True)
 
-            for fname in sorted_filenames:
-                if fname in completed_results:
+            # Flush final caso reste algo no buffer
+            while next_flush_idx < total_imgs:
+                expected_f = sorted_filenames[next_flush_idx]
+                if expected_f in buffer_completed:
                     line = json.dumps(
-                        {"filename": fname, "caption": completed_results[fname]},
+                        {"filename": expected_f, "caption": buffer_completed[expected_f]},
                         ensure_ascii=False,
                     )
                     f.write(line + "\n")
+                    next_flush_idx += 1
+                else:
+                    break
             f.flush()
     else:
         with open(captions_path, "w", encoding="utf-8") as f:

@@ -588,3 +588,85 @@ def test_autolabel_retains_progress_on_midway_die(tmp_path: Path):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_autolabel_openai_fail_fast_out_of_order(tmp_path: Path):
+    """Verifica que quando uma imagem posterior falha rapidamente enquanto uma anterior é lenta,
+    o pipeline aborta imediatamente (fail-fast) e nenhuma nova tarefa é submetida."""
+    import http.server
+    import os
+    import socketserver
+    import threading
+    import time
+
+    submitted_requests = []
+
+    class ThreadedServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+        daemon_threads = True
+
+    class OutOfOrderHandler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length).decode("utf-8"))
+            # Identifica a imagem pelo prompt ou ordem
+            submitted_requests.append(time.monotonic())
+            
+            # Se for a 1ª requisição (img_01), faz delay artificial de 0.8s
+            # Se for a 2ª requisição (img_02), falha imediatamente com 500 sem retry (ou 400 que não tem retry)
+            if len(submitted_requests) == 1:
+                time.sleep(0.8)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                res = {"choices": [{"message": {"role": "assistant", "content": "Legenda 1"}}]}
+                self.wfile.write(json.dumps(res).encode("utf-8"))
+            else:
+                # Imagem 2 falha de imediato com 400 Bad Request (sem retry no vision_api)
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": {"message": "Erro fatal imediato"}}).encode("utf-8"))
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadedServer(("127.0.0.1", 0), OutOfOrderHandler)
+    port = server.server_address[1]
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+
+    # Dataset com 5 imagens e concorrência 2:
+    # Inicialmente sobem img_01 e img_02. img_02 falha imediatamente.
+    # Com o fail-fast imediato, o loop morre sem submeter img_03, img_04, img_05!
+    ds = _make_autolabel_dataset(tmp_path, ["img_01.jpg", "img_02.jpg", "img_03.jpg", "img_04.jpg", "img_05.jpg"])
+    out = tmp_path / "out_fail_fast"
+    cfg = {
+        "job_id": "job-fail-fast",
+        "model": "openai",
+        "dataset_path": str(ds),
+        "output_path": str(out),
+        "seed": 42,
+        "autolabel": {
+            "prompt": "Teste",
+            "api_key": "token",
+            "api_base": f"http://127.0.0.1:{port}/v1",
+            "openai_model": "gpt-4o",
+        },
+    }
+
+    old_conc = os.environ.get("AUTOLABEL_CONCURRENCY")
+    os.environ["AUTOLABEL_CONCURRENCY"] = "2"
+    try:
+        with pytest.raises(SystemExit) as exc_info:
+            _mock_autolabel(cfg, out)
+        assert exc_info.value.code == 1
+        # img_01 e img_02 foram submetidas na janela inicial de tamanho 2.
+        # img_03, img_04, img_05 NUNCA devem ter sido submetidas!
+        assert len(submitted_requests) == 2, f"Esperado apenas 2 requisições, mas {len(submitted_requests)} foram enviadas!"
+    finally:
+        if old_conc is not None:
+            os.environ["AUTOLABEL_CONCURRENCY"] = old_conc
+        else:
+            os.environ.pop("AUTOLABEL_CONCURRENCY", None)
+        server.shutdown()
+        server.server_close()

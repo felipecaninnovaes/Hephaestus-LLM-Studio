@@ -4,6 +4,7 @@ Pipeline de execução de AutoLabel v2 (Florence-2, Qwen2-VL, OpenAI, Mock) e CL
 from __future__ import annotations
 
 import argparse
+import collections
 import concurrent.futures
 import hashlib
 import json
@@ -120,11 +121,11 @@ def _autolabel_pipeline(cfg: dict, output_dir: Path) -> None:
             return fname, caption, max(0.0, time.monotonic() - t_start)
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=concurrency)
         futures: dict[concurrent.futures.Future, str] = {}
-        remaining_to_submit = list(sorted_filenames)
+        remaining_to_submit = collections.deque(sorted_filenames)
 
         # Preenche a janela inicial com até 'concurrency' tarefas em voo
         while len(futures) < concurrency and remaining_to_submit:
-            fname_next = remaining_to_submit.pop(0)
+            fname_next = remaining_to_submit.popleft()
             f_init = executor.submit(_label_worker, fname_next)
             futures[f_init] = fname_next
             if remaining_to_submit:
@@ -192,7 +193,7 @@ def _autolabel_pipeline(cfg: dict, output_dir: Path) -> None:
 
                         # Submete novas tarefas para manter a janela de até 'concurrency' em voo
                         while len(futures) < concurrency and remaining_to_submit:
-                            fname_new = remaining_to_submit.pop(0)
+                            fname_new = remaining_to_submit.popleft()
                             f_sub = executor.submit(_label_worker, fname_new)
                             futures[f_sub] = fname_new
             finally:

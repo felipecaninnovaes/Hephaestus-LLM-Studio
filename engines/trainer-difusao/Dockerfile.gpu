@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Engine trainer-difusao GPU: treino real de Difusão LoRA (FLUX.2 Klein 4B, SDXL, SD 1.5).
 # Base: hephaestus/engine-base-gpu (PyTorch 2.6.0 + CUDA 12.4 + cuDNN 9 + libs apt + USER studio uid 1000).
-ARG BASE_GPU_IMAGE=hephaestus/engine-base-gpu:latest
+ARG BASE_GPU_IMAGE=hephaestus/engine-base-gpu:0.1.0
 FROM ${BASE_GPU_IMAGE}
 
 # Commit SHA fixo do master do diffusers no GitHub (git ls-remote https://github.com/huggingface/diffusers HEAD)

@@ -9,7 +9,7 @@ FROM otel/opentelemetry-collector-contrib:0.111.0@sha256:a2a52e43c1a80aa94120ad7
 
 FROM alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
 RUN --mount=type=cache,target=/var/cache/apk \
-    apk add --no-cache wget \
+    apk add wget \
     && addgroup -g 10001 otel \
     && adduser -D -u 10001 -G otel otel
 COPY --from=collector /otelcol-contrib /otelcol-contrib

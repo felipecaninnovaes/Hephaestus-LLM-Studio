@@ -118,6 +118,8 @@ services:
     build:
       context: ..
       dockerfile: engines/trainer-yolo/Dockerfile.gpu
+      args:
+        BASE_GPU_IMAGE: hephaestus/engine-base-gpu:0.1.0
 
   # Build-only: imagem hephaestus/trainer-difusao:gpu.
   # Build: docker compose -p gpu --profile build build trainer-difusao-gpu
@@ -128,6 +130,8 @@ services:
     build:
       context: ..
       dockerfile: engines/trainer-difusao/Dockerfile.gpu
+      args:
+        BASE_GPU_IMAGE: hephaestus/engine-base-gpu:0.1.0
 
 volumes:
   gpu_datasets:

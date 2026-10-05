@@ -346,6 +346,14 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             message="Carregando transformer...",
         )
         # Download and setup transformer with Comfy-Org weights
+        from trainer_difusao.loaders.quant_cache import (
+            _is_cache_valid,
+            _save_quant_metadata,
+            get_bitsandbytes_version,
+            resolve_quant_base_dir,
+            save_atomic_dir,
+        )
+
         cfg_path = hf_hub_download(BASE_REPO, "transformer/config.json", cache_dir=hub_cache, token=hf_token)
         comfy_file = hf_hub_download(COMFY_REPO, "diffusion_models/qwen_image_2.1_bf16.safetensors", cache_dir=hub_cache, token=hf_token)
         
@@ -356,11 +364,84 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         if not target_weight.exists():
             os.symlink(comfy_file, target_weight)
         
-        from transformers import BitsAndBytesConfig
-        bnb_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch_dtype)
-        transformer = QwenImage21Transformer2DModel.from_pretrained(
-            str(local_dir), torch_dtype=torch_dtype, quantization_config=bnb_config,
-        )
+        bnb_ver = get_bitsandbytes_version()
+        quant_mode = "4bit"
+        custom_identity = None
+        if comfy_file and os.path.exists(comfy_file):
+            try:
+                st = os.stat(comfy_file)
+                import hashlib
+                h = hashlib.md5()
+                with open(comfy_file, "rb") as f:
+                    h.update(f.read(1024 * 1024))
+                custom_identity = f"{comfy_file}#{st.st_size}_{st.st_mtime_ns}_{h.hexdigest()[:12]}"
+            except OSError:
+                custom_identity = f"{comfy_file}#unknown"
+
+        quant_model_id = f"{COMFY_REPO}/qwen_image_2.1"
+        quant_base = resolve_quant_base_dir(quant_model_id, quant_mode, custom_identity=custom_identity)
+        transformer_cache_dir = quant_base / "transformer"
+        
+        transformer = None
+        if _is_cache_valid(
+            transformer_cache_dir,
+            expected_model_id=quant_model_id,
+            expected_quant=quant_mode,
+            expected_custom=custom_identity,
+            expected_bnb_version=bnb_ver,
+        ):
+            try:
+                print(
+                    f"[QWEN-IMAGE] Carregando transformer 4-bit do cache quantizado validado: {transformer_cache_dir}",
+                    flush=True,
+                )
+                transformer = QwenImage21Transformer2DModel.from_pretrained(
+                    str(transformer_cache_dir),
+                    torch_dtype=torch_dtype,
+                )
+            except Exception as e:
+                print(
+                    f"[WARN] Falha ao carregar cache do transformer quantizado ({transformer_cache_dir}): {e}. "
+                    "Descartando cache corrompido e refazendo quantização...",
+                    flush=True,
+                )
+                shutil.rmtree(transformer_cache_dir, ignore_errors=True)
+                transformer = None
+        elif transformer_cache_dir.exists():
+            print(
+                f"[INFO] Cache do transformer em {transformer_cache_dir} é inválido/incompatível. "
+                "Expurgando e refazendo quantização...",
+                flush=True,
+            )
+            shutil.rmtree(transformer_cache_dir, ignore_errors=True)
+        
+        if transformer is None:
+            from transformers import BitsAndBytesConfig
+            bnb_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch_dtype)
+            transformer = QwenImage21Transformer2DModel.from_pretrained(
+                str(local_dir), torch_dtype=torch_dtype, quantization_config=bnb_config,
+            )
+            try:
+                save_atomic_dir(transformer_cache_dir, lambda p: transformer.save_pretrained(p))
+                _save_quant_metadata(
+                    quant_base,
+                    model_id=quant_model_id,
+                    quant_label="4-bit BitsAndBytes",
+                    quant_format=quant_mode,
+                    target_dtype=torch_dtype,
+                    custom_checkpoint=custom_identity,
+                    bnb_version=bnb_ver,
+                )
+                print(
+                    f"[QWEN-IMAGE] Transformer quantizado 4-bit persistido em cache para execuções futuras: {transformer_cache_dir}",
+                    flush=True,
+                )
+            except Exception as e:
+                print(
+                    f"[WARN] Não foi possível persistir transformer quantizado em disco: {e}",
+                    flush=True,
+                )
+        
         transformer = transformer.to(device)
         transformer.train()
 

@@ -13,6 +13,7 @@ from trainer_difusao.loaders.quant_cache import (
     _is_cache_valid,
     _save_quant_metadata,
     resolve_quant_base_dir,
+    save_atomic_dir,
 )
 
 
@@ -206,8 +207,7 @@ def load_or_quantize_transformer(
 
         if is_quantized and transformer_cache_dir and quant_base:
             try:
-                transformer_cache_dir.mkdir(parents=True, exist_ok=True)
-                transformer.save_pretrained(transformer_cache_dir)
+                save_atomic_dir(transformer_cache_dir, lambda p: transformer.save_pretrained(p))
                 _save_quant_metadata(
                     quant_base,
                     model_id=model_id,

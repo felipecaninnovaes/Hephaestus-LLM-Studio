@@ -9,7 +9,7 @@
 //!   job atinge um estado terminal neste nó (done/failed/cancelled),
 //!   inclusive nos caminhos de erro. Jobs sem marcador NUNCA são purgados.
 //! - Sweeper: jobs com `.heph-terminal` mais antigo que `ttl` têm os arquivos
-//!   listados no manifesto + `text_embeds_cache/` + `weights/` removidos.
+//!   listados no manifesto + `text_embeds_cache/` + `latents_cache/` + `weights/` removidos.
 //!   `config.yaml`, `metrics.jsonl`, `logs/telemetry.jsonl`, os dois
 //!   marcadores e qualquer arquivo fora do manifesto são sempre mantidos.
 
@@ -28,7 +28,7 @@ const KEEPERS: &[&str] = &[
 ];
 
 /// Diretórios de staging sempre removidos na purga (além do manifesto).
-const PURGE_STAGING_DIRS: &[&str] = &["text_embeds_cache", "weights"];
+const PURGE_STAGING_DIRS: &[&str] = &["text_embeds_cache", "latents_cache", "weights"];
 
 /// Valida que `rel_path` permanece dentro do diretório do job: recusa `..`
 /// e paths absolutos. Usado tanto ao gravar quanto ao ler o manifesto.

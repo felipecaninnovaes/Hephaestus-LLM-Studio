@@ -6305,6 +6305,9 @@ async fn output_purge_sweeps_due_jobs_keeps_keepers_and_unlisted() {
     tokio::fs::create_dir_all(job_a.join("text_embeds_cache"))
         .await
         .unwrap();
+    tokio::fs::create_dir_all(job_a.join("latents_cache"))
+        .await
+        .unwrap();
     tokio::fs::create_dir_all(job_a.join("logs")).await.unwrap();
     std::fs::write(job_a.join("config.yaml"), b"cfg").unwrap();
     std::fs::write(job_a.join("metrics.jsonl"), b"{}").unwrap();
@@ -6312,6 +6315,7 @@ async fn output_purge_sweeps_due_jobs_keeps_keepers_and_unlisted() {
     std::fs::write(job_a.join("adapter.safetensors"), b"weights").unwrap();
     std::fs::write(job_a.join("weights").join("lora_0.safetensors"), b"w").unwrap();
     std::fs::write(job_a.join("text_embeds_cache").join("x.pt"), b"embed").unwrap();
+    std::fs::write(job_a.join("latents_cache").join("0.pt"), b"latent").unwrap();
     std::fs::write(job_a.join("unlisted_extra.txt"), b"nunca enviado ao S3").unwrap();
     append_manifest(&job_a, "adapter.safetensors").await;
     write_terminal_marker(&job_a).await;
@@ -6349,6 +6353,10 @@ async fn output_purge_sweeps_due_jobs_keeps_keepers_and_unlisted() {
     assert!(
         !job_a.join("text_embeds_cache").exists(),
         "text_embeds_cache/ sempre removido na purga"
+    );
+    assert!(
+        !job_a.join("latents_cache").exists(),
+        "latents_cache/ sempre removido na purga"
     );
     assert!(job_a.join("config.yaml").exists(), "config.yaml é keeper");
     assert!(

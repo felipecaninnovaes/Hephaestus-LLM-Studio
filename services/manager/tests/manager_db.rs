@@ -1645,6 +1645,120 @@ async fn c_reenvio_identico_nao_duplica() {
     );
 }
 
+/// Report com múltiplos pontos na mesma chave natural deduplica mantendo o último
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn report_pontos_duplicados_mesma_chave_deduplica_mantendo_ultimo() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    // Um mesmo payload com dois itens para a mesma chave/epoch/step
+    let payload = serde_json::json!({
+        "items": [
+            {"epoch": 1, "step": 10, "loss": 0.5},
+            {"epoch": 1, "step": 10, "loss": 0.2}
+        ]
+    });
+    manager::insert_metrics_points(&p, job_id, &payload)
+        .await
+        .expect("insert com duplicata no mesmo report deve funcionar");
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM job_metric_points WHERE job_id = $1")
+        .bind(job_id)
+        .fetch_one(&p)
+        .await
+        .expect("count");
+    assert_eq!(count, 1, "deve existir exatamente 1 ponto gravado");
+
+    let val: f64 = sqlx::query_scalar("SELECT value FROM job_metric_points WHERE job_id = $1")
+        .bind(job_id)
+        .fetch_one(&p)
+        .await
+        .expect("value");
+    assert_eq!(val, 0.2, "deve manter o último valor");
+}
+
+/// list_jobs devolve apenas o último ponto pivotado e job sem pontos devolve vazio
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn list_jobs_devolve_apenas_ultimo_ponto_e_vazio_quando_sem_pontos() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    // Job A com múltiplos pontos
+    let resp_a = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create a");
+    let job_id_a: uuid::Uuid = resp_a.job_id.parse().unwrap();
+    manager::insert_metrics_points(
+        &p,
+        job_id_a,
+        &serde_json::json!({"epoch": 1, "step": 10, "loss": 0.9}),
+    )
+    .await
+    .expect("insert a1");
+    manager::insert_metrics_points(
+        &p,
+        job_id_a,
+        &serde_json::json!({"epoch": 2, "step": 20, "loss": 0.3}),
+    )
+    .await
+    .expect("insert a2");
+
+    // Job B sem pontos
+    let resp_b = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create b");
+    let job_id_b: uuid::Uuid = resp_b.job_id.parse().unwrap();
+
+    let list_res = manager::list_jobs(&p, None, None).await.expect("list_jobs");
+    let job_a = list_res
+        .items
+        .iter()
+        .find(|j| j.id == job_id_a.to_string())
+        .expect("job a");
+    let job_b = list_res
+        .items
+        .iter()
+        .find(|j| j.id == job_id_b.to_string())
+        .expect("job b");
+
+    // Job A deve ter apenas 1 item de métricas (o último, epoch 2 step 20)
+    assert!(job_a.metrics.is_some());
+    let m_a = job_a.metrics.as_ref().unwrap();
+    let items_a = m_a["items"].as_array().expect("items array");
+    assert_eq!(items_a.len(), 1, "deve ter exatamente 1 ponto");
+    assert_eq!(items_a[0]["epoch"], 2);
+    assert_eq!(items_a[0]["step"], 20);
+    assert_eq!(items_a[0]["loss"], 0.3);
+
+    // get_job de A continua retornando todos os pontos (histórico inalterado)
+    let get_a = manager::get_job(&p, job_id_a).await.expect("get_job a");
+    assert!(get_a.metrics.is_some());
+    let get_items_a = get_a.metrics.as_ref().unwrap()["items"]
+        .as_array()
+        .expect("items");
+    assert_eq!(
+        get_items_a.len(),
+        2,
+        "get_job continua retornando histórico completo"
+    );
+
+    // Job B sem pontos deve ser None ou items vazio
+    if let Some(m_b) = &job_b.metrics {
+        let items_b = m_b["items"].as_array().expect("items array");
+        assert!(items_b.is_empty(), "job sem pontos deve ter items vazio");
+    }
+}
+
 /// (d) Pivot (`fetch_metrics_pivoted_batch`) reconstrói os itens de um report
 /// a partir dos pontos — wire legado compatível.
 #[tokio::test]

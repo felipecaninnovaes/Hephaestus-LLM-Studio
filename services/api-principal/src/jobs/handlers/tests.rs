@@ -381,6 +381,66 @@ async fn list_artifacts_handler_200() {
 }
 
 #[tokio::test]
+async fn get_artifact_data_streams_bytes_and_matches_headers() {
+    use axum::http::header;
+    use http_body_util::BodyExt;
+    use md5::Digest;
+    let mut mock = MockManager::default();
+    let job_id = "550e8400-e29b-41d4-a716-446655440000";
+    let artifact_id = "550e8400-e29b-41d4-a716-446655440003";
+    let payload = b"streamed binary content 12345";
+    let mut hasher = md5::Md5::new();
+    hasher.update(payload);
+    let md5_hex = format!("{:x}", hasher.finalize());
+
+    mock.list_artifacts_result = Some(vec![InternalArtifact {
+        id: artifact_id.into(),
+        kind: "weights".into(),
+        path: "checkpoint.png".into(),
+        md5: md5_hex.clone(),
+        bytes: payload.len() as i64,
+    }]);
+
+    let storage = std::sync::Arc::new(crate::storage::MockStorage::new());
+    storage
+        .put_bytes(
+            &format!("artifacts/{job_id}/checkpoint.png"),
+            payload.to_vec(),
+        )
+        .await;
+
+    let mut state = test_state(mock);
+    state.storage = storage;
+
+    let resp = get_artifact_data(
+        axum::extract::State(state),
+        Path((job_id.to_string(), artifact_id.to_string())),
+    )
+    .await;
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers().get(header::CONTENT_TYPE).unwrap(),
+        "image/png"
+    );
+    assert_eq!(
+        resp.headers().get(header::CONTENT_LENGTH).unwrap(),
+        payload.len().to_string().as_str()
+    );
+    assert_eq!(
+        resp.headers().get(header::ETAG).unwrap(),
+        format!("\"{md5_hex}\"").as_str()
+    );
+    assert_eq!(
+        resp.headers().get(header::CACHE_CONTROL).unwrap(),
+        "private, max-age=31536000, immutable"
+    );
+
+    let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body_bytes.as_ref(), payload);
+}
+
+#[tokio::test]
 async fn get_telemetry_handler_200() {
     let mut mock = MockManager::default();
     mock.get_telemetry_result = Some(crate::jobs::manager_client::InternalTelemetry {

@@ -268,74 +268,17 @@ def _real_generate(
         else:
             _die(f"Modelo não suportado para geração real: {base_model}")
 
-    if pipeline is not None and hasattr(pipe, "unload_lora_weights"):
-        try:
-            pipe.unload_lora_weights()
-        except Exception as exc:
-            print(
-                f"[DIFFUSION-GEN] [AVISO] Falha ao descarregar LoRA residual do pipeline em cache: {exc}",
-                flush=True,
-            )
-
     if loras_effective:
         emitter.emit(
             phase="injecting_lora",
             message=f"Carregando {len(loras_effective)} adaptador(es) LoRA...",
             progress=0.40,
         )
-        if base_model == "flux-2-klein-4b":
-            adapter_names = []
-            adapter_scales = []
-            for idx, lora in enumerate(loras_effective):
-                name = f"lora_{idx}"
-                print(
-                    f"[DIFFUSION-GEN] Carregando LoRA {idx}: {lora['path']} (scale={lora['scale']})",
-                    flush=True,
-                )
-                pipe.load_lora_weights(lora["path"], adapter_name=name)
-                adapter_names.append(name)
-                adapter_scales.append(lora["scale"])
 
-            try:
-                pipe.transformer.set_adapters(adapter_names, adapter_scales)
-                print(
-                    f"[DIFFUSION-GEN] Multi-LoRA aplicado via transformer.set_adapters: "
-                    f"{adapter_names}",
-                    flush=True,
-                )
-            except (AttributeError, RuntimeError, OSError) as exc:
-                print(
-                    f"[DIFFUSION-GEN] [AVISO] transformer.set_adapters falhou ({exc}). "
-                    f"Fallback: aplicando apenas o primeiro LoRA ({adapter_names[0]}). "
-                    f"Ref: ADR-0023 spike S1.",
-                    flush=True,
-                )
-                try:
-                    pipe.transformer.set_adapters(
-                        [adapter_names[0]], [adapter_scales[0]]
-                    )
-                except (AttributeError, RuntimeError, OSError) as exc2:
-                    print(
-                        f"[DIFFUSION-GEN] [ERRO] transformer.set_adapters(1 LoRA) "
-                        f"também falhou ({exc2}). LoRA não aplicada.",
-                        flush=True,
-                    )
-        else:
-            adapter_names = []
-            adapter_scales = []
-            for idx, lora in enumerate(loras_effective):
-                name = f"lora_{idx}"
-                print(
-                    f"[DIFFUSION-GEN] Carregando LoRA {idx}: {lora['path']} (scale={lora['scale']})",
-                    flush=True,
-                )
-                pipe.load_lora_weights(lora["path"], adapter_name=name)
-                adapter_names.append(name)
-                adapter_scales.append(lora["scale"])
+    from trainer_difusao.generation.pipelines import get_daemon_lora_cache
 
-            pipe.set_adapters(adapter_names, adapter_scales)
-            print(f"[DIFFUSION-GEN] Multi-LoRA aplicado: {adapter_names}", flush=True)
-
+    lora_cache = get_daemon_lora_cache()
+    lora_cache.apply_loras(pipe, loras_effective, base_model)
     init_image_path = params.get("init_image_path")
     init_strength = params.get("init_strength")
     is_img2img = bool(init_image_path)

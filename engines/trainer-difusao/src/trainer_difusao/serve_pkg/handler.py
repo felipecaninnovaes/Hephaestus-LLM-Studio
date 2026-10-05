@@ -198,6 +198,9 @@ class DiffusionHandler(BaseHTTPRequestHandler):
                     f"Antes: {state._loaded_spec}, Agora: {new_spec}",
                     flush=True,
                 )
+                from trainer_difusao.generation.pipelines import clear_daemon_lora_cache
+
+                clear_daemon_lora_cache(cached_pipeline)
                 state._pipeline_cache.clear()
                 cached_pipeline = None
                 if telemetry_path:

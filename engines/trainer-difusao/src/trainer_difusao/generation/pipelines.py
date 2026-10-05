@@ -34,3 +34,24 @@ def ensure_pipeline(
         print(f"[DIFFUSION-GEN] Cache hit para spec {key}.", flush=True)
         return cache[key], key
     return None, key
+
+
+_GLOBAL_LORA_CACHE: Any = None
+
+
+def get_daemon_lora_cache() -> Any:
+    """Retorna instância singleton do DaemonLoraCache."""
+    global _GLOBAL_LORA_CACHE
+    if _GLOBAL_LORA_CACHE is None:
+        from trainer_difusao.generation.adapters import DaemonLoraCache
+
+        _GLOBAL_LORA_CACHE = DaemonLoraCache()
+    return _GLOBAL_LORA_CACHE
+
+
+def clear_daemon_lora_cache(pipe: Any = None) -> None:
+    """Limpa e reseta o cache de LoRAs quando o pipeline base é trocado."""
+    global _GLOBAL_LORA_CACHE
+    if _GLOBAL_LORA_CACHE is not None:
+        _GLOBAL_LORA_CACHE.clear(pipe)
+        _GLOBAL_LORA_CACHE = None

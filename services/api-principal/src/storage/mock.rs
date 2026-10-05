@@ -156,6 +156,25 @@ impl StoragePort for MockStorage {
         data.ok_or(StorageError::NotFound)
     }
 
+    async fn get_stream(
+        &self,
+        key: &str,
+    ) -> Result<Box<dyn tokio::io::AsyncRead + Send + Unpin>, StorageError> {
+        if self.is_failing() {
+            return Err(StorageError::Unavailable("injected".to_string()));
+        }
+        let data = {
+            let objects = self.objects.read().await;
+            objects.get(key).cloned()
+        };
+        {
+            let mut ops = self.ops.write().await;
+            ops.push(format!("GET_STREAM {key}"));
+        }
+        let bytes = data.ok_or(StorageError::NotFound)?;
+        Ok(Box::new(std::io::Cursor::new(bytes)))
+    }
+
     async fn get_to_file(&self, key: &str, path: &Path) -> Result<(), StorageError> {
         if self.is_failing() {
             return Err(StorageError::Unavailable("injected".to_string()));

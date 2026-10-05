@@ -45,6 +45,11 @@ pub trait StoragePort: Send + Sync {
     async fn put(&self, key: &str, path: &Path) -> Result<(), StorageError>;
     /// Fallback /data (D3); corpo total ≤ 200 MB (limite da rota).
     async fn get(&self, key: &str) -> Result<Vec<u8>, StorageError>;
+    /// Retorna stream de leitura assíncrona do objeto.
+    async fn get_stream(
+        &self,
+        key: &str,
+    ) -> Result<Box<dyn tokio::io::AsyncRead + Send + Unpin>, StorageError>;
     /// Espelho do `put` (ADR-0006 D9, export): streama bucket→disco sem
     /// carregar RAM — a porta recebe CAMINHO de destino, nunca devolve bytes.
     /// `NotFound` ⇒ objeto ausente (o export faz skip + `eprintln`).

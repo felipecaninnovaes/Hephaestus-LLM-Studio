@@ -68,8 +68,8 @@ pub async fn get_artifact_data(
     }
     let key = format!("artifacts/{id}/{}", art.path);
     // 2. Busca objeto via StoragePort (admin).
-    let bytes = match state.storage.get(&key).await {
-        Ok(b) => b,
+    let stream_reader = match state.storage.get_stream(&key).await {
+        Ok(r) => r,
         Err(StorageError::NotFound) => {
             return err(
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -79,23 +79,7 @@ pub async fn get_artifact_data(
         }
         Err(StorageError::Unavailable(_)) => return storage_unavailable(),
     };
-    // 3. Confere md5 se barato (bytes já em RAM).
-    let computed = format!(
-        "{:x}",
-        md5::Digest::finalize({
-            use md5::Digest;
-            let mut h = md5::Md5::new();
-            md5::Digest::update(&mut h, &bytes);
-            h
-        })
-    );
-    if computed != art.md5 {
-        return err(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "storage_unavailable",
-            MSG_STORAGE_UNAVAILABLE,
-        );
-    }
+
     let content_type = if art.path.ends_with(".png") {
         "image/png"
     } else if art.path.ends_with(".jpg") || art.path.ends_with(".jpeg") {
@@ -105,18 +89,29 @@ pub async fn get_artifact_data(
     } else {
         "application/octet-stream"
     };
-    (
-        StatusCode::OK,
-        [
-            (header::CONTENT_TYPE, content_type),
-            (
-                header::CACHE_CONTROL,
-                "private, max-age=31536000, immutable",
-            ),
-        ],
-        bytes,
-    )
-        .into_response()
+
+    let body = axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(stream_reader));
+
+    let mut header_map = axum::http::HeaderMap::new();
+    if let Ok(v) = content_type.parse() {
+        header_map.insert(header::CONTENT_TYPE, v);
+    }
+    header_map.insert(
+        header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("private, max-age=31536000, immutable"),
+    );
+    if art.bytes > 0 {
+        if let Ok(v) = art.bytes.to_string().parse() {
+            header_map.insert(header::CONTENT_LENGTH, v);
+        }
+    }
+    if !art.md5.is_empty() {
+        if let Ok(v) = format!("\"{}\"", art.md5).parse() {
+            header_map.insert(header::ETAG, v);
+        }
+    }
+
+    (StatusCode::OK, header_map, body).into_response()
 }
 
 /// Parse tolerante de uma linha do jsonl de telemetria.

@@ -98,6 +98,20 @@ pub async fn insert_metrics_points_conn(
     if points.is_empty() {
         return Ok(());
     }
+
+    // Deduplica mantendo a última ocorrência da chave natural (job_id, key, epoch, step),
+    // pois o Postgres rejeita ON CONFLICT afetando a mesma linha duas vezes no mesmo INSERT.
+    let mut seen_keys = std::collections::HashSet::new();
+    let mut deduped_points = Vec::with_capacity(points.len());
+    for p in points.into_iter().rev() {
+        let natural_key = (p.epoch, p.step, p.key.clone());
+        if seen_keys.insert(natural_key) {
+            deduped_points.push(p);
+        }
+    }
+    deduped_points.reverse();
+    let points = deduped_points;
+
     let n = points.len() as i64;
     let ret_seq: i64 = sqlx::query_scalar(
         "UPDATE jobs SET metric_seq = metric_seq + $2 WHERE id = $1 RETURNING metric_seq",
@@ -109,25 +123,40 @@ pub async fn insert_metrics_points_conn(
     .map_err(|e| ManagerError::Internal(format!("alloc metric_seq: {e}")))?;
     let start_seq = ret_seq - n + 1;
 
-    for (i, p) in points.iter().enumerate() {
-        let seq = start_seq + i as i64;
-        sqlx::query(
-            "INSERT INTO job_metric_points (job_id, seq, epoch, step, key, value, ts) \
-             VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, now())) \
-             ON CONFLICT ON CONSTRAINT job_metric_points_natural_key \
-             DO UPDATE SET value = EXCLUDED.value, ts = EXCLUDED.ts, seq = EXCLUDED.seq",
-        )
-        .bind(id)
-        .bind(seq)
-        .bind(p.epoch)
-        .bind(p.step)
-        .bind(&p.key)
-        .bind(p.value)
-        .bind(p.ts)
-        .execute(&mut *conn)
-        .await
-        .map_err(|e| ManagerError::Internal(format!("insert metric point: {e}")))?;
+    let mut seqs: Vec<i64> = Vec::with_capacity(points.len());
+    let mut epochs: Vec<Option<i32>> = Vec::with_capacity(points.len());
+    let mut steps: Vec<i64> = Vec::with_capacity(points.len());
+    let mut keys: Vec<String> = Vec::with_capacity(points.len());
+    let mut values: Vec<f64> = Vec::with_capacity(points.len());
+    let mut tss: Vec<Option<chrono::DateTime<chrono::Utc>>> = Vec::with_capacity(points.len());
+
+    for (i, p) in points.into_iter().enumerate() {
+        seqs.push(start_seq + i as i64);
+        epochs.push(p.epoch);
+        steps.push(p.step);
+        keys.push(p.key);
+        values.push(p.value);
+        tss.push(p.ts);
     }
+
+    sqlx::query(
+        "INSERT INTO job_metric_points (job_id, seq, epoch, step, key, value, ts) \
+         SELECT $1, t.seq, t.epoch, t.step, t.key, t.value, COALESCE(t.ts, now()) \
+         FROM unnest($2::bigint[], $3::integer[], $4::bigint[], $5::text[], $6::double precision[], $7::timestamptz[]) \
+         AS t(seq, epoch, step, key, value, ts) \
+         ON CONFLICT ON CONSTRAINT job_metric_points_natural_key \
+         DO UPDATE SET value = EXCLUDED.value, ts = EXCLUDED.ts, seq = EXCLUDED.seq",
+    )
+    .bind(id)
+    .bind(&seqs)
+    .bind(&epochs)
+    .bind(&steps)
+    .bind(&keys)
+    .bind(&values)
+    .bind(&tss)
+    .execute(&mut *conn)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("insert metric points batch: {e}")))?;
 
     // pg_notify no canal job_events (fatia 1b) — dentro da MESMA transação
     // (visível ao listener só após commit; rollback descarta o notice).
@@ -204,6 +233,69 @@ pub async fn fetch_metrics_pivoted_batch(
             items.push(serde_json::Value::Object(obj));
         }
         out.insert(job_id, serde_json::json!({"items": items}));
+    }
+    Ok(out)
+}
+
+/// Busca apenas o ÚLTIMO ponto pivotado de treino de cada job (array de 0 ou 1 elemento)
+/// para a listagem de jobs (`list_jobs`), evitando carregar todo o histórico.
+/// Utiliza LATERAL para buscar apenas os pontos com maior (epoch NULLS FIRST, step, seq).
+pub async fn fetch_latest_metrics_pivoted_batch(
+    pool: &PgPool,
+    ids: &[Uuid],
+) -> Result<HashMap<Uuid, serde_json::Value>, ManagerError> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    type PivotRow = (Uuid, Option<i32>, i64, String, f64);
+    let rows: Vec<PivotRow> = sqlx::query_as(
+        "SELECT p.job_id, p.epoch, p.step, p.key, p.value \
+         FROM unnest($1::uuid[]) AS j(id) \
+         CROSS JOIN LATERAL ( \
+             SELECT l.epoch, l.step \
+             FROM job_metric_points l \
+             WHERE l.job_id = j.id \
+             ORDER BY l.seq DESC \
+             LIMIT 1 \
+         ) latest \
+         JOIN job_metric_points p \
+           ON p.job_id = j.id \
+          AND p.epoch IS NOT DISTINCT FROM latest.epoch \
+          AND p.step = latest.step \
+         ORDER BY p.job_id, p.seq",
+    )
+    .bind(ids)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("fetch latest metric points: {e}")))?;
+
+    type PivotGroup = (Option<i32>, i64, String, f64);
+    let mut by_job: Vec<(Uuid, Vec<PivotGroup>)> = Vec::new();
+    for (job_id, epoch, step, key, value) in rows {
+        match by_job.last_mut() {
+            Some((jid, pts)) if *jid == job_id => pts.push((epoch, step, key, value)),
+            _ => by_job.push((job_id, vec![(epoch, step, key, value)])),
+        }
+    }
+
+    let mut out = HashMap::new();
+    for (job_id, points) in by_job {
+        if points.is_empty() {
+            continue;
+        }
+        let (epoch, step, _, _) = points[0];
+        let mut obj = serde_json::Map::new();
+        for (_, _, key, value) in points {
+            obj.insert(key, serde_json::json!(value));
+        }
+        if let Some(e) = epoch {
+            obj.insert("epoch".to_string(), serde_json::json!(e));
+        }
+        obj.insert("step".to_string(), serde_json::json!(step));
+        out.insert(
+            job_id,
+            serde_json::json!({"items": [serde_json::Value::Object(obj)]}),
+        );
     }
     Ok(out)
 }

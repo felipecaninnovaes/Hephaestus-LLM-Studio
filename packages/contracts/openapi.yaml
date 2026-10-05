@@ -3606,7 +3606,7 @@ components:
           description: "Modelo VLM local ou provedor de API para legendagem (ADR-0019)."
         prompt:
           type: string
-          maxLength: 8000
+          maxLength: 15000
           description: "Instrução opcional para estilo/contexto da legenda."
         apiKey:
           type: string

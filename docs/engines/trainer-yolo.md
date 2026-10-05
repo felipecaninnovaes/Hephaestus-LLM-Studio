@@ -30,6 +30,8 @@ Subpacote dedicado à anotação automática e geração de descrições visuais
 - **`vision_api.py`**: Cliente de integração com APIs remotas compatíveis com OpenAI Vision (`/chat/completions`), suportando provedores externos ou instâncias locais (vLLM, Ollama, LM Studio).
 - **`pipeline.py`**: Orquestrador que itera sobre as amostras do dataset, codifica imagens em Base64, submete aos modelos e persiste os metadados gerados emitindo telemetria contínua.
   - **Modo `openai` concorrente**: as chamadas à Vision API rodam num `ThreadPoolExecutor` com janela de até `AUTOLABEL_CONCURRENCY` requisições em voo (default 4; mínimo 1; valor inválido cai em 4). É fail-fast: a primeira imagem que falha cancela as pendentes e aborta o job (`_die`). O `captions.jsonl` é gravado na ordem ordenada dos arquivos (só o prefixo contíguo já concluído é descarregado), então a saída não depende da ordem de chegada das respostas.
+  - **Orçamento de tokens e timeout**: por padrão nenhum `max_tokens` é enviado (vale o limite do servidor), necessário para que modelos com raciocínio concluam a resposta. `AUTOLABEL_MAX_TOKENS` (inteiro positivo, opcional; valor inválido é ignorado) é enviado como `max_tokens`. `AUTOLABEL_REQUEST_TIMEOUT` define o timeout em segundos por requisição (default 300).
+  - **Raciocínio nunca vira legenda**: blocos `<think>...</think>` são removidos do `content` (um `<think>` sem fechamento descarta o restante) e campos de raciocínio (`reasoning_content` etc.) nunca são usados. Resposta final vazia ou `finish_reason=length` levanta `RuntimeError` com mensagem explícita (sugere aumentar `AUTOLABEL_MAX_TOKENS`/contexto do servidor ou desativar o raciocínio) e o job falha.
 
 ---
 

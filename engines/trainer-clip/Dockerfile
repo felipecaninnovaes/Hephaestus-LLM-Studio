@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # Embedder (ADR-0004 D1, 3f.3): stdlib puro no modo mock (ENGINE_MOCK=1 default
 # do compose). O modo real CLIP (torch/open_clip) roda fora do compose (@gpu
 # manual, extras [serve] do pyproject) — NÃO instale nada aqui.

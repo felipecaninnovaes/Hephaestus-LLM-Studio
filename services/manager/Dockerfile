@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 FROM rust:1.97.1-slim@sha256:8e8cf8f7fd54a2d23d5a743b3a03f56e26b6c774276c33fa0595111704ebb15c AS build
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
@@ -8,20 +9,27 @@ COPY services/orchestrator/Cargo.toml ./services/orchestrator/
 RUN mkdir -p services/api-principal/src services/manager/src services/orchestrator/src \
   && echo "fn main() {}" > services/api-principal/src/main.rs \
   && echo "fn main() {}" > services/manager/src/main.rs \
-  && echo "fn main() {}" > services/orchestrator/src/main.rs \
-  && cargo build --release -p manager \
-  && rm -rf services/*/src
+  && echo "fn main() {}" > services/orchestrator/src/main.rs
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target,sharing=locked \
+    cargo build --release -p manager
+RUN rm -rf services/*/src
 COPY services/manager/src ./services/manager/src
 COPY packages/policies/vram-table.yaml ./packages/policies/vram-table.yaml
 # Workspace exige target em todos os membros: recria dummies (só manager compila via -p).
 RUN mkdir -p services/api-principal/src services/orchestrator/src \
   && echo "fn main() {}" > services/api-principal/src/main.rs \
   && echo "fn main() {}" > services/orchestrator/src/main.rs \
-  && touch services/manager/src/main.rs && cargo build --release -p manager
+  && touch services/manager/src/main.rs
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target,sharing=locked \
+    cargo build --release -p manager && cp /app/target/release/manager /app/manager
 
 FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132
 RUN groupadd -g 1000 studio && useradd -u 1000 -g studio -s /bin/bash -m studio
-COPY --from=build --chown=studio:studio /app/target/release/manager /app/manager
+COPY --from=build --chown=studio:studio /app/manager /app/manager
 USER studio
 EXPOSE 8081
 CMD ["/app/manager"]

@@ -123,6 +123,8 @@ const PROVIDER_PRESETS: ProviderConfig[] = [
 ];
 
 const AUTOLABEL_STORAGE_KEY = "hephaestus_autolabel_custom_config_v1";
+/** Backend limit for AutolabelJobRequest.prompt (openapi maxLength). */
+const AUTOLABEL_PROMPT_MAX_CHARS = 15000;
 
 interface AutoLabelSavedConfig {
   provider: ApiProviderPreset;
@@ -926,8 +928,14 @@ export default function AutoLabelModal({
             >
               Instrução / Prompt de Legendagem
             </label>
-            <span className="font-mono text-3xs text-zinc-500">
-              {prompt.length}/8000
+            <span
+              className={`font-mono text-3xs ${
+                prompt.length > AUTOLABEL_PROMPT_MAX_CHARS
+                  ? "text-rose-400"
+                  : "text-zinc-500"
+              }`}
+            >
+              {prompt.length}/{AUTOLABEL_PROMPT_MAX_CHARS}
             </span>
           </div>
 
@@ -938,6 +946,7 @@ export default function AutoLabelModal({
             placeholder="Ex.: Descreva o sujeito principal, iluminação e estilo fotográfico…"
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
+            maxLength={AUTOLABEL_PROMPT_MAX_CHARS}
             disabled={busy}
             className="font-mono text-xs"
           />

@@ -32,11 +32,22 @@ def _custom_checkpoint_identity(custom_cp: str | None) -> str | None:
         return f"{custom_cp}#unreadable"
 
 
+def get_bitsandbytes_version() -> str | None:
+    """Retorna versão do bitsandbytes instalado ou None."""
+    try:
+        import bitsandbytes
+
+        return getattr(bitsandbytes, "__version__", None)
+    except Exception:
+        return None
+
+
 def _is_cache_valid(
     cache_dir: Path | None,
     expected_model_id: str,
     expected_quant: str,
     expected_custom: str | None = None,
+    expected_bnb_version: str | None = None,
 ) -> bool:
     """Verifica se o cache pertence exatamente ao model_id, quantização e custom esperados."""
     if not cache_dir or not cache_dir.exists():
@@ -52,7 +63,12 @@ def _is_cache_valid(
             return False
         if data.get("quant_format") != expected_quant:
             return False
-        return data.get("custom_checkpoint") == expected_custom
+        if data.get("custom_checkpoint") != expected_custom:
+            return False
+        if expected_bnb_version is not None:
+            if data.get("bnb_version") != expected_bnb_version:
+                return False
+        return True
     except Exception:
         return False
 
@@ -65,6 +81,8 @@ def _save_quant_metadata(
     target_dtype: Any,
     is_flux2: bool = False,
     custom_checkpoint: str | None = None,
+    bnb_version: str | None = None,
+    extra_meta: dict[str, Any] | None = None,
 ) -> None:
     """Grava metadados da quantização persistida para garantir integridade e isolamento estrito."""
     try:
@@ -76,11 +94,34 @@ def _save_quant_metadata(
             "target_dtype": str(target_dtype),
             "is_flux2": is_flux2,
             "custom_checkpoint": custom_checkpoint,
+            "bnb_version": bnb_version if bnb_version is not None else get_bitsandbytes_version(),
         }
+        if extra_meta:
+            meta.update(extra_meta)
         (quant_base / "metadata.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     except Exception as e:
         print(f"[WARN] Não foi possível salvar metadata do cache quantizado: {e}", flush=True)
 
+
+def save_atomic_dir(target_dir: Path, save_fn: Any) -> None:
+    """Grava diretório de forma atômica (tmp + rename) para evitar caches parciais."""
+    import shutil
+    import time
+
+    parent = target_dir.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    tmp_dir = parent / f".tmp_{target_dir.name}_{int(time.time() * 1000)}"
+    try:
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        save_fn(tmp_dir)
+        if target_dir.exists():
+            shutil.rmtree(target_dir, ignore_errors=True)
+        tmp_dir.rename(target_dir)
+    finally:
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
 def get_quant_cache_root() -> Path:
     """Retorna diretório raiz canônico para caches quantizados."""
@@ -122,6 +163,8 @@ __all__ = [
     "_custom_checkpoint_identity",
     "_is_cache_valid",
     "_save_quant_metadata",
+    "get_bitsandbytes_version",
     "get_quant_cache_root",
     "resolve_quant_base_dir",
+    "save_atomic_dir",
 ]

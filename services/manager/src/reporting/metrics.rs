@@ -239,7 +239,8 @@ pub async fn fetch_metrics_pivoted_batch(
 
 /// Busca apenas o ÚLTIMO ponto pivotado de treino de cada job (array de 0 ou 1 elemento)
 /// para a listagem de jobs (`list_jobs`), evitando carregar todo o histórico.
-/// Utiliza LATERAL para buscar apenas os pontos com maior (epoch NULLS FIRST, step, seq).
+/// Utiliza LATERAL para achar o ponto de maior `seq` do job (`ORDER BY seq DESC LIMIT 1`)
+/// e depois junta todas as chaves do mesmo `(epoch, step)` desse ponto.
 pub async fn fetch_latest_metrics_pivoted_batch(
     pool: &PgPool,
     ids: &[Uuid],

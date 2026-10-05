@@ -22,9 +22,8 @@ import {
   IconTarget,
   IconX,
 } from "@/components/icons";
-import { getTelemetry } from "@/lib/jobs";
 import { listOrchestrators, getHealth, type Orchestrator } from "@/lib/monitoring";
-import type { Telemetry } from "@/types/studio";
+import { useSharedTelemetry } from "@/lib/telemetryStore";
 
 interface SidebarProps {
   open: boolean;
@@ -60,7 +59,7 @@ export default function Sidebar({
   const pathname = usePathname();
   const [leaving, setLeaving] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
-  const [telemetry, setTelemetry] = useState<Telemetry | null>(null);
+  const telemetry = useSharedTelemetry(3000);
   const [productVersion, setProductVersion] = useState<string | null>(null);
   const [orchestrators, setOrchestrators] = useState<Orchestrator[]>([]);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
@@ -124,54 +123,6 @@ export default function Sidebar({
     }
   }, [open]);
 
-  useEffect(() => {
-    let active = true;
-    let interval: NodeJS.Timeout | number | null = null;
-
-    const fetchTelem = async () => {
-      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
-        return;
-      }
-      try {
-        const data = await getTelemetry();
-        if (active) setTelemetry(data);
-      } catch {}
-    };
-
-    const startPolling = () => {
-      if (!interval) {
-        interval = setInterval(fetchTelem, 3000);
-      }
-    };
-
-    const stopPolling = () => {
-      if (interval) {
-        clearInterval(interval);
-        interval = null;
-      }
-    };
-
-    const handleVisibilityChange = () => {
-      if (typeof document !== "undefined" && document.visibilityState === "visible") {
-        fetchTelem();
-        startPolling();
-      } else {
-        stopPolling();
-      }
-    };
-
-    if (typeof document === "undefined" || document.visibilityState === "visible") {
-      fetchTelem();
-      startPolling();
-    }
-
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => {
-      active = false;
-      stopPolling();
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, []);
 
   // Busca versão de produto UMA VEZ no mount (rota pública /health)
   useEffect(() => {

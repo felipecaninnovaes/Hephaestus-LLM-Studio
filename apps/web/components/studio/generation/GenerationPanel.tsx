@@ -128,7 +128,6 @@ export function GenerationPanel() {
 	const [history, setHistory] = useState<GeneratedImageItem[]>([]);
 	const [lightboxOpen, setLightboxOpen] = useState(false);
 
-	const pollingRef = useRef<number | null>(null);
 	const submittedParamsRef = useRef<Omit<
 		GeneratedImageItem,
 		"imageUrl" | "thumbUrl"
@@ -728,16 +727,16 @@ export function GenerationPanel() {
 	useEffect(() => {
 		if (!activeJobId) {
 			setActiveJob(null);
-			if (pollingRef.current !== null) {
-				window.clearInterval(pollingRef.current);
-				pollingRef.current = null;
-			}
+			return;
+		}
+
+		if (!telemetry.isFinished) {
 			return;
 		}
 
 		let cancelled = false;
 
-		const checkJob = async () => {
+		const handleTerminalJob = async () => {
 			try {
 				const job = await getJob(activeJobId);
 				if (cancelled) return;
@@ -840,22 +839,18 @@ export function GenerationPanel() {
 					);
 				}
 			} catch {
-				// ignore sparse polling failures
+				// ignore terminal fetch failure
 			}
 		};
 
-		void checkJob();
-		pollingRef.current = window.setInterval(checkJob, 2000);
+		void handleTerminalJob();
 
 		return () => {
 			cancelled = true;
-			if (pollingRef.current !== null) {
-				window.clearInterval(pollingRef.current);
-				pollingRef.current = null;
-			}
 		};
 	}, [
 		activeJobId,
+		telemetry.isFinished,
 		prompt,
 		negativePrompt,
 		baseModel,

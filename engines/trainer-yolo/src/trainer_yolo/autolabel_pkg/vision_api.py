@@ -71,6 +71,62 @@ def _prepare_image_for_vision(
         return b64_img, _get_mime_type(image_path)
 
 
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
+_THINK_OPEN_RE = re.compile(r"<think>", re.IGNORECASE)
+
+
+def _positive_int_env(name: str) -> int | None:
+    """Lê um inteiro positivo do ambiente; ausente, inválido ou <= 0 ⇒ None."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _strip_thinking(text: str) -> str:
+    """Remove blocos <think>...</think>; um <think> sem fechamento descarta o resto."""
+    text = _THINK_BLOCK_RE.sub("", text)
+    match = _THINK_OPEN_RE.search(text)
+    if match:
+        text = text[: match.start()]
+    return text.strip()
+
+
+def _extract_caption(choice: dict) -> str:
+    """Extrai a resposta final de choices[0]; nunca usa campos de raciocínio.
+
+    Levanta RuntimeError se a resposta final estiver vazia ou truncada.
+    """
+    message = choice.get("message") or {}
+    content = message.get("content", "")
+    if isinstance(content, list):
+        content = " ".join(
+            p.get("text", "")
+            for p in content
+            if isinstance(p, dict) and p.get("type") == "text"
+        )
+    answer = _strip_thinking(str(content)) if content else ""
+    truncated = choice.get("finish_reason") == "length"
+    if not answer:
+        if truncated:
+            raise RuntimeError(
+                "O modelo esgotou o limite de tokens durante o raciocínio e não "
+                "produziu resposta final (finish_reason=length). Aumente "
+                "AUTOLABEL_MAX_TOKENS ou o contexto do servidor, ou desative o raciocínio."
+            )
+        raise RuntimeError("O modelo não retornou resposta final (legenda vazia).")
+    if truncated:
+        raise RuntimeError(
+            "A legenda foi truncada pelo limite de tokens (finish_reason=length). "
+            "Aumente AUTOLABEL_MAX_TOKENS ou o contexto do servidor, ou desative o raciocínio."
+        )
+    return answer
+
+
 def _call_openai_vision_api(
     image_path: Path,
     prompt: str | None,
@@ -106,8 +162,10 @@ def _call_openai_vision_api(
                 ],
             }
         ],
-        "max_tokens": 1500,
     }
+    max_tokens = _positive_int_env("AUTOLABEL_MAX_TOKENS")
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
     if reasoning_effort:
         payload["reasoning_effort"] = reasoning_effort
 
@@ -137,27 +195,18 @@ def _call_openai_vision_api(
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
 
+    request_timeout = _positive_int_env("AUTOLABEL_REQUEST_TIMEOUT") or 300
     max_retries = 2
     for attempt in range(max_retries + 1):
         try:
-            with urllib.request.urlopen(req, timeout=90, context=ctx) as resp:
+            with urllib.request.urlopen(
+                req, timeout=request_timeout, context=ctx
+            ) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
                 choices = body.get("choices")
                 if not choices or not isinstance(choices, list):
                     raise ValueError(f"Formato de resposta inesperado da API: {body}")
-                message = choices[0].get("message", {})
-                content = message.get("content", "")
-                if isinstance(content, list):
-                    text_parts = [
-                        p.get("text", "")
-                        for p in content
-                        if isinstance(p, dict) and p.get("type") == "text"
-                    ]
-                    content = " ".join(text_parts)
-                caption_text = str(content).strip() if content else ""
-                if not caption_text and message.get("reasoning_content"):
-                    caption_text = str(message["reasoning_content"]).strip()
-                return caption_text
+                return _extract_caption(choices[0])
         except urllib.error.HTTPError as exc:
             err_body = ""
             try:
@@ -199,6 +248,8 @@ def _call_openai_vision_api(
                 time.sleep(1.0)
                 continue
             raise RuntimeError(f"OpenAI API connection failed ({url}): {exc}") from exc
+        except RuntimeError:
+            raise
         except Exception as exc:
             print(
                 f"[autolabel-openai] Erro inesperado para {image_path.name}: {exc}",

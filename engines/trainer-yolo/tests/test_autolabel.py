@@ -414,6 +414,112 @@ def test_autolabel_openai_with_reasoning_effort(tmp_path: Path):
         server.shutdown()
         server.server_close()
 
+
+def _call_with_mock_choice(tmp_path: Path, choice: dict):
+    """Chama _call_openai_vision_api contra um servidor HTTP local que devolve `choice`."""
+    import http.server
+    import threading
+
+    from trainer_yolo.autolabel import _call_openai_vision_api
+
+    ds = _make_autolabel_dataset(tmp_path, ["sample.png"])
+    img = ds / "images" / "sample.png"
+    received: list[dict] = []
+
+    class MockHandler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            received.append(json.loads(self.rfile.read(length).decode("utf-8")))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"choices": [choice]}).encode("utf-8"))
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), MockHandler)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        caption = _call_openai_vision_api(
+            image_path=img,
+            prompt="Descreva a imagem",
+            api_key="token",
+            api_base=f"http://127.0.0.1:{port}/v1",
+            openai_model="test-model",
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+    return caption, received
+
+
+def test_autolabel_openai_reasoning_exhausted_budget_never_captions_thinking(
+    tmp_path: Path,
+):
+    choice = {
+        "message": {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "PENSAMENTO SECRETO",
+        },
+        "finish_reason": "length",
+    }
+    with pytest.raises(RuntimeError, match="AUTOLABEL_MAX_TOKENS") as exc_info:
+        _call_with_mock_choice(tmp_path, choice)
+    assert "limite de tokens" in str(exc_info.value)
+    assert "PENSAMENTO SECRETO" not in str(exc_info.value)
+
+
+def test_autolabel_openai_strips_think_blocks(tmp_path: Path):
+    choice = {
+        "message": {"role": "assistant", "content": "<think>x</think>  Final caption"},
+        "finish_reason": "stop",
+    }
+    caption, _ = _call_with_mock_choice(tmp_path, choice)
+    assert caption == "Final caption"
+
+
+def test_autolabel_openai_unterminated_think_raises(tmp_path: Path):
+    choice = {
+        "message": {"role": "assistant", "content": "<think>ainda pensando..."},
+        "finish_reason": "stop",
+    }
+    with pytest.raises(RuntimeError, match="resposta final"):
+        _call_with_mock_choice(tmp_path, choice)
+
+
+def test_autolabel_openai_truncated_caption_raises(tmp_path: Path):
+    choice = {
+        "message": {"role": "assistant", "content": "Legenda cortada no me"},
+        "finish_reason": "length",
+    }
+    with pytest.raises(RuntimeError, match="truncada"):
+        _call_with_mock_choice(tmp_path, choice)
+
+
+def test_autolabel_openai_max_tokens_only_when_env_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    choice = {
+        "message": {"role": "assistant", "content": "ok"},
+        "finish_reason": "stop",
+    }
+    monkeypatch.delenv("AUTOLABEL_MAX_TOKENS", raising=False)
+    _, received = _call_with_mock_choice(tmp_path / "a", choice)
+    assert "max_tokens" not in received[0]
+    assert "max_completion_tokens" not in received[0]
+
+    monkeypatch.setenv("AUTOLABEL_MAX_TOKENS", "4096")
+    _, received = _call_with_mock_choice(tmp_path / "b", choice)
+    assert received[0]["max_tokens"] == 4096
+
+    monkeypatch.setenv("AUTOLABEL_MAX_TOKENS", "-5")
+    _, received = _call_with_mock_choice(tmp_path / "c", choice)
+    assert "max_tokens" not in received[0]
+
+
 def test_autolabel_telemetry_progress_and_metrics_contract(tmp_path: Path):
     """Verifica que o autolabel reporta progresso por imagem na telemetria canônica
     (step 1..N, totalSteps, progresso crescente, phase 'labeling') e que nenhuma linha

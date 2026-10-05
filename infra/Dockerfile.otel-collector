@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # infra/Dockerfile.otel-collector — re-empacota o binário oficial
 # otelcol-contrib numa base Alpine só para ganhar `wget` no healthcheck
 # (ADR-0003/Dockerfile.s3-init usa o mesmo truque para curl+openssl).
@@ -7,7 +8,8 @@
 FROM otel/opentelemetry-collector-contrib:0.111.0@sha256:a2a52e43c1a80aa94120ad78c2db68780eb90e6d11c8db5b3ce2f6a0cc6b5029 AS collector
 
 FROM alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
-RUN apk add --no-cache wget \
+RUN --mount=type=cache,target=/var/cache/apk \
+    apk add wget \
     && addgroup -g 10001 otel \
     && adduser -D -u 10001 -G otel otel
 COPY --from=collector /otelcol-contrib /otelcol-contrib

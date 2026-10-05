@@ -1,11 +1,14 @@
+# syntax=docker/dockerfile:1
 # Build real Next.js (Fatia 1.5). Contexto de build = raiz do repo (infra/compose.yaml).
 FROM node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS builder
 WORKDIR /app
 
 # Manifests primeiro (cache de dependências; workspaces na raiz)
+# Usa package-lock.json da raiz e de apps/web garantindo reprodução fiel via npm ci
 COPY package.json package-lock.json* ./
-COPY apps/web/package.json apps/web/
-RUN npm ci --include=dev 2>/dev/null || npm install --include=dev
+COPY apps/web/package.json apps/web/package-lock.json* apps/web/
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --include=dev 2>/dev/null || npm install --include=dev
 
 # Resto do app web e build
 COPY apps/web/ apps/web/

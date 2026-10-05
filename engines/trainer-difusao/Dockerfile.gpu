@@ -1,15 +1,16 @@
+# syntax=docker/dockerfile:1
 # Engine trainer-difusao GPU: treino real de Difusão LoRA (FLUX.2 Klein 4B, SDXL, SD 1.5).
-# Base: PyTorch 2.6.0 + CUDA 12.4 + cuDNN 9 (runtime).
-FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime@sha256:77f17f843507062875ce8be2a6f76aa6aa3df7f9ef1e31d9d7432f4b0f563dee
+# Base: hephaestus/engine-base-gpu (PyTorch 2.6.0 + CUDA 12.4 + cuDNN 9 + libs apt + USER studio uid 1000).
+ARG BASE_GPU_IMAGE=hephaestus/engine-base-gpu:0.1.0
+FROM ${BASE_GPU_IMAGE}
 
-# Bibliotecas de sistema para manipulação de imagem e aceleração
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
-    && rm -rf /var/lib/apt/lists/*
+# Commit SHA fixo do master do diffusers no GitHub (git ls-remote https://github.com/huggingface/diffusers HEAD)
+ARG DIFFUSERS_COMMIT_SHA=c2798cc7859f258c6cfc5b2460e82b6cac71f235
 
 # Dependências canônicas do ecossistema Diffusers / PEFT / HuggingFace
-RUN pip install --no-cache-dir \
-      "diffusers @ https://github.com/huggingface/diffusers/archive/refs/heads/main.tar.gz" \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install \
+      "diffusers @ https://github.com/huggingface/diffusers/archive/${DIFFUSERS_COMMIT_SHA}.tar.gz" \
       "transformers>=4.48.0" \
       "accelerate>=1.2.0" \
       "peft>=0.14.0" \
@@ -37,8 +38,7 @@ ENV ENGINE_MOCK=0 \
     TORCH_HOME=/outputs/.cache/torch \
     PYTHONUNBUFFERED=1
 
-RUN groupadd -g 1000 studio && useradd -u 1000 -g studio -s /bin/bash -m studio \
-    && chown -R studio:studio /app
+RUN chown -R studio:studio /app
 USER studio
 
 ENTRYPOINT ["python", "-m", "trainer_difusao"]

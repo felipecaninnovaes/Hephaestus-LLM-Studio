@@ -205,7 +205,11 @@ ssh dockeruser@10.15.50.114 \
   'cd ~/Hephaestus-LLM-Studio && git pull'
 ```
 
-### 3.2 Build da imagem do trainer GPU
+### 3.2 Build das imagens GPU
+
+O `compose.gpu.yaml` declara a base GPU compartilhada `engine-base-gpu` (`hephaestus/engine-base-gpu:0.1.0`) e a conecta automaticamente aos trainers via `build.additional_contexts: base-gpu: service:engine-base-gpu` (requer Docker Compose >= 2.20.0 e Docker Buildx).
+
+Assim, o comando de build padrão constrói a base automaticamente se ela ainda não existir:
 
 ```bash
 ssh dockeruser@10.15.50.114 \
@@ -213,6 +217,7 @@ ssh dockeruser@10.15.50.114 \
    docker compose -p gpu --env-file infra/env.gpu -f infra/compose.gpu.yaml --profile build build trainer-gpu'
 ```
 
+> O script `./scripts/build-gpu.sh` também está disponível para build assistido com atalhos e pre-flight de alvos.
 > Build ~8-10GB (PyTorch + CUDA + ultralytics + peso yolo11n baked).
 > Tempo estimado: 5-15min dependendo da rede.
 > **Disco limitado (54GB livres):** buildar UMA imagem por vez (`orchestrator-gpu`

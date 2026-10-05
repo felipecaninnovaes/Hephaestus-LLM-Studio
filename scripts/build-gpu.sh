@@ -43,6 +43,9 @@ fi
 TARGETS=()
 for arg in "$@"; do
     case "$arg" in
+        base|base-gpu|engine-base-gpu)
+            TARGETS+=("engine-base-gpu")
+            ;;
         difusao|diffusion|trainer-difusao)
             TARGETS+=("trainer-difusao-gpu")
             ;;
@@ -59,9 +62,19 @@ for arg in "$@"; do
 done
 
 if [ ${#TARGETS[@]} -eq 0 ]; then
+    echo -e "\n${YELLOW}Construindo base GPU compartilhada (engine-base-gpu)...${NC}\n"
+    docker compose "${COMPOSE_ARGS[@]}" --profile build build engine-base-gpu
     echo -e "\n${YELLOW}Construindo todas as imagens GPU (orchestrator-gpu, trainer-gpu, trainer-difusao-gpu)...${NC}\n"
-    docker compose "${COMPOSE_ARGS[@]}" --profile build build
+    docker compose "${COMPOSE_ARGS[@]}" --profile build build orchestrator-gpu trainer-gpu trainer-difusao-gpu
 else
+    # Se for construir trainer-gpu ou trainer-difusao-gpu, garante que engine-base-gpu seja construído primeiro
+    for t in "${TARGETS[@]}"; do
+        if [ "$t" = "trainer-gpu" ] || [ "$t" = "trainer-difusao-gpu" ]; then
+            echo -e "\n${YELLOW}Garantindo imagem base GPU compartilhada (engine-base-gpu)...${NC}\n"
+            docker compose "${COMPOSE_ARGS[@]}" --profile build build engine-base-gpu
+            break
+        fi
+    done
     echo -e "\n${YELLOW}Construindo alvos específicos GPU: ${TARGETS[*]}...${NC}\n"
     docker compose "${COMPOSE_ARGS[@]}" --profile build build "${TARGETS[@]}"
 fi

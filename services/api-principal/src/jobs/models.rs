@@ -639,6 +639,9 @@ fn default_autolabel_model() -> String {
     "mock".to_string()
 }
 
+/// Teto (em chars, após trim) do prompt/instrução VLM do autolabel.
+pub const AUTOLABEL_PROMPT_MAX_CHARS: usize = 15_000;
+
 pub fn validate_autolabel_request(
     mut req: AutolabelJobRequest,
 ) -> Result<AutolabelJobRequest, String> {
@@ -650,8 +653,10 @@ pub fn validate_autolabel_request(
     }
     if let Some(ref mut p) = req.prompt {
         let trimmed = p.trim().to_string();
-        if trimmed.chars().count() > 8000 {
-            return Err("prompt must not exceed 8000 characters".to_string());
+        if trimmed.chars().count() > AUTOLABEL_PROMPT_MAX_CHARS {
+            return Err(format!(
+                "prompt must not exceed {AUTOLABEL_PROMPT_MAX_CHARS} characters"
+            ));
         }
         *p = trimmed;
     }
@@ -3103,6 +3108,33 @@ mod tests {
         }"#;
         let req_bad_item: AutolabelJobRequest = serde_json::from_str(json_bad_item).unwrap();
         assert!(validate_autolabel_request(req_bad_item).is_err());
+    }
+
+    #[test]
+    fn autolabel_prompt_limit_counts_chars_after_trim() {
+        let build = |prompt: String| -> AutolabelJobRequest {
+            serde_json::from_value(serde_json::json!({
+                "datasetId": "550e8400-e29b-41d4-a716-446655440001",
+                "prompt": prompt,
+            }))
+            .unwrap()
+        };
+        // Exatamente o teto, em chars multibyte (30000 bytes) ⇒ aceito.
+        let ok = validate_autolabel_request(build("é".repeat(AUTOLABEL_PROMPT_MAX_CHARS)));
+        assert_eq!(
+            ok.unwrap().prompt.unwrap().chars().count(),
+            AUTOLABEL_PROMPT_MAX_CHARS
+        );
+        // Espaços nas pontas são aparados antes da contagem.
+        let padded = format!("  {}  ", "a".repeat(AUTOLABEL_PROMPT_MAX_CHARS));
+        assert!(validate_autolabel_request(build(padded)).is_ok());
+        // Teto + 1 ⇒ rejeitado.
+        let err = validate_autolabel_request(build("a".repeat(AUTOLABEL_PROMPT_MAX_CHARS + 1)))
+            .unwrap_err();
+        assert_eq!(err, "prompt must not exceed 15000 characters");
+        assert!(
+            validate_autolabel_request(build("é".repeat(AUTOLABEL_PROMPT_MAX_CHARS + 1))).is_err()
+        );
     }
 
     #[test]

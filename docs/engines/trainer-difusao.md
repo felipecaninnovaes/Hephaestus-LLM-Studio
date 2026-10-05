@@ -26,6 +26,7 @@ Primitivas reutilizáveis entre todos os modelos:
 Pipeline de inferência pontual e em lote:
 - **`runner.py`**: Orquestra a execução da geração de imagens, seed determinística e pós-processamento.
 - **`pipelines.py`**: Carregamento sob demanda e cache de pipelines `diffusers` (ex.: `FluxPipeline`, `StableDiffusionXLPipeline`).
+- **`adapters.py`**: `DaemonLoraCache` — cache LRU de adapters LoRA nomeados no pipeline quente (`DIFFUSION_DAEMON_LORA_CACHE`, default 4; chave = path + size + mtime + md5 parcial). Reusa adapters via `set_adapters`; requisição sem LoRA chama `disable_lora`/`set_adapters([])` e a reativação chama `enable_lora` antes de `set_adapters`. No img2img (`sdxl`/`sd15`), o pipeline variante `_I2I(**pipe.components)` recebe os adapters de novo (não herda o estado). Trocar o pipeline base limpa o cache (`clear_daemon_lora_cache`). Ver `docs/PITFALLS.md` (LoRA residual).
 - **`text_encoder.py`**: Suporte para text encoders oficiais e text encoders customizados definidos no catálogo.
 - **`progress.py`**: Callback de progresso por timestep/amostragem reportado em tempo real ao `engine-kit.telemetry`.
 
@@ -42,6 +43,9 @@ Daemon HTTP de longa duração para inferência interativa, gerenciado pelo orch
 - **Quantização BitsAndBytes (`quantization.py`)**: Suporte a quantização de 4-bit (`nf4`, `fp4`) e 8-bit (`int8`), permitindo o fine-tuning de modelos pesados em GPUs de consumo.
 - **Configurações e Limites de VRAM**: Os limites operacionais de VRAM para cada modelo e tipo de quantização são canônicos em `packages/policies/vram-table.yaml`.
 - **Resume e LR (`TrainingLoopRunner`: flux, sd15, sdxl)**: `learningRate` do resume é o pico da curva original; o scheduler usa horizonte `steps_per_epoch * (epoch_offset + epochs)` com o warmup configurado e é posicionado em `steps_per_epoch * epoch_offset` (`_create_lr_scheduler(..., last_step=)` em `optimizers.py`), continuando o LR exatamente de onde o run interrompido parou (warmup já consumido não se repete). Progresso/ETA/logs de step ficam locais ao run; `epochs` = épocas adicionais, e o resume na web pré-preenche `(params.epochOffset ?? 0) + params.epochs - newOffset` (mín. 1). `qwen_image` usa LR constante (sem scheduler).
+- **DataLoader (`dataset.py::build_dataloader`)**: `num_workers` vem de `DIFFUSION_DATALOADER_WORKERS` (default `min(2, cpu_count)`; valor inválido cai no default); `pin_memory` ligado quando há CUDA; com workers > 0 usa `persistent_workers` e `prefetch_factor=2`. A ordem é determinística pela seed (`BucketBatchSampler(seed=)` com bucketing, `torch.Generator().manual_seed(seed)` sem bucketing).
+- **Sincronização GPU→CPU (`models/loop.py`)**: loss e grad_norm ficam como tensores pendentes e só viram `float` (`.item()`) em `_sync_unconsumed`, chamado nos passos de log (a cada 5 passos de otimização ou no fim da época), sem sync por micro-step.
+- **Cache de quantização do Qwen-Image (`models/qwen_image.py`, `loaders/quant_cache.py`)**: o transformer 4-bit fica persistido localmente no nó em `/data/outputs/.cache/quantized/` se existir, senão `/outputs/.cache/quantized/`, com fallback `~/.cache/hephaestus/quantized` (`get_quant_cache_root`), gravado de forma atômica (`save_atomic_dir`). Diretório e validação levam em conta a identidade do checkpoint Comfy (path + size + mtime + md5 do 1º MiB), o modo (`4bit`) e a versão do bitsandbytes; cache inválido ou corrompido é apagado e a quantização é refeita.
 
 ---
 

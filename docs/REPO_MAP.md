@@ -197,3 +197,4 @@ checkpoint+encoder).
 - `packages/policies/vram-table.yaml` — Fonte canônica para limites e requisitos mínimos de VRAM por arquitetura e modo.
 - `packages/policies/engines.yaml` — Registro canônico de imagens Docker e versões de toolchain (`cuda`, `torch`, `ultralytics`).
 - `engines/engine-kit/` — Biblioteca base Python das engines (`TelemetryEmitter`, `MOCK_MAGIC = b"HEPHMOCK"`, `mock_vector` determinístico com paridade L2).
+- `engines/base-gpu/Dockerfile` — imagem base comum `hephaestus/engine-base-gpu:0.1.0` (PyTorch 2.6/CUDA 12.4 por digest, uid 1000) dos trainers GPU; injetada por `additional_contexts` no `infra/compose.gpu.yaml` (Compose ≥ 2.20). Build: `scripts/build-gpu.sh` (base primeiro). `diffusers` fixado por SHA em `engines/trainer-difusao/Dockerfile.gpu`.

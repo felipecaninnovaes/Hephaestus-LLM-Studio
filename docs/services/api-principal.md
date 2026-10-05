@@ -50,3 +50,8 @@ Para exibir o progresso de jobs de treinamento na interface sem polling excessiv
 - **Canal SSE (`GET /api/jobs/:id/telemetry`):** Estabelece um stream persistente de eventos de texto (`text/event-stream`).
 - **Filtragem de Mudança de Estado:** O handler compara amostras sucessivas (`progress`, `phase`, `step`, `epoch`, `vram_used_gb`) e só despacha eventos quando há mutação observável real.
 - **Ciclo de Vida:** O stream emite o estado inicial de imediato e é finalizado automaticamente com evento terminal quando o job atinge `done`, `failed` ou `cancelled`.
+
+## Leitura de Jobs e Download de Artefatos
+
+- **Métricas na listagem:** `GET /api/jobs` repassa o `list_jobs` do manager, que preenche `metrics` só com o **último ponto pivotado** de cada job (`fetch_latest_metrics_pivoted_batch`, uma query `LATERAL` em lote). O histórico completo fica em `GET /api/jobs/:id` (`fetch_metrics_pivoted_batch`) e em `GET /api/jobs/:id/metrics` (pontos brutos por chave).
+- **Download de artefato em streaming:** `GET /api/jobs/:id/artifacts/:artifactId/data` (`jobs/handlers/artifacts.rs::get_artifact_data`) lê o objeto via `StoragePort::get_stream` e devolve o body como `ReaderStream`, sem bufferizar o artefato inteiro em RAM; envia `Content-Length` (de `bytes`), `ETag` (md5) e `Cache-Control: private, max-age=31536000, immutable`. O zip (`/artifacts/zip`) também sai por `ReaderStream`, de um arquivo temporário em disco.

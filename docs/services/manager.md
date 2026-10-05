@@ -34,6 +34,11 @@ O ciclo de vida dos jobs segue transições de estado bem definidas e auditávei
    - **`failed`:** Erro fatal no script do container, falha de infraestrutura ou estouro de timeout.
    - **`cancelled`:** Interrupção voluntária solicitada pelo usuário na UI.
 
+### Métricas no wire de jobs
+
+- `list_jobs` (consumido por `GET /api/jobs` no BFF) devolve em `metrics` apenas o **último ponto pivotado** por job (`reporting/metrics.rs::fetch_latest_metrics_pivoted_batch`, uma query para todos os ids): o `LATERAL` pega o ponto de maior `seq` (`ORDER BY l.seq DESC LIMIT 1`) e o `JOIN` traz todas as chaves do mesmo `(epoch, step)` desse ponto, pivotadas num único objeto. Job sem pontos não entra no mapa e sai com `metrics` ausente/`null` (`jobs/lifecycle.rs:74`).
+- O detalhe (`get_job` → `fetch_metrics_pivoted_batch`) e o endpoint de pontos (`get_job_metric_points`, `GET /api/jobs/:id/metrics` no BFF) mantêm o histórico completo.
+
 ## Watchdogs de Health e Recuperação de Zumbis
 
 Para garantir que falhas parciais de rede ou quedas abruptas de servidores não bloqueiem permanentemente a fila de execução, o `manager` executa processos concorrentes de reconciliação:

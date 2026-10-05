@@ -211,10 +211,15 @@ def build_dataloader(
             batch_sampler=BucketBatchSampler(dataset, batch_size, seed=seed),
             **loader_kwargs,
         )
+    generator = None
+    if seed is not None:
+        generator = torch.Generator().manual_seed(seed)
+
     return DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=True,
         drop_last=False,
+        generator=generator,
         **loader_kwargs,
     )

@@ -465,6 +465,7 @@ class TrainingLoopRunner:
             epoch_loss = 0.0
             steps_in_epoch = 0
             unconsumed_losses: list[torch.Tensor] = []
+            unconsumed_grad_norms: list[tuple[int, torch.Tensor | float]] = []
             last_loss_val: float | None = None
 
             for batch in dataloader:
@@ -495,19 +496,31 @@ class TrainingLoopRunner:
                     steps_in_epoch % tcfg.grad_accum == 0 or steps_in_epoch == len(dataloader)
                 )
 
-                # Função auxiliar para sincronizar perdas pendentes somente quando estritamente consumidas
-                def _sync_unconsumed(pending_grad_norm: float | None = None) -> float:
-                    nonlocal epoch_loss, last_loss_val
+                # Função auxiliar para sincronizar perdas e grad_norms pendentes
+                def _sync_unconsumed() -> float:
+                    nonlocal epoch_loss, last_loss_val, last_grad_norm
                     if not unconsumed_losses:
                         return last_loss_val if last_loss_val is not None else 0.0
-                    # Verifica se algum tensor é NaN/Inf em lote para otimizar se GPU
-                    stacked = torch.stack(unconsumed_losses)
-                    has_nan_inf = bool(torch.isnan(stacked).any().item() or torch.isinf(stacked).any().item())
+
                     loss_vals = [float(t.item()) for t in unconsumed_losses]
                     unconsumed_losses.clear()
 
+                    # Mapeia grad_norms acumulados por índice de micro-step relativo
+                    # unconsumed_grad_norms contém (micro_idx, grad_norm_raw)
+                    gn_map: dict[int, float] = {}
+                    for u_idx, raw_gn in unconsumed_grad_norms:
+                        if hasattr(raw_gn, "item"):
+                            gn_val = float(raw_gn.item())
+                        elif raw_gn is not None:
+                            gn_val = float(raw_gn)
+                        else:
+                            gn_val = 0.0
+                        gn_map[u_idx] = gn_val
+                        last_grad_norm = gn_val
+                    unconsumed_grad_norms.clear()
+
                     for i, l_val in enumerate(loss_vals):
-                        g_norm = pending_grad_norm if (i == len(loss_vals) - 1) else None
+                        g_norm = gn_map.get(i)
                         diag_tracker.observe_step(l_val, g_norm)
                         if not math.isnan(l_val) and not math.isinf(l_val):
                             epoch_loss += l_val
@@ -516,6 +529,10 @@ class TrainingLoopRunner:
 
                 if is_accum_step:
                     grad_norm_raw = torch.nn.utils.clip_grad_norm_(comp["trainable_module"].parameters(), 1.0)
+                    if grad_norm_raw is None:
+                        grad_norm_raw = compute_grad_norm_l2(comp["trainable_module"].parameters())
+                    unconsumed_grad_norms.append((len(unconsumed_losses) - 1, grad_norm_raw))
+
                     optimizer.step()
                     if lr_scheduler is not None:
                         lr_scheduler.step()
@@ -524,14 +541,7 @@ class TrainingLoopRunner:
 
                     # Emite métricas a cada 5 passos de otimização ou fim de época
                     if global_step % 5 == 0 or steps_in_epoch == len(dataloader):
-                        if hasattr(grad_norm_raw, "item"):
-                            last_grad_norm = float(grad_norm_raw.item())
-                        elif grad_norm_raw is not None:
-                            last_grad_norm = float(grad_norm_raw)
-                        else:
-                            last_grad_norm = compute_grad_norm_l2(comp["trainable_module"].parameters())
-
-                        cur_loss_raw = _sync_unconsumed(pending_grad_norm=last_grad_norm)
+                        cur_loss_raw = _sync_unconsumed()
                         safe_loss = (
                             None
                             if (math.isnan(cur_loss_raw) or math.isinf(cur_loss_raw))

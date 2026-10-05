@@ -54,14 +54,14 @@ O `docker compose -f infra/compose.gpu.yaml up -d` sobe **apenas** o container d
 
 Como o projeto não possui um registry privado configurado por padrão (os pacotes `ghcr.io` são privados e não há credencial disponível no nó):
 1. **Repositório Clonado no Nó GPU:** O código-fonte deve estar clonado diretamente no nó remoto (ex.: `~/Hephaestus-LLM-Studio`).
-2. **Build Local Obrigatório das Imagens GPU:** Antes de despachar jobs reais, as imagens devem ser construídas localmente no nó, **uma de cada vez** (o disco de 60 GB não comporta builds simultâneos), utilizando os profiles dedicados de build:
+2. **Build Local Obrigatório das Imagens GPU:** Antes de despachar jobs reais, as imagens devem ser construídas localmente no nó. Os trainers (`trainer-gpu`, `trainer-difusao-gpu`) herdam da base compartilhada `engines/base-gpu/Dockerfile` (`hephaestus/engine-base-gpu:0.1.0`: PyTorch 2.6.0 + CUDA 12.4 fixado por digest, libs apt do OpenCV, usuário `studio` uid 1000), injetada via `build.additional_contexts: base-gpu: service:engine-base-gpu` no `infra/compose.gpu.yaml` — exige **Docker Compose ≥ 2.20** e Buildx. O caminho canônico é o script, que constrói a base antes de qualquer trainer:
    ```bash
-   # Build da imagem YOLO GPU (~8 GB)
-   docker compose -p gpu --env-file infra/env.gpu -f infra/compose.gpu.yaml --profile build build trainer-gpu
-   
-   # Build da imagem Difusão GPU (~15 GB)
-   docker compose -p gpu --env-file infra/env.gpu -f infra/compose.gpu.yaml --profile build build trainer-difusao-gpu
+   ./scripts/build-gpu.sh               # base + orchestrator-gpu + trainer-gpu + trainer-difusao-gpu
+   ./scripts/build-gpu.sh yolo          # base + trainer-gpu (hephaestus/trainer-yolo:gpu)
+   ./scripts/build-gpu.sh difusao       # base + trainer-difusao-gpu (hephaestus/trainer-difusao:gpu)
+   ./scripts/build-gpu.sh orchestrator  # só orchestrator-gpu
    ```
+   Equivalente manual: `docker compose -p gpu --env-file infra/env.gpu -f infra/compose.gpu.yaml --profile build build engine-base-gpu` e depois o(s) trainer(s). O `diffusers` do `trainer-difusao` é fixado por SHA de commit (`ARG DIFFUSERS_COMMIT_SHA` em `engines/trainer-difusao/Dockerfile.gpu`); atualizar a versão = trocar o SHA. Disco de 60 GB: a base é comum às duas imagens, mas evite builds simultâneos.
 3. **Alinhamento de Tags no Dev Host:**
    No arquivo `infra/.env` do dev host, o manager deve ser configurado para apontar para a tag de imagem construída no nó remoto:
    ```bash

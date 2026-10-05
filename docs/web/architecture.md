@@ -86,7 +86,7 @@ apps/web/
 │   ├── useAnnotationSync.ts     # Autosave debounced e reconciliação de IDs com backend
 │   ├── useDatasetGallery.ts     # Paginação, busca, filtros e lixeira da galeria
 │   ├── useDatasetUpload.ts      # Fila de upload em lote, progresso e auditoria
-│   ├── useHardwareTelemetry.ts  # Polling de hardware e capacidade de VRAM do nó
+│   ├── useHardwareTelemetry.ts  # Hardware e capacidade de VRAM do nó (lê lib/telemetryStore)
 │   ├── useJobLifecycle.ts       # Ações de abort, delete, apply boxes/captions e downloads
 │   ├── useVramEstimator.ts      # Cálculo puro de risco de estouro de VRAM (CUDA OOM)
 │   ├── useYoloPlayground.ts     # Polling e execução de inferência YOLO
@@ -99,5 +99,8 @@ apps/web/
 └── lib/                    # Clientes de API, formatação e persistência
     ├── api.ts              # apiFetch com interceptor global de 401
     ├── format.ts           # Formatadores canônicos unificados (formatBytes, formatDuration)
-    └── geracao-storage.ts  # Persistência local e eventos cross-tab
+    ├── geracao-storage.ts  # Persistência local e eventos cross-tab
+    └── telemetryStore.ts   # Store única de GET /api/telemetry (useSharedTelemetry)
 ```
+
+**Telemetria compartilhada (`lib/telemetryStore.ts`)**: um único polling de `GET /api/telemetry` para o app inteiro, exposto via `useSharedTelemetry` (`useSyncExternalStore`). Os assinantes entram por refcount: o timer usa o menor intervalo pedido (default 3000 ms), para quando o último assinante sai e pausa com a aba oculta (`visibilitychange`), buscando de novo ao voltar. Consumidores: `Sidebar`, `ActionCenter`, `hooks/useHardwareTelemetry.ts` e `app/(studio)/dashboard/page.tsx`.

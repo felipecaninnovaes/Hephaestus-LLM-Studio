@@ -29,6 +29,7 @@ Subpacote dedicado à anotação automática e geração de descrições visuais
 - **`captions.py`**: Suporte para inferência de legendas utilizando VLMs locais (como Florence-2 e Qwen2-VL) ou dicionários determinísticos no modo mock.
 - **`vision_api.py`**: Cliente de integração com APIs remotas compatíveis com OpenAI Vision (`/chat/completions`), suportando provedores externos ou instâncias locais (vLLM, Ollama, LM Studio).
 - **`pipeline.py`**: Orquestrador que itera sobre as amostras do dataset, codifica imagens em Base64, submete aos modelos e persiste os metadados gerados emitindo telemetria contínua.
+  - **Modo `openai` concorrente**: as chamadas à Vision API rodam num `ThreadPoolExecutor` com janela de até `AUTOLABEL_CONCURRENCY` requisições em voo (default 4; mínimo 1; valor inválido cai em 4). É fail-fast: a primeira imagem que falha cancela as pendentes e aborta o job (`_die`). O `captions.jsonl` é gravado na ordem ordenada dos arquivos (só o prefixo contíguo já concluído é descarregado), então a saída não depende da ordem de chegada das respostas.
 
 ---
 

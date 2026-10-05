@@ -575,7 +575,10 @@ pub async fn run_job_inner_with_sampler(
         s3.get_to_file(&scoped_ikey, &init_file)
             .await
             .map_err(|e| PipelineError::S3Download(format!("download init image: {e}")))?;
-        let actual_md5 = compute_file_md5(&init_file)
+        let init_file_for_md5 = init_file.clone();
+        let actual_md5 = tokio::task::spawn_blocking(move || compute_file_md5(&init_file_for_md5))
+            .await
+            .map_err(|e| PipelineError::S3Download(format!("spawn init image md5: {e}")))?
             .map_err(|e| PipelineError::S3Download(format!("compute init image md5: {e}")))?;
         match init.md5.as_deref() {
             Some(expected) => {
@@ -608,8 +611,12 @@ pub async fn run_job_inner_with_sampler(
         s3.get_to_file(&control_key, &control_zip)
             .await
             .map_err(|e| PipelineError::S3Download(format!("download control package: {e}")))?;
-        let actual_md5 = compute_file_md5(&control_zip)
-            .map_err(|e| PipelineError::S3Download(format!("compute control md5: {e}")))?;
+        let control_zip_for_md5 = control_zip.clone();
+        let actual_md5 =
+            tokio::task::spawn_blocking(move || compute_file_md5(&control_zip_for_md5))
+                .await
+                .map_err(|e| PipelineError::S3Download(format!("spawn control md5: {e}")))?
+                .map_err(|e| PipelineError::S3Download(format!("compute control md5: {e}")))?;
         if actual_md5 != control.md5_zip {
             return Err(PipelineError::Md5Mismatch {
                 expected: control.md5_zip.clone(),
@@ -618,7 +625,13 @@ pub async fn run_job_inner_with_sampler(
         }
         let control_dir = datasets_cache.join("control");
         create_dir_all_open(&control_dir).await?;
-        unzip_safe(&control_zip, &control_dir)?;
+        let control_zip_for_unzip = control_zip.clone();
+        let control_dir_for_unzip = control_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            unzip_safe(&control_zip_for_unzip, &control_dir_for_unzip)
+        })
+        .await
+        .map_err(|e| PipelineError::Other(format!("spawn control unzip: {e}")))??;
         control_staged_path = Some(format!("/datasets/datasets-cache/{job_id}/control"));
     }
 
@@ -808,15 +821,20 @@ pub async fn run_job_inner_with_sampler(
         let telemetry_s3 = Arc::clone(&s3);
         let telemetry_outputs = outputs.clone();
         let telemetry_handle = tokio::spawn(async move {
-            let mut lines_read: usize = 0;
+            let mut byte_offset: usize = 0;
             let mut interval = tokio::time::interval(Duration::from_millis(500));
             let mut upload_ticks: u32 = 0;
             let mut telemetry_uploaded_bytes: i64 = 0;
             let mut telemetry_artifact_reported = false;
             loop {
                 interval.tick().await;
-                let (new_lines, new_offset) = tail_jsonl_lines(&telemetry_path_clone, lines_read);
-                lines_read = new_offset;
+                let telemetry_path_for_tail = telemetry_path_clone.clone();
+                let (new_lines, new_offset) = tokio::task::spawn_blocking(move || {
+                    tail_jsonl_lines(&telemetry_path_for_tail, byte_offset)
+                })
+                .await
+                .unwrap_or_else(|_| (Vec::new(), byte_offset));
+                byte_offset = new_offset;
                 for m in new_lines {
                     let mut body = telemetry_report_for_line(&m, total_epochs);
                     if let Some(metrics) = &mut body.metrics {
@@ -1206,28 +1224,23 @@ pub async fn run_job_inner_with_sampler(
     // (incidente galeria vazia) — sem abortar o resto do loop.
     let mut upload_errors: Vec<String> = Vec::new();
 
+    struct ArtifactUploadTarget {
+        rel_path: String,
+        kind: String,
+        local_path: PathBuf,
+        fail_hard: bool,
+    }
+
+    let mut upload_targets: Vec<ArtifactUploadTarget> = Vec::new();
+
     for (filename, kind) in artifact_specs {
         let file_path = outputs.join(filename);
         if file_path.exists() {
-            let art_key = format!("artifacts/{job_id}/{filename}");
-            let art_key = scoped_key(S3Scope::Artifacts, &art_key)
-                .map_err(|e| PipelineError::ArtifactUpload(format!("artifact key: {e}")))?;
-            let md5 = compute_file_md5(&file_path)
-                .map_err(|e| PipelineError::ArtifactUpload(format!("md5 {filename}: {e}")))?;
-            let bytes = std::fs::metadata(&file_path)
-                .map(|m| m.len() as i64)
-                .unwrap_or(0);
-
-            put_with_retry(s3.as_ref(), &art_key, &file_path)
-                .await
-                .map_err(|e| PipelineError::ArtifactUpload(format!("upload {filename}: {e}")))?;
-            append_manifest(&outputs, filename).await;
-
-            artifacts.push(ArtifactReport {
+            upload_targets.push(ArtifactUploadTarget {
+                rel_path: filename.to_string(),
                 kind: kind.to_string(),
-                path: filename.to_string(),
-                md5,
-                bytes,
+                local_path: file_path,
+                fail_hard: true,
             });
         }
     }
@@ -1275,33 +1288,12 @@ pub async fn run_job_inner_with_sampler(
                 for s_path in sample_files {
                     if let Some(s_name) = s_path.file_name().and_then(|n| n.to_str()) {
                         let rel_path = format!("samples/{s_name}");
-                        let art_key = format!("artifacts/{job_id}/{rel_path}");
-                        match scoped_key(S3Scope::Artifacts, &art_key) {
-                            Ok(scoped) => match compute_file_md5(&s_path) {
-                                Ok(md5) => {
-                                    let bytes = std::fs::metadata(&s_path)
-                                        .map(|m| m.len() as i64)
-                                        .unwrap_or(0);
-                                    match put_with_retry(s3.as_ref(), &scoped, &s_path).await {
-                                        Ok(()) => {
-                                            append_manifest(&outputs, &rel_path).await;
-                                            artifacts.push(ArtifactReport {
-                                                kind: "sample".to_string(),
-                                                path: rel_path,
-                                                md5,
-                                                bytes,
-                                            });
-                                        }
-                                        Err(e) => upload_errors.push(format!("{rel_path}: {e}")),
-                                    }
-                                }
-                                Err(e) => upload_errors.push(format!(
-                                    "{rel_path}: falha ao preparar artefato (md5): {e}"
-                                )),
-                            },
-                            Err(e) => upload_errors
-                                .push(format!("{rel_path}: falha ao preparar artefato (key): {e}")),
-                        }
+                        upload_targets.push(ArtifactUploadTarget {
+                            rel_path,
+                            kind: "sample".to_string(),
+                            local_path: s_path,
+                            fail_hard: false,
+                        });
                     }
                 }
             }
@@ -1347,33 +1339,12 @@ pub async fn run_job_inner_with_sampler(
                             "checkpoint"
                         };
                         let rel_path = format!("checkpoints/{c_name}");
-                        let art_key = format!("artifacts/{job_id}/{rel_path}");
-                        match scoped_key(S3Scope::Artifacts, &art_key) {
-                            Ok(scoped) => match compute_file_md5(&c_path) {
-                                Ok(md5) => {
-                                    let bytes = std::fs::metadata(&c_path)
-                                        .map(|m| m.len() as i64)
-                                        .unwrap_or(0);
-                                    match put_with_retry(s3.as_ref(), &scoped, &c_path).await {
-                                        Ok(()) => {
-                                            append_manifest(&outputs, &rel_path).await;
-                                            artifacts.push(ArtifactReport {
-                                                kind: kind.to_string(),
-                                                path: rel_path,
-                                                md5,
-                                                bytes,
-                                            });
-                                        }
-                                        Err(e) => upload_errors.push(format!("{rel_path}: {e}")),
-                                    }
-                                }
-                                Err(e) => upload_errors.push(format!(
-                                    "{rel_path}: falha ao preparar artefato (md5): {e}"
-                                )),
-                            },
-                            Err(e) => upload_errors
-                                .push(format!("{rel_path}: falha ao preparar artefato (key): {e}")),
-                        }
+                        upload_targets.push(ArtifactUploadTarget {
+                            rel_path,
+                            kind: kind.to_string(),
+                            local_path: c_path,
+                            fail_hard: false,
+                        });
                     }
                 }
             }
@@ -1394,34 +1365,12 @@ pub async fn run_job_inner_with_sampler(
                                 .map(|ext| ext.eq_ignore_ascii_case("safetensors"))
                                 .unwrap_or(false)
                         {
-                            let art_key = format!("artifacts/{job_id}/{f_name}");
-                            match scoped_key(S3Scope::Artifacts, &art_key) {
-                                Ok(scoped) => match compute_file_md5(&p) {
-                                    Ok(md5) => {
-                                        let bytes = std::fs::metadata(&p)
-                                            .map(|m| m.len() as i64)
-                                            .unwrap_or(0);
-                                        match put_with_retry(s3.as_ref(), &scoped, &p).await {
-                                            Ok(()) => {
-                                                append_manifest(&outputs, f_name).await;
-                                                artifacts.push(ArtifactReport {
-                                                    kind: "model".to_string(),
-                                                    path: f_name.to_string(),
-                                                    md5,
-                                                    bytes,
-                                                });
-                                            }
-                                            Err(e) => upload_errors.push(format!("{f_name}: {e}")),
-                                        }
-                                    }
-                                    Err(e) => upload_errors.push(format!(
-                                        "{f_name}: falha ao preparar artefato (md5): {e}"
-                                    )),
-                                },
-                                Err(e) => upload_errors.push(format!(
-                                    "{f_name}: falha ao preparar artefato (key): {e}"
-                                )),
-                            }
+                            upload_targets.push(ArtifactUploadTarget {
+                                rel_path: f_name.to_string(),
+                                kind: "model".to_string(),
+                                local_path: p,
+                                fail_hard: false,
+                            });
                         }
                     }
                 }
@@ -1442,34 +1391,12 @@ pub async fn run_job_inner_with_sampler(
                             && f_name != "adapter_optimizer.pt"
                             && f_name.ends_with("_optimizer.pt")
                         {
-                            let art_key = format!("artifacts/{job_id}/{f_name}");
-                            match scoped_key(S3Scope::Artifacts, &art_key) {
-                                Ok(scoped) => match compute_file_md5(&p) {
-                                    Ok(md5) => {
-                                        let bytes = std::fs::metadata(&p)
-                                            .map(|m| m.len() as i64)
-                                            .unwrap_or(0);
-                                        match put_with_retry(s3.as_ref(), &scoped, &p).await {
-                                            Ok(()) => {
-                                                append_manifest(&outputs, f_name).await;
-                                                artifacts.push(ArtifactReport {
-                                                    kind: "optimizer_state".to_string(),
-                                                    path: f_name.to_string(),
-                                                    md5,
-                                                    bytes,
-                                                });
-                                            }
-                                            Err(e) => upload_errors.push(format!("{f_name}: {e}")),
-                                        }
-                                    }
-                                    Err(e) => upload_errors.push(format!(
-                                        "{f_name}: falha ao preparar artefato (md5): {e}"
-                                    )),
-                                },
-                                Err(e) => upload_errors.push(format!(
-                                    "{f_name}: falha ao preparar artefato (key): {e}"
-                                )),
-                            }
+                            upload_targets.push(ArtifactUploadTarget {
+                                rel_path: f_name.to_string(),
+                                kind: "optimizer_state".to_string(),
+                                local_path: p,
+                                fail_hard: false,
+                            });
                         }
                     }
                 }
@@ -1481,34 +1408,127 @@ pub async fn run_job_inner_with_sampler(
     if dispatch.engine == "diffusion" && dispatch.mode == "train" {
         let training_config_path = outputs.join("training_config.json");
         if training_config_path.is_file() {
-            let art_key = format!("artifacts/{job_id}/training_config.json");
-            match scoped_key(S3Scope::Artifacts, &art_key) {
-                Ok(scoped) => match compute_file_md5(&training_config_path) {
-                    Ok(md5) => {
-                        let bytes = std::fs::metadata(&training_config_path)
-                            .map(|m| m.len() as i64)
-                            .unwrap_or(0);
-                        match put_with_retry(s3.as_ref(), &scoped, &training_config_path).await {
-                            Ok(()) => {
-                                append_manifest(&outputs, "training_config.json").await;
-                                artifacts.push(ArtifactReport {
-                                    kind: "config".to_string(),
-                                    path: "training_config.json".to_string(),
-                                    md5,
-                                    bytes,
-                                });
-                            }
-                            Err(e) => upload_errors.push(format!("training_config.json: {e}")),
-                        }
+            upload_targets.push(ArtifactUploadTarget {
+                rel_path: "training_config.json".to_string(),
+                kind: "config".to_string(),
+                local_path: training_config_path,
+                fail_hard: false,
+            });
+        }
+    }
+
+    let concurrency: usize = std::env::var("ARTIFACT_UPLOAD_CONCURRENCY")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3)
+        .max(1);
+
+    let mut join_set = tokio::task::JoinSet::new();
+    let mut next_target_idx = 0;
+    let mut upload_results: Vec<(usize, Result<ArtifactReport, PipelineError>)> =
+        Vec::with_capacity(upload_targets.len());
+
+    while next_target_idx < upload_targets.len() || !join_set.is_empty() {
+        while next_target_idx < upload_targets.len() && join_set.len() < concurrency {
+            let target_idx = next_target_idx;
+            let target = &upload_targets[target_idx];
+            let rel_path = target.rel_path.clone();
+            let kind = target.kind.clone();
+            let local_path = target.local_path.clone();
+            let fail_hard = target.fail_hard;
+            let s3_clone = Arc::clone(&s3);
+            let job_id_string = job_id.clone();
+            let outputs_dir = outputs.clone();
+            next_target_idx += 1;
+
+            join_set.spawn(async move {
+                let art_key = format!("artifacts/{job_id_string}/{rel_path}");
+                let scoped = match scoped_key(S3Scope::Artifacts, &art_key) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return (
+                            target_idx,
+                            Err(if fail_hard {
+                                PipelineError::ArtifactUpload(format!("artifact key: {e}"))
+                            } else {
+                                PipelineError::Other(format!(
+                                    "{rel_path}: falha ao preparar artefato (key): {e}"
+                                ))
+                            }),
+                        );
                     }
-                    Err(e) => upload_errors.push(format!(
-                        "training_config.json: falha ao preparar artefato (md5): {e}"
-                    )),
-                },
-                Err(e) => upload_errors.push(format!(
-                    "training_config.json: falha ao preparar artefato (key): {e}"
-                )),
+                };
+
+                let path_for_md5 = local_path.clone();
+                let md5_res = tokio::task::spawn_blocking(move || compute_file_md5(&path_for_md5))
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string()));
+                let md5 = match md5_res {
+                    Ok(h) => h,
+                    Err(e) => {
+                        return (
+                            target_idx,
+                            Err(if fail_hard {
+                                PipelineError::ArtifactUpload(format!("md5 {rel_path}: {e}"))
+                            } else {
+                                PipelineError::Other(format!(
+                                    "{rel_path}: falha ao preparar artefato (md5): {e}"
+                                ))
+                            }),
+                        );
+                    }
+                };
+
+                let bytes = std::fs::metadata(&local_path)
+                    .map(|m| m.len() as i64)
+                    .unwrap_or(0);
+
+                if let Err(e) = put_with_retry(s3_clone.as_ref(), &scoped, &local_path).await {
+                    return (
+                        target_idx,
+                        Err(if fail_hard {
+                            PipelineError::ArtifactUpload(format!("upload {rel_path}: {e}"))
+                        } else {
+                            PipelineError::Other(format!("{rel_path}: {e}"))
+                        }),
+                    );
+                }
+
+                append_manifest(&outputs_dir, &rel_path).await;
+                (
+                    target_idx,
+                    Ok(ArtifactReport {
+                        kind,
+                        path: rel_path,
+                        md5,
+                        bytes,
+                    }),
+                )
+            });
+        }
+
+        if let Some(join_res) = join_set.join_next().await {
+            match join_res {
+                Ok((idx, res)) => upload_results.push((idx, res)),
+                Err(e) => {
+                    return Err(PipelineError::Other(format!(
+                        "artifact upload task join error: {e}"
+                    )));
+                }
             }
+        }
+    }
+
+    upload_results.sort_by_key(|(idx, _)| *idx);
+
+    for (_, res) in upload_results {
+        match res {
+            Ok(rep) => artifacts.push(rep),
+            Err(e) => match e {
+                PipelineError::ArtifactUpload(_) => return Err(e),
+                PipelineError::Other(msg) => upload_errors.push(msg),
+                _ => upload_errors.push(e.to_string()),
+            },
         }
     }
 

@@ -77,7 +77,10 @@ async fn upload_one(
     let art_key = format!("artifacts/{job_id}/{rel}");
     let scoped = scoped_key(S3Scope::Artifacts, &art_key)
         .map_err(|e| format!("{rel}: falha ao preparar artefato (key): {e}"))?;
-    let md5 = compute_file_md5(path)
+    let path_buf = path.to_path_buf();
+    let md5 = tokio::task::spawn_blocking(move || compute_file_md5(&path_buf))
+        .await
+        .map_err(|e| format!("{rel}: falha ao preparar artefato (spawn md5): {e}"))?
         .map_err(|e| format!("{rel}: falha ao preparar artefato (md5): {e}"))?;
     put_with_retry(s3.as_ref(), &scoped, path)
         .await
@@ -183,9 +186,6 @@ pub async fn collect_diffusion_artifacts(
     job_id: &str,
     outputs: &Path,
 ) -> (Vec<ArtifactReport>, Vec<String>) {
-    let mut artifacts = Vec::new();
-    let mut upload_errors: Vec<String> = Vec::new();
-
     let all_files = list_output_files(outputs);
     let has_numbered = all_files.iter().any(|p| {
         p.file_name()
@@ -194,19 +194,62 @@ pub async fn collect_diffusion_artifacts(
             .unwrap_or(false)
     });
 
-    for path in &all_files {
+    let concurrency: usize = std::env::var("ARTIFACT_UPLOAD_CONCURRENCY")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3)
+        .max(1);
+
+    let mut items = Vec::new();
+    for (orig_idx, path) in all_files.iter().enumerate() {
         let fname = match path.file_name().and_then(|n| n.to_str()) {
             Some(n) => n.to_string(),
             None => continue,
         };
         if let Some(kind) = classify_diffusion_file(&fname, has_numbered) {
-            match upload_one(s3, job_id, fname.clone(), path, kind, outputs).await {
-                Ok(rep) => artifacts.push(rep),
-                Err(e) => {
-                    // Arquivo vazio é skip silencioso do original — preserva sem erro.
-                    if !e.ends_with("arquivo vazio, ignorado") {
-                        upload_errors.push(e);
-                    }
+            items.push((orig_idx, fname, path.clone(), kind));
+        }
+    }
+
+    let mut join_set = tokio::task::JoinSet::new();
+    let mut next_idx = 0;
+    let mut results: Vec<(usize, Result<ArtifactReport, String>)> = Vec::with_capacity(items.len());
+
+    while next_idx < items.len() || !join_set.is_empty() {
+        while next_idx < items.len() && join_set.len() < concurrency {
+            let (orig_idx, fname, path, kind) = items[next_idx].clone();
+            next_idx += 1;
+            let s3_clone = Arc::clone(s3);
+            let job_id_string = job_id.to_string();
+            let outputs_buf = outputs.to_path_buf();
+            join_set.spawn(async move {
+                let res =
+                    upload_one(&s3_clone, &job_id_string, fname, &path, kind, &outputs_buf).await;
+                (orig_idx, res)
+            });
+        }
+
+        if let Some(res) = join_set.join_next().await {
+            match res {
+                Ok((idx, upload_res)) => results.push((idx, upload_res)),
+                Err(join_err) => {
+                    results.push((usize::MAX, Err(format!("task join error: {join_err}"))))
+                }
+            }
+        }
+    }
+
+    // Ordenação determinística igual à ordem de listagem original
+    results.sort_by_key(|(idx, _)| *idx);
+
+    let mut artifacts = Vec::new();
+    let mut upload_errors = Vec::new();
+    for (_, res) in results {
+        match res {
+            Ok(rep) => artifacts.push(rep),
+            Err(e) => {
+                if !e.ends_with("arquivo vazio, ignorado") {
+                    upload_errors.push(e);
                 }
             }
         }
@@ -387,7 +430,7 @@ pub async fn stream_metrics_and_samples(
         .map(|p| p.to_path_buf())
         .unwrap_or_default();
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
-    let mut lines_read: usize = 0;
+    let mut byte_offset: usize = 0;
     let mut uploaded_samples = std::collections::HashSet::<String>::new();
     let mut uploaded_checkpoints = std::collections::HashSet::<String>::new();
     // C2a: bytes do último snapshot de telemetry.jsonl enviado (growth-gate).
@@ -437,7 +480,13 @@ pub async fn stream_metrics_and_samples(
                                         let art_key = format!("artifacts/{job_id}/{rel_path}");
                                         if let Ok(scoped) = scoped_key(S3Scope::Artifacts, &art_key)
                                         {
-                                            if let Ok(md5) = compute_file_md5(&path) {
+                                            let path_for_md5 = path.clone();
+                                            let md5_res = tokio::task::spawn_blocking(move || {
+                                                compute_file_md5(&path_for_md5)
+                                            })
+                                            .await
+                                            .unwrap_or_else(|e| Err(e.to_string()));
+                                            if let Ok(md5) = md5_res {
                                                 match put_with_retry(s3.as_ref(), &scoped, &path)
                                                     .await
                                                 {
@@ -515,7 +564,13 @@ pub async fn stream_metrics_and_samples(
                                         let art_key = format!("artifacts/{job_id}/{rel_path}");
                                         if let Ok(scoped) = scoped_key(S3Scope::Artifacts, &art_key)
                                         {
-                                            if let Ok(md5) = compute_file_md5(&path) {
+                                            let path_for_md5 = path.clone();
+                                            let md5_res = tokio::task::spawn_blocking(move || {
+                                                compute_file_md5(&path_for_md5)
+                                            })
+                                            .await
+                                            .unwrap_or_else(|e| Err(e.to_string()));
+                                            if let Ok(md5) = md5_res {
                                                 match put_with_retry(s3.as_ref(), &scoped, &path)
                                                     .await
                                                 {
@@ -563,7 +618,11 @@ pub async fn stream_metrics_and_samples(
         } else {
             &metrics_path_clone
         };
-        let (new_metrics, new_lines_read) = tail_jsonl_lines(active_path, lines_read);
+        let active_path_buf = active_path.clone();
+        let (new_metrics, new_byte_offset) =
+            tokio::task::spawn_blocking(move || tail_jsonl_lines(&active_path_buf, byte_offset))
+                .await
+                .unwrap_or_else(|_| (Vec::new(), byte_offset));
 
         // C2a: re-upload do snapshot do telemetry.jsonl quando ele cresce —
         // logs de treino ficam persistidos em S3 DURANTE a execução (o report
@@ -662,41 +721,44 @@ pub async fn stream_metrics_and_samples(
             // avança o offset de leitura quando TODO o lote deste tick foi
             // reportado com sucesso; falha reenvia o lote inteiro no próximo tick.
             if !report_failed {
-                lines_read = new_lines_read;
+                byte_offset = new_byte_offset;
             }
-        } else if !new_live_artifacts.is_empty() {
-            for art in &new_live_artifacts {
-                tracing::info!(
-                    job_id = %job_id,
-                    artifact = %art.path,
-                    "Artefato intermediário gerado e sincronizado"
-                );
-            }
-            let arts = std::mem::take(&mut new_live_artifacts);
-            let result = report_client
-                .report(
-                    &job_id,
-                    &ReportBody {
-                        status: "running".to_string(),
-                        progress: None,
-                        epoch: None,
-                        step: None,
-                        metrics: None,
-                        error: None,
-                        artifacts: Some(arts.clone()),
-                        meta_content: None,
-                        phase: None,
-                        message: None,
-                    },
-                )
-                .await;
-            if let Err(e) = result {
-                tracing::warn!(
-                    job_id = %job_id,
-                    error = %e,
-                    "falha ao reportar artefatos intermediários ao manager; reenviando no próximo tick"
-                );
-                pending_artifacts.extend(arts);
+        } else {
+            byte_offset = new_byte_offset;
+            if !new_live_artifacts.is_empty() {
+                for art in &new_live_artifacts {
+                    tracing::info!(
+                        job_id = %job_id,
+                        artifact = %art.path,
+                        "Artefato intermediário gerado e sincronizado"
+                    );
+                }
+                let arts = std::mem::take(&mut new_live_artifacts);
+                let result = report_client
+                    .report(
+                        &job_id,
+                        &ReportBody {
+                            status: "running".to_string(),
+                            progress: None,
+                            epoch: None,
+                            step: None,
+                            metrics: None,
+                            error: None,
+                            artifacts: Some(arts.clone()),
+                            meta_content: None,
+                            phase: None,
+                            message: None,
+                        },
+                    )
+                    .await;
+                if let Err(e) = result {
+                    tracing::warn!(
+                        job_id = %job_id,
+                        error = %e,
+                        "falha ao reportar artefatos intermediários ao manager; reenviando no próximo tick"
+                    );
+                    pending_artifacts.extend(arts);
+                }
             }
         }
     }

@@ -261,36 +261,74 @@ pub fn compute_progress(line: &MetricsLine, total_epochs: i32) -> f64 {
     ((line.epoch as f64) / (total_epochs as f64)).clamp(0.0, 1.0)
 }
 
-/// Lê linhas novas de um arquivo JSONL a partir de um offset (contagem de linhas).
-/// Retorna `(linhas_parseadas, novo_offset)`. O offset SEMPRE avança para o
-/// total de linhas lidas — inclusive sobre linhas malformadas (skip silencioso
-/// via `parse_metrics_line`), para não reprocessar lixo a cada tick.
-///
-/// Arquivo ausente ou ilegível → `(vec![], offset)` sem erro: o produtor pode
-/// ainda não ter criado o arquivo (ex.: daemon ainda carregando pipeline).
-///
-/// Compartilhada entre o collector do one-shot (`metrics.jsonl`) e o tail do
-/// path daemon (`telemetry.jsonl`, D1 — ADR-0023): mesmo formato de relatório
-/// nos dois paths.
-pub fn tail_jsonl_lines(path: &Path, lines_read: usize) -> (Vec<MetricsLine>, usize) {
-    let content = match std::fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(_) => return (Vec::new(), lines_read),
+/// Lê linhas novas de um arquivo JSONL a partir de um cursor de byte offset.
+/// Retorna `(linhas_parseadas, novo_byte_offset)`. Consome apenas linhas completas
+/// (terminadas em `\n`). Linhas parciais permanecem para o próximo tick.
+/// O offset avança sobre linhas válidas e malformadas (skip silencioso via `parse_metrics_line`).
+/// Se o tamanho do arquivo for menor que o offset (arquivo truncado ou recriado),
+/// o offset reseta para 0.
+/// Arquivo ausente ou ilegível → `(vec![], offset)` sem erro.
+pub fn tail_jsonl_lines(path: &Path, byte_offset: usize) -> (Vec<MetricsLine>, usize) {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return (Vec::new(), byte_offset),
     };
-    let lines: Vec<&str> = content.lines().collect();
-    // Arquivo truncado (rotação): recomeça do zero em vez de pular tudo.
-    let start = if lines.len() >= lines_read {
-        lines_read
-    } else {
-        0
+
+    let len = match file.metadata() {
+        Ok(m) => m.len() as usize,
+        Err(_) => return (Vec::new(), byte_offset),
     };
+
+    let mut start_offset = byte_offset;
+    if len < start_offset {
+        start_offset = 0;
+    }
+
+    if file.seek(SeekFrom::Start(start_offset as u64)).is_err() {
+        return (Vec::new(), start_offset);
+    }
+
+    let to_read = len.saturating_sub(start_offset);
+    if to_read == 0 {
+        return (Vec::new(), start_offset);
+    }
+
+    let mut buf = vec![0u8; to_read];
+    let n = match file.read_exact(&mut buf) {
+        Ok(()) => to_read,
+        Err(_) => {
+            // Fallback caso o arquivo tenha sido truncado durante a leitura
+            return (Vec::new(), start_offset);
+        }
+    };
+
+    // Encontra o último '\n' para processar apenas linhas completas
+    let complete_len = match buf[..n].iter().rposition(|&b| b == b'\n') {
+        Some(pos) => pos + 1,
+        None => return (Vec::new(), start_offset),
+    };
+
+    let text = match std::str::from_utf8(&buf[..complete_len]) {
+        Ok(s) => s,
+        Err(_) => {
+            // Se UTF-8 for inválido, avançamos o offset para não travar
+            return (Vec::new(), start_offset + complete_len);
+        }
+    };
+
     let mut parsed = Vec::new();
-    for line in &lines[start..] {
-        if let Some(m) = parse_metrics_line(line) {
-            parsed.push(m);
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() {
+            if let Some(m) = parse_metrics_line(trimmed) {
+                parsed.push(m);
+            }
         }
     }
-    (parsed, lines.len())
+
+    (parsed, start_offset + complete_len)
 }
 
 /// Constrói o `ReportBody` de progresso para uma linha de telemetria/metrics.
@@ -481,5 +519,75 @@ mod tests {
         let report = telemetry_report_for_line(&m, 10);
         let metrics = report.metrics.expect("metrics should be present");
         assert!(metrics.get("sys.cpu_pct").is_none());
+    }
+
+    #[test]
+    fn tail_jsonl_lines_two_ticks_append_and_partial_line() {
+        use std::io::Write;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("telemetry.jsonl");
+
+        // Tick 1: primeira linha completa + segunda linha parcial (sem \n)
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(
+                b"{\"epoch\":1,\"step\":1,\"loss\":0.5}\n{\"epoch\":1,\"step\":2,\"loss\":",
+            )
+            .unwrap();
+        }
+        let (parsed1, offset1) = tail_jsonl_lines(&path, 0);
+        assert_eq!(parsed1.len(), 1);
+        assert_eq!(parsed1[0].step, Some(1));
+        assert_eq!(offset1, b"{\"epoch\":1,\"step\":1,\"loss\":0.5}\n".len());
+
+        // Tick 2: completa a segunda linha + adiciona a terceira linha
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            f.write_all(b"0.4}\n{\"epoch\":1,\"step\":3,\"loss\":0.3}\n")
+                .unwrap();
+        }
+        let (parsed2, offset2) = tail_jsonl_lines(&path, offset1);
+        assert_eq!(parsed2.len(), 2);
+        assert_eq!(parsed2[0].step, Some(2));
+        assert_eq!(parsed2[1].step, Some(3));
+        assert_eq!(offset2, std::fs::metadata(&path).unwrap().len() as usize);
+    }
+
+    #[test]
+    fn tail_jsonl_lines_truncation_resets_offset_to_zero() {
+        use std::io::Write;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("telemetry.jsonl");
+
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(
+                b"{\"epoch\":1,\"step\":10,\"loss\":0.5}\n{\"epoch\":1,\"step\":20,\"loss\":0.4}\n",
+            )
+            .unwrap();
+        }
+        let (parsed1, offset1) = tail_jsonl_lines(&path, 0);
+        assert_eq!(parsed1.len(), 2);
+        assert_eq!(offset1, std::fs::metadata(&path).unwrap().len() as usize);
+
+        // Truncamento/recriação com arquivo menor
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(b"{\"epoch\":2,\"step\":1,\"loss\":0.1}\n")
+                .unwrap();
+        }
+        assert!((std::fs::metadata(&path).unwrap().len() as usize) < offset1);
+
+        let (parsed2, offset2) = tail_jsonl_lines(&path, offset1);
+        assert_eq!(
+            parsed2.len(),
+            1,
+            "offset deve resetar para 0 quando truncado"
+        );
+        assert_eq!(parsed2[0].epoch, 2);
+        assert_eq!(offset2, std::fs::metadata(&path).unwrap().len() as usize);
     }
 }

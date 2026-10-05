@@ -4775,8 +4775,14 @@ fn tail_jsonl_lines_incremental_skips_malformed() {
         "{\"phase\":\"loading_model\",\"progress\":0.1}\nnot-json\n{\"progress\":0.5}\n",
     )
     .unwrap();
+    let initial_content =
+        "{\"phase\":\"loading_model\",\"progress\":0.1}\nnot-json\n{\"progress\":0.5}\n";
     let (parsed, offset) = tail_jsonl_lines(&path, 0);
-    assert_eq!(offset, 3, "offset avança inclusive sobre linha malformada");
+    assert_eq!(
+        offset,
+        initial_content.len(),
+        "offset avança inclusive sobre linha malformada"
+    );
     assert_eq!(parsed.len(), 2);
     assert_eq!(parsed[0].phase.as_deref(), Some("loading_model"));
     // Sem mais linhas novas → vazio, offset estável.
@@ -4792,7 +4798,10 @@ fn tail_jsonl_lines_incremental_skips_malformed() {
     writeln!(f, "{{\"progress\":0.9}}").unwrap();
     let (parsed3, offset3) = tail_jsonl_lines(&path, offset2);
     assert_eq!(parsed3.len(), 1);
-    assert_eq!(offset3, offset2 + 1);
+    assert_eq!(
+        offset3,
+        initial_content.len() + "{\"progress\":0.9}\n".len()
+    );
 }
 
 #[test]
@@ -6599,4 +6608,64 @@ async fn b3_resolve_job_gpu_uuid_rules() {
     // 5. Sem dispatch.gpu_device e sem ORCH_GPU_DEVICES -> None (não emite)
     let res = crate::app::stages::collector::resolve_job_gpu_uuid(None, None, Some(&sampler)).await;
     assert_eq!(res, None);
+}
+
+#[tokio::test]
+async fn collect_diffusion_artifacts_parallel_preserves_order() {
+    let tmp = tempfile::tempdir().unwrap();
+    let outputs = tmp.path();
+
+    // Cria múltiplos arquivos que serão classificados como artefatos de difusão
+    // Ex: generated_000.png, generated_001.png, ..., generated_010.png
+    for i in 0..10 {
+        let fname = format!("generated_{:03}.png", i);
+        std::fs::write(outputs.join(&fname), format!("image data {i}")).unwrap();
+    }
+
+    let fake_s3 = FakeS3::new();
+    let s3: std::sync::Arc<dyn S3Port> = std::sync::Arc::new(fake_s3);
+
+    let (artifacts, errors) =
+        crate::app::stages::collector::collect_diffusion_artifacts(&s3, "job-order-test", outputs)
+            .await;
+
+    assert!(
+        errors.is_empty(),
+        "não deve haver erros de upload: {:?}",
+        errors
+    );
+    assert_eq!(artifacts.len(), 10);
+
+    for (i, art) in artifacts.iter().enumerate().take(10) {
+        let expected_path = format!("generated_{:03}.png", i);
+        assert_eq!(
+            art.path, expected_path,
+            "ordem determinística preservada no índice {i}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn collect_diffusion_artifacts_parallel_propagates_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let outputs = tmp.path();
+
+    for i in 0..5 {
+        let fname = format!("generated_{:03}.png", i);
+        std::fs::write(outputs.join(&fname), format!("image data {i}")).unwrap();
+    }
+
+    let fake_s3 = FakeS3::new();
+    fake_s3.set_upload_fail(true);
+    let s3: std::sync::Arc<dyn S3Port> = std::sync::Arc::new(fake_s3);
+
+    let (artifacts, errors) =
+        crate::app::stages::collector::collect_diffusion_artifacts(&s3, "job-err-test", outputs)
+            .await;
+
+    assert!(
+        artifacts.is_empty(),
+        "nenhum artefato deve ter sido coletado com sucesso"
+    );
+    assert_eq!(errors.len(), 5, "todas as 5 falhas devem ser propagadas");
 }

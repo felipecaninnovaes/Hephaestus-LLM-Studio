@@ -100,8 +100,17 @@ jobs:
           docker compose -f compose/local-com-local-node-gpu.yaml config -q
           docker compose -f compose/local-sem-node.yaml config -q
           docker compose -f compose/remote-node.yaml --env-file compose/.env.example config -q
+
   python:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        engine:
+          - engine-kit
+          - trainer-yolo
+          - trainer-difusao
+          - trainer-clip
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -111,23 +120,14 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "engines/**/pyproject.toml"
+
       - name: Compile check
         run: python -m compileall engines/*/src
 
-      - name: Install uv
-        run: curl -LsSf https://astral.sh/uv/install.sh | sh
-
-      - name: Add uv to PATH
-        run: echo "$HOME/.local/bin" >> $GITHUB_PATH
-
-      - name: Test engine-kit
-        run: cd engines/engine-kit && uv run --extra test pytest
-
-      - name: Test trainer-yolo
-        run: cd engines/trainer-yolo && uv run --extra test pytest
-
-      - name: Test trainer-difusao
-        run: cd engines/trainer-difusao && uv run --extra test pytest
-
-      - name: Test trainer-clip
-        run: cd engines/trainer-clip && uv run --extra test pytest
+      - name: Test ${{ matrix.engine }}
+        run: cd engines/${{ matrix.engine }} && uv run --extra test pytest

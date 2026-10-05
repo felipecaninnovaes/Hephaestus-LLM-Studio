@@ -365,15 +365,29 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             os.symlink(comfy_file, target_weight)
         
         bnb_ver = get_bitsandbytes_version()
+        quant_mode = "4bit"
+        custom_identity = None
+        if comfy_file and os.path.exists(comfy_file):
+            try:
+                st = os.stat(comfy_file)
+                import hashlib
+                h = hashlib.md5()
+                with open(comfy_file, "rb") as f:
+                    h.update(f.read(1024 * 1024))
+                custom_identity = f"{comfy_file}#{st.st_size}_{st.st_mtime_ns}_{h.hexdigest()[:12]}"
+            except OSError:
+                custom_identity = f"{comfy_file}#unknown"
+
         quant_model_id = f"{COMFY_REPO}/qwen_image_2.1"
-        quant_base = resolve_quant_base_dir(quant_model_id, "4bit")
+        quant_base = resolve_quant_base_dir(quant_model_id, quant_mode, custom_identity=custom_identity)
         transformer_cache_dir = quant_base / "transformer"
         
         transformer = None
         if _is_cache_valid(
             transformer_cache_dir,
             expected_model_id=quant_model_id,
-            expected_quant="4bit",
+            expected_quant=quant_mode,
+            expected_custom=custom_identity,
             expected_bnb_version=bnb_ver,
         ):
             try:
@@ -413,8 +427,9 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                     quant_base,
                     model_id=quant_model_id,
                     quant_label="4-bit BitsAndBytes",
-                    quant_format="4bit",
+                    quant_format=quant_mode,
                     target_dtype=torch_dtype,
+                    custom_checkpoint=custom_identity,
                     bnb_version=bnb_ver,
                 )
                 print(

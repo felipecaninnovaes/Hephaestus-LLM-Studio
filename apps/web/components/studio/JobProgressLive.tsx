@@ -40,6 +40,7 @@ const PHASE_LABELS: Record<string, string> = {
   extracting_dataset: "Extraindo Dataset",
   preparing_dataset: "Preparando Dataset",
   preparing_cache: "Pré-computando Cache",
+  caching_latents: "Cacheando Latents",
   downloading: "Download de Pesos",
   downloading_weights: "Download de Pesos",
   starting_container: "Iniciando Nó GPU",

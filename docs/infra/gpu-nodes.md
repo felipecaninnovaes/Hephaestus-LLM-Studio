@@ -134,9 +134,10 @@ EOF'
 ### 6.3 Build das Imagens e Inicialização
 > **Nota de disco:** o nó tem só 60 GB de `/` — faça build de **uma imagem por vez** e rode `docker system prune -af` entre builds para evitar `no space left on device`.
 ```bash
-# Build das imagens de motor (caso ainda não tenham sido geradas no nó)
-ssh dockeruser@10.15.50.114 'cd ~/Hephaestus-LLM-Studio && \
-  docker compose -p gpu --env-file infra/env.gpu -f infra/compose.gpu.yaml --profile build build trainer-gpu'
+# Build das imagens de motor (caso ainda não tenham sido geradas no nó).
+# Caminho canônico: scripts/build-gpu.sh <alvo> (difusao|yolo|orchestrator|base; sem alvo = todas),
+# que constrói engine-base-gpu antes dos trainers.
+ssh dockeruser@10.15.50.114 'cd ~/Hephaestus-LLM-Studio && ./scripts/build-gpu.sh yolo'
 
 # Iniciar o orchestrator-gpu
 ssh dockeruser@10.15.50.114 'cd ~/Hephaestus-LLM-Studio && \
@@ -155,7 +156,9 @@ Na migração do antigo NAS TrueNAS para a VM dedicada `docker-04`, a imagem
 `trainer-difusao:gpu` havia sido migrada) — dívida órfã não documentada até
 a fatia `feat/no-gpu-reuso-dataset-embeds`, onde travava o smoke de
 invariante YOLO (item 3 do §6 da spec). Buildada nessa sessão via
-`--profile build build trainer-gpu` (§6.3). Tags vigentes no nó após o
+`--profile build build trainer-gpu`; hoje o caminho canônico é
+`./scripts/build-gpu.sh yolo` (§6.3), que constrói `engine-base-gpu` antes.
+Tags vigentes no nó após o
 cutover `:reuso-cache` (W2 da mesma fatia): `gpu-orchestrator-gpu:latest`,
 `hephaestus/trainer-difusao:gpu`, `hephaestus/trainer-yolo:gpu`; backups de
 rollback preservados com sufixo `:pre-reuso-cutover` para as três imagens.

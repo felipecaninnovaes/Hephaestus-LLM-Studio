@@ -12,7 +12,8 @@ import {
   IconServer,
 } from "@/components/icons";
 import { ApiError } from "@/lib/api";
-import { getTelemetry, listJobs } from "@/lib/jobs";
+import { listJobs } from "@/lib/jobs";
+import { useSharedTelemetry } from "@/lib/telemetryStore";
 import {
   listOrchestrators,
   listModels,
@@ -28,11 +29,11 @@ import { Button, SegmentedControl, StatCard, GlassCard } from "@/components/ui";
 import { OrchestratorCard } from "@/components/composite/OrchestratorCard";
 import { TruncatedText } from "@/components/ui/TruncatedText";
 import { formatBytes, formatRelativeTime } from "@/lib/format";
-import type { Dataset, Job, Telemetry } from "@/types/studio";
+import type { Dataset, Job } from "@/types/studio";
 
 export default function DashboardPage() {
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
-  const [telemetry, setTelemetry] = useState<Telemetry | null>(null);
+  const telemetry = useSharedTelemetry(3000);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [orchestrators, setOrchestrators] = useState<Orchestrator[]>([]);
@@ -47,9 +48,8 @@ export default function DashboardPage() {
       return;
     }
     try {
-      const [telemData, datasetsRes, jobsRes, orchData, modelsData, storageData] =
+      const [datasetsRes, jobsRes, orchData, modelsData, storageData] =
         await Promise.allSettled([
-          getTelemetry(),
           fetch("/api/datasets", { credentials: "same-origin" }).then((r) =>
             r.ok ? r.json() : [],
           ),
@@ -69,7 +69,6 @@ export default function DashboardPage() {
           getStorageUsage().catch(() => null),
         ]);
 
-      if (telemData.status === "fulfilled") setTelemetry(telemData.value);
       if (datasetsRes.status === "fulfilled" && Array.isArray(datasetsRes.value))
         setDatasets(datasetsRes.value);
       if (jobsRes.status === "fulfilled" && jobsRes.value?.items)

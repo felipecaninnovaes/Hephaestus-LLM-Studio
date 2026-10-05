@@ -22,9 +22,9 @@ import { useJobLifecycle } from "@/hooks/useJobLifecycle";
 import {
   getJobArtifacts,
   getJobMetrics,
-  getTelemetry,
   listJobs,
 } from "@/lib/jobs";
+import { useSharedTelemetry } from "@/lib/telemetryStore";
 import {
   buildDiffusionRerun,
   buildDiffusionResume,
@@ -34,7 +34,6 @@ import type {
   Job,
   JobArtifact,
   JobMetrics as JobMetricsType,
-  Telemetry,
 } from "@/types/studio";
 import { JOB_STATUS_CONFIG } from "../JobCard";
 import { ActionCenterEmptyState } from "./ActionCenterEmptyState";
@@ -54,7 +53,7 @@ const STATUS_CONFIG = JOB_STATUS_CONFIG;
 export function ActionCenter({ open, onClose }: ActionCenterProps) {
   const router = useRouter();
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [telemetry, setTelemetry] = useState<Telemetry | null>(null);
+  const telemetry = useSharedTelemetry({ intervalMs: 3000, enabled: open });
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState("");
   const [tab, setTab] = useState<TabFilter>("all");
@@ -95,21 +94,12 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
 
   const pollRef = useRef<number | null>(null);
 
-  // Busca lista de jobs e telemetria do nó em paralelo
+  // Busca lista de jobs do nó
   const fetchData = useCallback(async () => {
     try {
       setLoading(true);
-      const [resJobs, resTel] = await Promise.allSettled([
-        listJobs(),
-        getTelemetry(),
-      ]);
-
-      if (resJobs.status === "fulfilled") {
-        setJobs(resJobs.value.items || []);
-      }
-      if (resTel.status === "fulfilled") {
-        setTelemetry(resTel.value);
-      }
+      const resJobs = await listJobs();
+      setJobs(resJobs.items || []);
     } catch {
       // Ignora erro silenciosamente em polling
     } finally {

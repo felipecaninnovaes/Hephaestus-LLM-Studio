@@ -184,10 +184,42 @@ def build_dataloader(
     dataset: DiffusionDataset, batch_size: int, seed: int | None = None
 ) -> Any:
     """Constrói o DataLoader respeitando o modo de bucketing do dataset."""
+    import os
+    import torch
     from torch.utils.data import DataLoader
+
+    raw_workers = os.environ.get("DIFFUSION_DATALOADER_WORKERS")
+    if raw_workers is not None:
+        try:
+            workers = max(0, int(raw_workers))
+        except ValueError:
+            workers = min(2, os.cpu_count() or 1)
+    else:
+        workers = min(2, os.cpu_count() or 1)
+
+    loader_kwargs: dict[str, Any] = {
+        "num_workers": workers,
+        "pin_memory": torch.cuda.is_available(),
+    }
+    if workers > 0:
+        loader_kwargs["persistent_workers"] = True
+        loader_kwargs["prefetch_factor"] = 2
 
     if dataset.enable_bucket:
         return DataLoader(
-            dataset, batch_sampler=BucketBatchSampler(dataset, batch_size, seed=seed)
+            dataset,
+            batch_sampler=BucketBatchSampler(dataset, batch_size, seed=seed),
+            **loader_kwargs,
         )
-    return DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=False)
+    generator = None
+    if seed is not None:
+        generator = torch.Generator().manual_seed(seed)
+
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        drop_last=False,
+        generator=generator,
+        **loader_kwargs,
+    )

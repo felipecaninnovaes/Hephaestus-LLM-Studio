@@ -464,6 +464,9 @@ class TrainingLoopRunner:
             comp["trainable_module"].train()
             epoch_loss = 0.0
             steps_in_epoch = 0
+            unconsumed_losses: list[torch.Tensor] = []
+            unconsumed_grad_norms: list[tuple[int, torch.Tensor | float]] = []
+            last_loss_val: float | None = None
 
             for batch in dataloader:
                 # Prior-preservation: com prob. control_ratio usa batch de controle
@@ -485,63 +488,94 @@ class TrainingLoopRunner:
                 loss = loss / tcfg.grad_accum
                 loss.backward()
 
-                cur_loss_raw = float(loss.item()) * tcfg.grad_accum
+                loss_detached = loss.detach() * tcfg.grad_accum
+                unconsumed_losses.append(loss_detached)
                 steps_in_epoch += 1
 
-                if steps_in_epoch % tcfg.grad_accum == 0 or steps_in_epoch == len(dataloader):
+                is_accum_step = (
+                    steps_in_epoch % tcfg.grad_accum == 0 or steps_in_epoch == len(dataloader)
+                )
+
+                # Função auxiliar para sincronizar perdas e grad_norms pendentes
+                def _sync_unconsumed() -> float:
+                    nonlocal epoch_loss, last_loss_val, last_grad_norm
+                    if not unconsumed_losses:
+                        return last_loss_val if last_loss_val is not None else 0.0
+
+                    loss_vals = [float(t.item()) for t in unconsumed_losses]
+                    unconsumed_losses.clear()
+
+                    # Mapeia grad_norms acumulados por índice de micro-step relativo
+                    # unconsumed_grad_norms contém (micro_idx, grad_norm_raw)
+                    gn_map: dict[int, float] = {}
+                    for u_idx, raw_gn in unconsumed_grad_norms:
+                        if hasattr(raw_gn, "item"):
+                            gn_val = float(raw_gn.item())
+                        elif raw_gn is not None:
+                            gn_val = float(raw_gn)
+                        else:
+                            gn_val = 0.0
+                        gn_map[u_idx] = gn_val
+                        last_grad_norm = gn_val
+                    unconsumed_grad_norms.clear()
+
+                    for i, l_val in enumerate(loss_vals):
+                        g_norm = gn_map.get(i)
+                        diag_tracker.observe_step(l_val, g_norm)
+                        if not math.isnan(l_val) and not math.isinf(l_val):
+                            epoch_loss += l_val
+                    last_loss_val = loss_vals[-1]
+                    return last_loss_val
+
+                if is_accum_step:
                     grad_norm_raw = torch.nn.utils.clip_grad_norm_(comp["trainable_module"].parameters(), 1.0)
-                    if hasattr(grad_norm_raw, "item"):
-                        last_grad_norm = float(grad_norm_raw.item())
-                    elif grad_norm_raw is not None:
-                        last_grad_norm = float(grad_norm_raw)
-                    else:
-                        last_grad_norm = compute_grad_norm_l2(comp["trainable_module"].parameters())
-                    diag_tracker.observe_step(cur_loss_raw, last_grad_norm)
+                    if grad_norm_raw is None:
+                        grad_norm_raw = compute_grad_norm_l2(comp["trainable_module"].parameters())
+                    unconsumed_grad_norms.append((len(unconsumed_losses) - 1, grad_norm_raw))
+
                     optimizer.step()
                     if lr_scheduler is not None:
                         lr_scheduler.step()
                     optimizer.zero_grad()
                     global_step += 1
-                else:
-                    diag_tracker.observe_step(cur_loss_raw, None)
-                if not math.isnan(cur_loss_raw) and not math.isinf(cur_loss_raw):
-                    epoch_loss += cur_loss_raw
 
-                effective_lr = (
-                    lr_scheduler.get_last_lr()[0] if lr_scheduler else tcfg.learning_rate
-                )
+                    # Emite métricas a cada 5 passos de otimização ou fim de época
+                    if global_step % 5 == 0 or steps_in_epoch == len(dataloader):
+                        cur_loss_raw = _sync_unconsumed()
+                        safe_loss = (
+                            None
+                            if (math.isnan(cur_loss_raw) or math.isinf(cur_loss_raw))
+                            else round(cur_loss_raw, 4)
+                        )
+                        effective_lr = (
+                            lr_scheduler.get_last_lr()[0] if lr_scheduler else tcfg.learning_rate
+                        )
+                        current_progress = round(
+                            min(0.99, max(0.10, 0.10 + 0.89 * (global_step / max(1, total_train_steps)))), 4
+                        )
+                        diagnostics_payload = diag_tracker.build_diagnostics(
+                            grad_norm_l2=last_grad_norm,
+                            optimizer=optimizer,
+                            default_lr=effective_lr,
+                            model=comp.get("trainable_module"),
+                            step=global_step,
+                        )
+                        _emit_metric(
+                            metrics_path,
+                            epoch=epoch,
+                            step=global_step,
+                            loss=safe_loss,
+                            lr=effective_lr,
+                            grad_norm=last_grad_norm,
+                            diagnostics=diagnostics_payload,
+                            progress=current_progress,
+                            phase="training",
+                            message=f"Época {epoch}/{tcfg.epochs + tcfg.epoch_offset} · Step {global_step}/{total_train_steps} · Loss: {safe_loss}",
+                        )
 
-                # Emite métricas a cada 5 passos de otimização
-                if steps_in_epoch % tcfg.grad_accum == 0 and (
-                    global_step % 5 == 0 or steps_in_epoch == len(dataloader)
-                ):
-                    safe_loss = (
-                        None
-                        if (math.isnan(cur_loss_raw) or math.isinf(cur_loss_raw))
-                        else round(cur_loss_raw, 4)
-                    )
-                    current_progress = round(
-                        min(0.99, max(0.10, 0.10 + 0.89 * (global_step / max(1, total_train_steps)))), 4
-                    )
-                    diagnostics_payload = diag_tracker.build_diagnostics(
-                        grad_norm_l2=last_grad_norm,
-                        optimizer=optimizer,
-                        default_lr=effective_lr,
-                        model=comp.get("trainable_module"),
-                        step=global_step,
-                    )
-                    _emit_metric(
-                        metrics_path,
-                        epoch=epoch,
-                        step=global_step,
-                        loss=safe_loss,
-                        lr=effective_lr,
-                        grad_norm=last_grad_norm,
-                        diagnostics=diagnostics_payload,
-                        progress=current_progress,
-                        phase="training",
-                        message=f"Época {epoch}/{tcfg.epochs + tcfg.epoch_offset} · Step {global_step}/{total_train_steps} · Loss: {safe_loss}",
-                    )
+            # Garante que qualquer perda remanescente da época seja sincronizada para o epoch_loss
+            _sync_unconsumed()
+
 
             # Fim de época
             avg_loss = epoch_loss / max(1, steps_in_epoch)

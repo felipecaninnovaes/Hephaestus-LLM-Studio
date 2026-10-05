@@ -4,12 +4,27 @@ use std::path::Path;
 
 use crate::domain::errors::PipelineError;
 
-/// Calcula MD5 hex de um arquivo.
+/// Calcula MD5 hex de um arquivo usando streaming em chunks de 64 KiB.
 pub fn compute_file_md5(path: &Path) -> Result<String, String> {
     use md5::Digest;
-    let bytes = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
-    let digest = md5::Md5::digest(&bytes);
-    Ok(hex::encode(digest))
+    use std::io::Read;
+
+    let mut file =
+        std::fs::File::open(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let mut hasher = md5::Md5::new();
+    let mut buffer = [0u8; 64 * 1024];
+
+    loop {
+        let n = file
+            .read(&mut buffer)
+            .map_err(|e| format!("read {}: {e}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+    }
+
+    Ok(hex::encode(hasher.finalize()))
 }
 
 /// Descompacta um zip em `dest`, recusando entradas com `..` ou caminhos absolutos.
@@ -51,4 +66,33 @@ pub fn unzip_safe(zip_path: &Path, dest: &Path) -> Result<(), PipelineError> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn compute_file_md5_large_file_streaming() {
+        use md5::Digest;
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("large.bin");
+
+        // 256 KiB (> 4x o buffer de 64 KiB) de dados pseudo-aleatórios determinísticos
+        let mut data = Vec::with_capacity(256 * 1024);
+        for i in 0..(256 * 1024) {
+            data.push((i % 251) as u8);
+        }
+        std::fs::File::create(&file_path)
+            .unwrap()
+            .write_all(&data)
+            .unwrap();
+
+        let expected_digest = md5::Md5::digest(&data);
+        let expected_md5 = hex::encode(expected_digest);
+
+        let actual_md5 = compute_file_md5(&file_path).expect("md5 should succeed");
+        assert_eq!(actual_md5, expected_md5);
+    }
 }

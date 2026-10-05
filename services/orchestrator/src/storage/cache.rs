@@ -72,7 +72,10 @@ pub async fn stage_cached_weight_with_progress(
         .await
         .map_err(|e| PipelineError::S3Download(format!("download weight {scoped_key}: {e}")))?;
 
-    let actual_md5 = compute_file_md5(&tmp_file)
+    let tmp_file_for_md5 = tmp_file.clone();
+    let actual_md5 = tokio::task::spawn_blocking(move || compute_file_md5(&tmp_file_for_md5))
+        .await
+        .map_err(|e| PipelineError::S3Download(format!("spawn weight md5 {scoped_key}: {e}")))?
         .map_err(|e| PipelineError::S3Download(format!("compute weight md5 {scoped_key}: {e}")))?;
 
     if actual_md5 != expected_md5 {

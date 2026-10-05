@@ -97,7 +97,10 @@ pub async fn ensure_dataset_cached(
         .await
         .map_err(|e| PipelineError::S3Download(format!("download package: {e}")))?;
 
-    let actual_md5 = compute_file_md5(&zip_path)
+    let zip_path_for_md5 = zip_path.clone();
+    let actual_md5 = tokio::task::spawn_blocking(move || compute_file_md5(&zip_path_for_md5))
+        .await
+        .map_err(|e| PipelineError::S3Download(format!("spawn md5: {e}")))?
         .map_err(|e| PipelineError::S3Download(format!("compute md5: {e}")))?;
     if actual_md5 != expected_md5 {
         return Err(PipelineError::Md5Mismatch {
@@ -109,7 +112,11 @@ pub async fn ensure_dataset_cached(
 
     let tmp_extract = root.join(format!(".tmp-{}", uuid::Uuid::new_v4()));
     create_dir_all_open(&tmp_extract).await?;
-    unzip_safe(&zip_path, &tmp_extract)?;
+    let zip_path_for_unzip = zip_path.clone();
+    let tmp_extract_for_unzip = tmp_extract.clone();
+    tokio::task::spawn_blocking(move || unzip_safe(&zip_path_for_unzip, &tmp_extract_for_unzip))
+        .await
+        .map_err(|e| PipelineError::Other(format!("spawn unzip: {e}")))??;
 
     // Promoção atômica: rename .tmp-<uuid> -> <md5_zip> (mesmo filesystem).
     if let Err(e) = tokio::fs::rename(&tmp_extract, &entry_dir).await {

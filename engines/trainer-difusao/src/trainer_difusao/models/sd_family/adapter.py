@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
+from trainer_difusao.common_pkg.latent_cache import batch_pixel_hw, batch_size_of, latents_from_batch
 from trainer_difusao.models.loop import LoraTrainConfig, ModelComponents, parse_lora_train_config
 from trainer_difusao.models.sd_pkg import (
     _compute_sdxl_embeddings,
@@ -239,12 +240,15 @@ class SD15Adapter:
         device = comp["device"]
         dtype = comp["dtype"]
 
-        pixel_values = batch["pixel_values"].to(device, dtype=torch.float32)
-        cur_bs = pixel_values.shape[0]
+        cur_bs = batch_size_of(batch)
 
         with torch.no_grad():
             latents = (
-                vae.encode(pixel_values).latent_dist.sample()
+                latents_from_batch(
+                    batch,
+                    device,
+                    lambda px: vae.encode(px.to(torch.float32)).latent_dist.sample(),
+                )
                 * vae.config.scaling_factor
             ).to(dtype=dtype)
 
@@ -551,12 +555,15 @@ class SDXLAdapter:
         device = comp["device"]
         dtype = comp["dtype"]
 
-        pixel_values = batch["pixel_values"].to(device, dtype=torch.float32)
-        cur_bs = pixel_values.shape[0]
+        cur_bs = batch_size_of(batch)
 
         with torch.no_grad():
             latents = (
-                vae.encode(pixel_values).latent_dist.sample()
+                latents_from_batch(
+                    batch,
+                    device,
+                    lambda px: vae.encode(px.to(torch.float32)).latent_dist.sample(),
+                )
                 * vae.config.scaling_factor
             ).to(dtype=dtype)
 
@@ -571,7 +578,7 @@ class SDXLAdapter:
 
         # Micro-conditioning: original size, target size, and crop offsets
         if tcfg.enable_bucket:
-            bh, bw = pixel_values.shape[2], pixel_values.shape[3]
+            bh, bw = batch_pixel_hw(batch)
             batch_time_ids = torch.tensor(
                 [[bh, bw, 0, 0, bh, bw]],
                 dtype=dtype,

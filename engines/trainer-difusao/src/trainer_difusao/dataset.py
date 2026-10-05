@@ -74,6 +74,9 @@ class DiffusionDataset:
         self.bucket_dims: list[tuple[int, int]] = []
         # bucket (w, h) -> índices das amostras naquele bucket.
         self.buckets: dict[tuple[int, int], list[int]] = {}
+        # Cache de latents do VAE (ver common_pkg/latent_cache.py); None = pixels.
+        self._latent_cache: Any | None = None
+        self._latent_keys: list[str] = []
 
         # Busca em images/ ou na raiz do dataset
         target_dir = dataset_path / "images"
@@ -127,12 +130,24 @@ class DiffusionDataset:
     def __len__(self) -> int:
         return len(self.samples)
 
-    def __getitem__(self, idx: int) -> dict[str, Any]:
+    def use_latent_cache(self, cache: Any, keys: list[str]) -> None:
+        """Passa a servir ``latent_mean``/``latent_std`` do cache em vez de pixels.
+
+        ``keys[i]`` é a chave de cache da amostra ``i`` (calculada no processo
+        principal; os workers do DataLoader só leem o .pt).
+        """
+        if len(keys) != len(self.samples):
+            raise ValueError("keys deve ter uma chave por amostra")
+        self._latent_cache = cache
+        self._latent_keys = list(keys)
+
+    def load_pixel_values(self, idx: int) -> Any:
+        """Imagem ``idx`` como tensor CHW float32 em [-1, 1], no bucket da amostra."""
         import numpy as np
         import torch
         from PIL import Image
 
-        img_path, caption = self.samples[idx]
+        img_path, _ = self.samples[idx]
         w, h = self.bucket_dims[idx]
         image = Image.open(img_path).convert("RGB")
         image = image.resize((w, h), Image.Resampling.BILINEAR)
@@ -140,9 +155,27 @@ class DiffusionDataset:
         # Normaliza para [-1.0, 1.0]
         img_np = (np.array(image, dtype=np.float32) / 127.5) - 1.0
         # HWC -> CHW
-        img_tensor = torch.from_numpy(img_np).permute(2, 0, 1)
+        return torch.from_numpy(img_np).permute(2, 0, 1)
 
-        return {"pixel_values": img_tensor, "prompt": caption, "index": idx}
+    def __getitem__(self, idx: int) -> dict[str, Any]:
+        _, caption = self.samples[idx]
+        if self._latent_cache is not None:
+            entry = self._latent_cache.get(self._latent_keys[idx])
+            if entry is None:
+                raise RuntimeError(
+                    f"Cache de latents ausente/corrompido para {self.samples[idx][0]} "
+                    f"durante o treino (após pré-compute); reinicie o job."
+                )
+            w, h = self.bucket_dims[idx]
+            return {
+                "latent_mean": entry["mean"],
+                "latent_std": entry["std"],
+                "height": h,
+                "width": w,
+                "prompt": caption,
+                "index": idx,
+            }
+        return {"pixel_values": self.load_pixel_values(idx), "prompt": caption, "index": idx}
 
 
 class BucketBatchSampler:

@@ -35,6 +35,14 @@ from trainer_difusao.common import (
     save_adapter_checkpoint,
     save_final_adapter,
 )
+from trainer_difusao.common_pkg.latent_cache import (
+    LatentCache,
+    prepare_latent_cache,
+    resolve_cache_latents,
+    sample_latent_dist,
+    vae_encode_dist,
+    vae_fingerprint,
+)
 from trainer_difusao.dataset import DiffusionDataset, build_dataloader
 from trainer_difusao.models.base import BaseModelTrainer
 from trainer_difusao.models.mock import _mock_train
@@ -222,6 +230,49 @@ def _qwen_sample_native(
         traceback.print_exc()
         return None
 
+
+def _qwen_vae_input(images: torch.Tensor) -> torch.Tensor:
+    """Entrada 5D (B, C, T=1, H, W) do VAE causal-3D; RGB ganha canal alpha opaco
+    (VAE nativo RGBA, in_channels=4 — PITFALLS: VAE causal-3D / alpha_channel)."""
+    if images.shape[1] == 3:
+        alpha_channel = torch.ones_like(images[:, :1])
+        images = torch.cat([images, alpha_channel], dim=1)
+    return images.unsqueeze(2)
+
+
+def _qwen_encode_dist(vae: Any, images: torch.Tensor, dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor]:
+    """(mean, std) de ``latent_dist`` de imagens (B, C, H, W) em [-1, 1]; shape (B, 64, 1, H', W')."""
+    return vae_encode_dist(vae, _qwen_vae_input(images.to(dtype)))
+
+
+def _qwen_normalized_latents(
+    vae: Any,
+    batch: dict[str, Any],
+    device: Any,
+    dtype: torch.dtype,
+    generator: torch.Generator | None = None,
+) -> torch.Tensor:
+    """Latents normalizados (B, 64, H', W') do batch.
+
+    Com cache (``latent_mean``/``latent_std``) amostra ``mean + std*randn`` (VAE fora
+    da GPU); sem cache codifica ``pixel_values`` (VAE deve estar em ``device``).
+    A normalização usa só ``vae.config`` (independe do device do VAE).
+    """
+    if "latent_mean" in batch:
+        latents = sample_latent_dist(
+            batch["latent_mean"].to(device), batch["latent_std"].to(device), generator
+        ).to(dtype)
+    else:
+        images = batch["pixel_values"].to(device, dtype=dtype)
+        latents = vae.encode(_qwen_vae_input(images)).latent_dist.sample()  # (B, 64, 1, H', W')
+    # Normalize latents (ai-toolkit reference pattern)
+    mean = torch.tensor(vae.config.latents_mean).view(1, -1, 1, 1, 1).to(device, dtype=dtype)
+    std = torch.tensor(vae.config.latents_std).view(1, -1, 1, 1, 1).to(device, dtype=dtype)
+    latents = (latents - mean) / std
+    # Remove frame dimension for downstream processing
+    return latents.squeeze(2)  # (B, 64, 1, H', W') -> (B, 64, H', W')
+
+
 def _resume_epoch_range(epoch_offset: int, epochs: int) -> list[tuple[int, int]]:
     """Gera os pares (local_epoch_idx, epoch_absoluto) do treino.
 
@@ -264,6 +315,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
     quantization = _normalize_train_quantization(raw_quant, default="4bit")
     base_name = _resolve_output_name(cfg)
     seed = int(cfg.get("seed", 42))
+    cache_latents = resolve_cache_latents(cfg)
 
     samples_cfg = cfg.get("samples", {})
     sample_prompt = str(samples_cfg.get("prompt", "") or "").strip()
@@ -620,6 +672,31 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
     cleanup_cuda()
     _unload_text_pipeline(None, text_encoder)
 
+    # Cache de latents: codifica cada imagem UMA vez (distribuição do VAE) e tira o VAE da GPU
+    latents_cached = False
+    if cache_latents:
+        latent_cache = LatentCache(
+            output_path,
+            True,
+            namespace_fields={
+                "arch": "qwen_image_2_1",
+                "model_id": base_model_path,
+                "vae_fingerprint": vae_fingerprint(vae),
+                "dtype": str(torch_dtype),
+            },
+        )
+        latents_cached = prepare_latent_cache(
+            latent_cache,
+            [dataset],
+            lambda px: _qwen_encode_dist(vae, px, torch_dtype),
+            device=device,
+            dtype=torch_dtype,
+            metrics_path=metrics_path,
+        )
+        if latents_cached:
+            vae.to("cpu")
+            cleanup_cuda()
+
     # 4. Setup LoRA
     _emit_metric(
         metrics_path,
@@ -707,7 +784,6 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
 
             for batch_idx, batch in enumerate(dataloader):
                 # Prepare batch
-                images = batch["pixel_values"].to(device, dtype=torch_dtype)
                 captions = batch["prompt"]
 
                 # Get cached text embeddings (embeds, mask, slot_mask)
@@ -728,23 +804,14 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
 
                 batch_size_actual = len(embeds_list)
 
-                # Encode images to latents
+                # Latents: amostrados de mean/std em cache (VAE fora da GPU) ou
+                # codificados online com o VAE trazido à GPU só durante o encode
                 with torch.no_grad():
-                    vae.to(device)
-                    # VAE nativo (RGBA) espera in_channels=4; dataset comum é RGB (3 canais)
-                    if images.shape[1] == 3:
-                        alpha_channel = torch.ones_like(images[:, :1])
-                        images = torch.cat([images, alpha_channel], dim=1)
-                    # VAE expects 5D input (B, C, T, H, W) with single-frame dim at dim=2
-                    images_5d = images.unsqueeze(2)  # (B, C, H, W) -> (B, C, 1, H, W)
-                    latents = vae.encode(images_5d).latent_dist.sample()  # (B, 64, 1, H', W')
-                    # Normalize latents (ai-toolkit reference pattern)
-                    mean = torch.tensor(vae.config.latents_mean).view(1, -1, 1, 1, 1).to(device, dtype=torch_dtype)
-                    std = torch.tensor(vae.config.latents_std).view(1, -1, 1, 1, 1).to(device, dtype=torch_dtype)
-                    latents = (latents - mean) / std
-                    # Remove frame dimension for downstream processing
-                    latents = latents.squeeze(2)  # (B, 64, 1, H', W') -> (B, 64, H', W')
-                    vae.to("cpu")
+                    if not latents_cached:
+                        vae.to(device)
+                    latents = _qwen_normalized_latents(vae, batch, device, torch_dtype)
+                    if not latents_cached:
+                        vae.to("cpu")
 
                 # Pad prompt embeddings and masks into batch tensors
                 prompt_embeds, prompt_mask, slot_mask = pad_prompt_batch(
@@ -916,6 +983,10 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                     )
                 except Exception as e:
                     print(f"[WARN] Erro ao gerar amostra epoch {epoch}: {e}", flush=True)
+                if latents_cached:
+                    # _qwen_sample_native deixa o VAE na GPU após o decode; devolve à CPU.
+                    vae.to("cpu")
+                    cleanup_cuda()
 
     except Exception as e:
         print(f"[ERROR] Erro durante treino: {e}", flush=True)

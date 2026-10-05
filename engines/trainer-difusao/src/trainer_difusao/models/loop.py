@@ -32,6 +32,14 @@ from trainer_difusao.common_pkg.diagnostics import (
     DiagnosticsTracker,
     compute_grad_norm_l2,
 )
+from trainer_difusao.common_pkg.latent_cache import (
+    LatentCache,
+    prepare_latent_cache,
+    resolve_cache_latents,
+    vae_encode_dist,
+    vae_fingerprint,
+    vae_on_device,
+)
 from trainer_difusao.dataset import DiffusionDataset, build_dataloader
 from trainer_difusao.optimizers import _create_lr_scheduler, _create_optimizer
 
@@ -69,6 +77,9 @@ class LoraTrainConfig:
     sample_seed: int
     custom_checkpoint_path: str | None
     text_encoder_path: str | None
+    # Pré-computa a distribuição do VAE em disco e tira o VAE da GPU (chave `cache_latents`,
+    # default true; lida do cfg sem campo no wire público).
+    cache_latents: bool = True
     # Estado extra específico de arquitetura (ex.: hf_token, quant_label, is_flux2 no
     # FluxAdapter) que não se generaliza para todas as archs. Runner nunca lê isto;
     # é uso exclusivo do adapter que o preencheu.
@@ -180,6 +191,7 @@ def parse_lora_train_config(
         sample_seed=sample_seed,
         custom_checkpoint_path=custom_checkpoint_path,
         text_encoder_path=text_encoder_path,
+        cache_latents=resolve_cache_latents(cfg),
     )
 
 
@@ -247,6 +259,51 @@ class TrainingLoopRunner:
 
     def __init__(self, adapter: ModelAdapter) -> None:
         self.adapter = adapter
+
+    def _setup_latent_cache(
+        self,
+        comp: ModelComponents,
+        tcfg: LoraTrainConfig,
+        output: Path,
+        datasets: list[Any],
+        metrics_path: Path,
+    ) -> bool:
+        """Pré-computa a distribuição do VAE e move o VAE para CPU.
+
+        Retorna True se o cache foi ligado e o VAE saiu da GPU (use ``vae_on_device``
+        para trazê-lo só na geração de amostras). False = comportamento antigo.
+        """
+        from trainer_difusao.loaders.quant_cache import _custom_checkpoint_identity
+
+        vae = comp["extra"].get("vae")
+        if not tcfg.cache_latents or vae is None:
+            return False
+        device = comp["device"]
+        dtype = comp["dtype"]
+        cache = LatentCache(
+            output,
+            True,
+            namespace_fields={
+                "arch": self.adapter.arch_label,
+                "model_id": tcfg.model_id,
+                "vae_fingerprint": vae_fingerprint(vae),
+                "custom_checkpoint_identity": _custom_checkpoint_identity(tcfg.custom_checkpoint_path),
+                "dtype": str(dtype),
+            },
+        )
+        ok = prepare_latent_cache(
+            cache,
+            datasets,
+            lambda px: vae_encode_dist(vae, px.float()),
+            device=device,
+            dtype=dtype,
+            metrics_path=metrics_path,
+        )
+        if not ok:
+            return False
+        vae.to("cpu")
+        _cleanup_cuda()
+        return True
 
     def run(self, cfg: dict[str, Any], output: Path) -> None:
         """Executa o loop de treino LoRA com checkpoint, sampling periódico e telemetria."""
@@ -406,6 +463,16 @@ class TrainingLoopRunner:
             flush=True,
         )
 
+        # Cache de latents: codifica cada imagem UMA vez e tira o VAE da GPU
+        vae_obj = comp["extra"].get("vae")
+        latents_offloaded = self._setup_latent_cache(
+            comp,
+            tcfg,
+            output,
+            [dataset] + ([control_dataset] if control_dataset else []),
+            metrics_path,
+        )
+
         # Amostra baseline (Época 0) se sample_prompt fornecido e não estiver retomando
         if tcfg.sample_prompt and tcfg.epoch_offset == 0:
             _emit_metric(
@@ -417,7 +484,8 @@ class TrainingLoopRunner:
                 message=f"Gerando amostra baseline pré-treino (Época 0): '{tcfg.sample_prompt[:40]}...'",
             )
             sample_baseline_file = output / "samples" / "sample_epoch_000.png"
-            self.adapter.generate_sample(comp, sample_baseline_file, tcfg, epoch=0, metrics_path=metrics_path, sample_embeds=sample_embeds)
+            with vae_on_device(vae_obj, device, offloaded=latents_offloaded):
+                self.adapter.generate_sample(comp, sample_baseline_file, tcfg, epoch=0, metrics_path=metrics_path, sample_embeds=sample_embeds)
             if sample_baseline_file.exists():
                 _emit_metric(
                     metrics_path,
@@ -503,9 +571,6 @@ class TrainingLoopRunner:
                 # Prior-preservation: com prob. control_ratio usa batch de controle
                 if control_iter is not None and random.random() < control_ratio:
                     batch = next(control_iter)
-
-                pixel_values = batch["pixel_values"].to(device, dtype=torch.float32)
-                cur_bs = pixel_values.shape[0]
 
                 # Forward e loss via adapter
                 cached_encode = _cached_encode(
@@ -645,7 +710,8 @@ class TrainingLoopRunner:
                     message=f"Iniciando geração de amostra visual (Época {epoch})...",
                     telemetry_only=True,
                 )
-                self.adapter.generate_sample(comp, sample_file, tcfg, epoch=epoch, metrics_path=metrics_path, sample_embeds=sample_embeds)
+                with vae_on_device(vae_obj, device, offloaded=latents_offloaded):
+                    self.adapter.generate_sample(comp, sample_file, tcfg, epoch=epoch, metrics_path=metrics_path, sample_embeds=sample_embeds)
                 if sample_file.exists():
                     _emit_metric(
                         metrics_path,

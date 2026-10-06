@@ -7441,6 +7441,66 @@ async fn t0016_autolabel_apply_roundtrip() {
 
 #[tokio::test]
 #[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn autolabel_partial_preview_apply_failed_cancelled_ok_running_409() {
+    let _guard = SERIAL.lock().await;
+
+    let cookie = authed_cookie();
+    let (st_base, _, _) =
+        state_with_manager(api_principal::jobs::manager_client::MockManager::default()).await;
+    let app_base = routes::build(st_base.clone());
+    let (ds, _, _, _, img1_name, _) = setup_autotracker_dataset(&app_base, &cookie).await;
+    drop(app_base);
+
+    let jsonl = format!(
+        "{{\"filename\": \"{}\", \"caption\": \"legenda parcial\"}}\n",
+        img1_name
+    );
+
+    for (job_status, expected) in [
+        ("failed", StatusCode::OK),
+        ("cancelled", StatusCode::OK),
+        ("running", StatusCode::CONFLICT),
+    ] {
+        let (mut mock, job_id) = setup_autolabel_mock(jsonl.as_bytes(), &ds);
+        mock.jobs_by_id.get_mut(&job_id).unwrap().status = job_status.into();
+        let storage = std::sync::Arc::new(api_principal::storage::MockStorage::new());
+        storage
+            .put_bytes(
+                &format!("artifacts/{job_id}/captions.jsonl"),
+                jsonl.clone().into_bytes(),
+            )
+            .await;
+        let st = state_with_seeded_storage(st_base.pool.clone(), storage, mock).await;
+        let app = routes::build(st);
+
+        let (p_status, _, p_body) = call(
+            app.clone(),
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/jobs/{job_id}/autolabel/preview"))
+                .header(http::header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(p_status, expected, "preview {job_status}");
+        let (a_status, a_body) = call_autolabel_apply(
+            &app,
+            &cookie,
+            &job_id,
+            &serde_json::json!({ "datasetId": ds, "overwrite": false }),
+        )
+        .await;
+        assert_eq!(a_status, expected, "apply {job_status}");
+        if expected == StatusCode::CONFLICT {
+            assert_eq!(json(&p_body)["code"], "job_not_done");
+            assert_eq!(json(&a_body)["code"], "job_not_done");
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
 async fn t0016_autolabel_apply_preserves_manual() {
     let _guard = SERIAL.lock().await;
 

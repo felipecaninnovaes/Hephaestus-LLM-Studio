@@ -859,6 +859,60 @@ async fn report_cancelled_grava_status_e_finished_at() {
 
 #[tokio::test]
 #[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn report_failed_e_cancelled_persistem_artifacts_parciais() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    for status in ["failed", "cancelled"] {
+        let resp = manager::create_job(&p, test_job_request(ds_id))
+            .await
+            .expect("create");
+        let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+        let art = || ArtifactItem {
+            kind: "captions".into(),
+            path: "captions.jsonl".into(),
+            md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+            bytes: 42,
+        };
+        // Reenvio do mesmo report: idempotente por path.
+        for _ in 0..2 {
+            manager::report_job(
+                &p,
+                job_id,
+                ReportRequest {
+                    status: status.into(),
+                    progress: None,
+                    epoch: None,
+                    step: None,
+                    metrics: None,
+                    error: Some("boom".into()),
+                    artifacts: Some(vec![art()]),
+                    meta_content: None,
+                    phase: None,
+                    message: None,
+                },
+            )
+            .await
+            .expect("report terminal com artifacts");
+        }
+        let rows: Vec<(String, String, i64)> =
+            sqlx::query_as("SELECT kind, path, bytes FROM job_artifacts WHERE job_id = $1")
+                .bind(job_id)
+                .fetch_all(&p)
+                .await
+                .unwrap();
+        assert_eq!(
+            rows,
+            vec![("captions".to_string(), "captions.jsonl".to_string(), 42)],
+            "status {status}"
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
 async fn report_invalid_md5_rejeita() {
     let _guard = SERIAL.lock().await;
     let p = pool().await;

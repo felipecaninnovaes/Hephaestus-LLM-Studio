@@ -1468,6 +1468,46 @@ async fn preview_autolabel_captions_404_job_not_found() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
+#[tokio::test]
+async fn autolabel_preview_and_apply_409_when_running() {
+    let mut job = mock_job();
+    job.engine = "autolabel".into();
+    job.status = "running".into();
+    job.dataset_id = Some("550e8400-e29b-41d4-a716-446655440001".into());
+    let id = job.id.clone();
+    let mut mock = MockManager::default();
+    mock.jobs_by_id.insert(id.clone(), job);
+    let state = test_state(mock);
+    let resp =
+        preview_autolabel_captions(axum::extract::State(state.clone()), Path(id.clone())).await;
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let resp = apply_autolabel_captions(
+        axum::extract::State(state),
+        Path(id),
+        Ok(axum::body::Bytes::from(
+            r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001"}"#,
+        )),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn autolabel_preview_failed_without_captions_artifact_is_404() {
+    for status in ["failed", "cancelled"] {
+        let mut job = mock_job();
+        job.engine = "autolabel".into();
+        job.status = status.into();
+        job.dataset_id = Some("550e8400-e29b-41d4-a716-446655440001".into());
+        let id = job.id.clone();
+        let mut mock = MockManager::default();
+        mock.jobs_by_id.insert(id.clone(), job);
+        let state = test_state(mock);
+        let resp = preview_autolabel_captions(axum::extract::State(state), Path(id)).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{status}");
+    }
+}
+
 // --- helpers ---
 
 fn mock_job() -> InternalJob {

@@ -810,11 +810,9 @@ pub async fn run_job_inner_with_sampler(
             ));
         }
 
-        let body = daemon::GenerateBody {
-            config: config_str,
-            output_dir: outputs.to_str().unwrap_or_default().to_string(),
-            telemetry_path: telemetry_abs.to_str().unwrap_or_default().to_string(),
-        };
+        // output_dir/telemetry_path no namespace do container do daemon (/outputs/<job>);
+        // `telemetry_abs` (path do orquestrador) segue só para o tail local.
+        let body = daemon::GenerateBody::for_job(config_str, job_id);
 
         // (c) Tail de telemetry.jsonl durante o POST /generate: o HTTP retorna
         // só no 200 (fim da geração), então sem tail o job fica em 0.0 até

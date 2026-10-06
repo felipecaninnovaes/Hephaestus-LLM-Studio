@@ -5013,7 +5013,10 @@ fn telemetry_report_for_line_matches_oneshot_format() {
 #[tokio::test]
 async fn daemon_path_emite_progresso_de_telemetry_jsonl() {
     use std::io::Write;
-    struct TelemetryWritingClient;
+    // O daemon enxerga `/outputs/<job>/...`; no teste o "volume" é o tmp do orquestrador.
+    struct TelemetryWritingClient {
+        root: std::path::PathBuf,
+    }
     #[async_trait]
     impl DaemonClient for TelemetryWritingClient {
         async fn health(&self) -> Option<HealthResponse> {
@@ -5025,7 +5028,11 @@ async fn daemon_path_emite_progresso_de_telemetry_jsonl() {
             })
         }
         async fn generate(&self, body: &GenerateBody) -> Result<(), String> {
-            let path = std::path::PathBuf::from(&body.telemetry_path);
+            let rel = body
+                .telemetry_path
+                .strip_prefix("/outputs/")
+                .expect("telemetry_path no namespace do daemon");
+            let path = self.root.join("outputs").join(rel);
             if let Some(parent) = path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
@@ -5069,7 +5076,9 @@ async fn daemon_path_emite_progresso_de_telemetry_jsonl() {
     let executor = Arc::new(FakeTrainerExecutor::new());
     let active_jobs = new_active_jobs();
 
-    let client = Arc::new(TelemetryWritingClient);
+    let client = Arc::new(TelemetryWritingClient {
+        root: tmp.path().to_path_buf(),
+    });
     let launcher = Arc::new(NoopLauncher);
     let daemon_state = Arc::new(DaemonState::new(
         "hephaestus/trainer-difusao:local",
@@ -6848,4 +6857,124 @@ async fn collect_diffusion_artifacts_parallel_propagates_error() {
         "nenhum artefato deve ter sido coletado com sucesso"
     );
     assert_eq!(errors.len(), 5, "todas as 5 falhas devem ser propagadas");
+}
+
+/// Regressão incidente 2026-10-06: TODO path enviado ao daemon (config.yaml:
+/// loras, custom checkpoint, text encoder, init image; mais output_dir e
+/// telemetry_path do body) deve estar no namespace dos mounts do container do
+/// daemon (`DAEMON_OUTPUTS_MOUNT`/`DAEMON_DATASETS_MOUNT`). Antes, o daemon
+/// montava `/data/outputs` e o engine descartava o LoRA em silêncio.
+#[tokio::test]
+async fn daemon_path_envia_todos_os_paths_no_namespace_do_mount_do_daemon() {
+    struct CapturingClient(std::sync::Mutex<Option<GenerateBody>>);
+    #[async_trait]
+    impl DaemonClient for CapturingClient {
+        async fn health(&self) -> Option<HealthResponse> {
+            Some(HealthResponse {
+                ok: true,
+                loaded_spec: None,
+                busy: false,
+                _extra: Default::default(),
+            })
+        }
+        async fn generate(&self, body: &GenerateBody) -> Result<(), String> {
+            *self.0.lock().unwrap() = Some(body.clone());
+            Ok(())
+        }
+        async fn shutdown(&self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    struct NoopLauncher;
+    #[async_trait]
+    impl DaemonLauncher for NoopLauncher {
+        async fn start(&self) -> Result<String, String> {
+            Ok("http://localhost:8766".to_string())
+        }
+        async fn kill(&self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let weights_bytes = b"fake weights data for all refs";
+    let weights_md5 = compute_file_md5_bytes(weights_bytes);
+    let s3 = Arc::new(FakeS3WithWeights::new(weights_bytes.to_vec()));
+    let job = "job-daemon-paths-001";
+    let mut dispatch = make_dispatch(job, "diffusion");
+    dispatch.mode = "generate".to_string();
+    dispatch.package_ref = None;
+    dispatch.config_yaml = Some(
+        "output: {output_path}\nlora: {lora_path_0}\ncustom: {custom_checkpoint_path}\n\
+         te: {text_encoder_path}\ninit: {init_image_path}"
+            .to_string(),
+    );
+    dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+    dispatch.loras = vec![LoraRefStage {
+        s3_key: "models/lora/abc/lora_a.safetensors".to_string(),
+        md5: weights_md5.clone(),
+        scale: 0.8,
+    }];
+    dispatch.custom_checkpoint = Some(WeightRef {
+        s3_key: "models/checkpoint/xyz/custom.safetensors".to_string(),
+        md5: weights_md5.clone(),
+    });
+    dispatch.text_encoder = Some(WeightRef {
+        s3_key: "models/text_encoder/t/te.safetensors".to_string(),
+        md5: weights_md5.clone(),
+    });
+    dispatch.init_image_ref = Some(InitImageRef {
+        s3_key: "artifacts/j0/gen.png".to_string(),
+        md5: None,
+    });
+    let mut output_files = HashMap::new();
+    output_files.insert("generated_0001.png".to_string(), b"png".to_vec());
+    create_fake_outputs(tmp.path(), job, &output_files);
+
+    let client = Arc::new(CapturingClient(std::sync::Mutex::new(None)));
+    let daemon_state = Arc::new(DaemonState::new(
+        "img",
+        8766,
+        600,
+        client.clone() as Arc<dyn DaemonClient>,
+        Arc::new(NoopLauncher) as Arc<dyn DaemonLauncher>,
+    ));
+    daemon_state.set_running(true, Some("http://localhost:8766".to_string()));
+
+    let result = run_job_inner(
+        &dispatch,
+        s3,
+        Arc::new(FakeReport::new()),
+        Arc::new(FakeTrainerExecutor::new()),
+        &new_active_jobs(),
+        None,
+        false,
+        Some(&daemon_state),
+    )
+    .await;
+    assert!(result.is_ok(), "{:?}", result.err());
+
+    let body = client.0.lock().unwrap().clone().expect("generate chamado");
+    let out = daemon::DAEMON_OUTPUTS_MOUNT;
+    assert_eq!(body.output_dir, format!("{out}/{job}"));
+    assert_eq!(body.telemetry_path, format!("{out}/{job}/telemetry.jsonl"));
+    let expected = [
+        format!("output: {out}/{job}\n"),
+        format!("lora: {out}/{job}/weights/lora_0.safetensors\n"),
+        format!("custom: {out}/{job}/weights/custom.safetensors\n"),
+        format!("te: {out}/{job}/weights/text_encoder.safetensors\n"),
+        format!("init: {out}/{job}/inputs/init.png"),
+    ];
+    for line in &expected {
+        assert!(
+            body.config.contains(line.as_str()),
+            "config sem `{line}`: {}",
+            body.config
+        );
+    }
+    assert!(
+        !body.config.contains("/data/"),
+        "nenhum path do orquestrador pode vazar: {}",
+        body.config
+    );
 }

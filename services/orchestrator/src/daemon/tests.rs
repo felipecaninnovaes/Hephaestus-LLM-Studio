@@ -1,19 +1,20 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 
 use super::*;
 
 /// Modo host (fallback): network_name=None → --network host, URL host.docker.internal
-/// Volume targets devem ser /data/datasets e /data/outputs (consistente com compose).
+/// Volume targets devem ser os mounts do daemon (iguais aos do one-shot).
 #[test]
 fn build_daemon_args_structure() {
     let launcher = DockerDaemonLauncher::new(
         "hephaestus/trainer-difusao:local",
         "diffusion-daemon",
         vec![
-            ("/host/data".into(), "/data/datasets".into()),
-            ("/host/out".into(), "/data/outputs".into()),
+            ("/host/data".into(), DAEMON_DATASETS_MOUNT.into()),
+            ("/host/out".into(), DAEMON_OUTPUTS_MOUNT.into()),
         ],
         8766,
         Some("0".into()),
@@ -33,10 +34,10 @@ fn build_daemon_args_structure() {
     assert!(args.contains(&"infra_default".to_string()));
     assert!(args.contains(&"-d".to_string()));
 
-    // Volumes — targets devem ser /data/datasets e /data/outputs
+    // Volumes — targets devem ser /datasets e /outputs (mesmos do one-shot)
     assert!(args.contains(&"-v".to_string()));
-    assert!(args.contains(&"/host/data:/data/datasets".to_string()));
-    assert!(args.contains(&"/host/out:/data/outputs".to_string()));
+    assert!(args.contains(&"/host/data:/datasets".to_string()));
+    assert!(args.contains(&"/host/out:/outputs".to_string()));
 
     // GPU
     assert!(args.contains(&"--gpus".to_string()));
@@ -702,4 +703,149 @@ async fn b2_preemption_index_to_uuid_via_sampler() {
         !ds_idx0.is_running(),
         "Job na mesma GPU 0 deve derrubar daemon"
     );
+}
+
+// -----------------------------------------------------------------------
+// Mapeamento de paths do body + readiness + timeout do /generate
+// -----------------------------------------------------------------------
+
+/// output_dir/telemetry_path são do namespace do container do daemon, não do orquestrador.
+#[test]
+fn generate_body_for_job_uses_daemon_mount_namespace() {
+    let body = GenerateBody::for_job("cfg".into(), "job-1");
+    assert_eq!(body.config, "cfg");
+    assert_eq!(body.output_dir, "/outputs/job-1");
+    assert_eq!(body.telemetry_path, "/outputs/job-1/telemetry.jsonl");
+    assert_eq!(DAEMON_OUTPUTS_MOUNT, "/outputs");
+    assert_eq!(DAEMON_DATASETS_MOUNT, "/datasets");
+}
+
+/// Client que só responde health ok após N falhas (container ainda subindo).
+struct WarmingUpClient {
+    failures_left: std::sync::atomic::AtomicUsize,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait]
+impl DaemonClient for WarmingUpClient {
+    async fn health(&self) -> Option<HealthResponse> {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.calls.fetch_add(1, SeqCst);
+        let left = self.failures_left.load(SeqCst);
+        if left > 0 {
+            self.failures_left.store(left - 1, SeqCst);
+            return None;
+        }
+        Some(HealthResponse {
+            ok: true,
+            loaded_spec: None,
+            busy: false,
+            _extra: Default::default(),
+        })
+    }
+    async fn generate(&self, _b: &GenerateBody) -> Result<(), String> {
+        Ok(())
+    }
+    async fn shutdown(&self) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// Cold start: health recusa por um tempo; ensure_daemon_ready espera e só
+/// retorna quando o daemon responde (não despacha /generate antes).
+#[tokio::test]
+async fn ensure_daemon_ready_waits_until_health_ok_on_cold_start() {
+    let client = Arc::new(WarmingUpClient {
+        failures_left: std::sync::atomic::AtomicUsize::new(5),
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let launcher = Arc::new(RecordingDaemonLauncher::new());
+    let ds = DaemonState::new("img", 8766, 600, client.clone(), launcher.clone());
+    ds.set_running(true, Some("http://localhost:8766".into()));
+
+    let url = ensure_daemon_ready_with(
+        &ds,
+        "spec",
+        Duration::from_secs(5),
+        Duration::from_millis(10),
+    )
+    .await
+    .expect("deve esperar o health e ter sucesso");
+    assert_eq!(url, "http://localhost:8766");
+    // 5 falhas + 1 sucesso do poll + 1 consulta de loaded_spec.
+    assert_eq!(client.calls.load(std::sync::atomic::Ordering::SeqCst), 7);
+    assert!(ds.is_running());
+    assert!(launcher.log().is_empty(), "daemon já rodando: sem restart");
+}
+
+/// Daemon que nunca fica pronto: erro após o teto informado, daemon morto e estado limpo.
+#[tokio::test]
+async fn ensure_daemon_ready_times_out_and_kills_daemon() {
+    let client = Arc::new(WarmingUpClient {
+        failures_left: std::sync::atomic::AtomicUsize::new(usize::MAX),
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let launcher = Arc::new(RecordingDaemonLauncher::new());
+    let ds = DaemonState::new("img", 8766, 600, client, launcher.clone());
+    ds.set_running(true, Some("http://localhost:8766".into()));
+
+    let err = ensure_daemon_ready_with(
+        &ds,
+        "spec",
+        Duration::from_millis(200),
+        Duration::from_millis(10),
+    )
+    .await
+    .expect_err("deve estourar o timeout");
+    assert_eq!(err, "daemon health timeout after 0s");
+    assert_eq!(launcher.log(), vec!["stop".to_string()]);
+    assert!(!ds.is_running());
+}
+
+/// Servidor que aceita o POST e só responde 200 após `delay` (geração longa).
+async fn slow_generate_server(delay: Duration) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = vec![0u8; 8192];
+                let _ = stream.read(&mut buf).await;
+                tokio::time::sleep(delay).await;
+                let _ = stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+                    .await;
+            });
+        }
+    });
+    format!("http://127.0.0.1:{}", addr.port())
+}
+
+/// Geração mais lenta que o antigo teto fixo continua OK enquanto estiver
+/// dentro do teto configurado do /generate.
+#[tokio::test]
+async fn http_generate_waits_for_slow_response_within_timeout() {
+    let url = slow_generate_server(Duration::from_millis(800)).await;
+    let client = HttpDaemonClient::with_generate_timeout(&url, Duration::from_secs(5));
+    let body = GenerateBody::for_job("cfg".into(), "j");
+    assert_eq!(client.generate(&body).await, Ok(()));
+}
+
+/// Estouro do teto do /generate produz erro explícito de timeout (limitado, não eterno).
+#[tokio::test]
+async fn http_generate_times_out_with_explicit_error() {
+    let url = slow_generate_server(Duration::from_secs(3)).await;
+    let client = HttpDaemonClient::with_generate_timeout(&url, Duration::from_millis(300));
+    let body = GenerateBody::for_job("cfg".into(), "j");
+    let err = client.generate(&body).await.unwrap_err();
+    assert!(err.starts_with("daemon generate timed out after"), "{err}");
+}
+
+/// O default cobre carga a frio + steps do 9B (~5 min) com folga e é limitado.
+#[test]
+fn default_generate_timeout_covers_cold_9b_and_is_bounded() {
+    assert!(DEFAULT_GENERATE_TIMEOUT >= Duration::from_secs(10 * 60));
+    assert!(DEFAULT_GENERATE_TIMEOUT <= Duration::from_secs(60 * 60));
+    assert!(SHORT_CALL_TIMEOUT < DEFAULT_GENERATE_TIMEOUT);
 }

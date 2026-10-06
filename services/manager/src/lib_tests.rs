@@ -462,6 +462,118 @@ fn normalize_diffusion_arch_casos_suportados() {
 }
 
 #[test]
+fn normalize_diffusion_arch_9b_e_aliases_4b() {
+    assert_eq!(
+        normalize_diffusion_arch("flux-2-klein-9b"),
+        Some("flux-2-klein-9b".into())
+    );
+    assert_eq!(
+        normalize_diffusion_arch("FLUX2-Klein-9B"),
+        Some("flux-2-klein-9b".into())
+    );
+    for alias in ["flux", "flux2", "flux-2-klein", "flux2-klein-4b"] {
+        assert_eq!(
+            normalize_diffusion_arch(alias),
+            Some("flux-2-klein-4b".into()),
+            "{alias}"
+        );
+    }
+    assert!(is_flux2_klein_family("flux-2-klein-9b"));
+    assert!(is_flux2_klein_family("flux-2-klein-4b"));
+    assert!(!is_flux2_klein_family("sdxl"));
+}
+
+#[test]
+fn lora_arch_guard_regras() {
+    // NULL (legado) passa em qualquer arch.
+    assert!(!lora_arch_mismatch(None, "flux-2-klein-9b"));
+    assert!(!lora_arch_mismatch(None, "sdxl"));
+    // Mesmo arch passa; alias `flux` ⇒ 4B.
+    assert!(!lora_arch_mismatch(
+        Some("flux-2-klein-4b"),
+        "flux-2-klein-4b"
+    ));
+    assert!(!lora_arch_mismatch(Some("flux-2-klein-4b"), "flux"));
+    assert!(!lora_arch_mismatch(Some("flux"), "flux-2-klein-4b"));
+    assert!(!lora_arch_mismatch(
+        Some("flux-2-klein-9b"),
+        "flux-2-klein-9b"
+    ));
+    // Mismatch.
+    assert!(lora_arch_mismatch(
+        Some("flux-2-klein-4b"),
+        "flux-2-klein-9b"
+    ));
+    assert!(lora_arch_mismatch(
+        Some("flux-2-klein-9b"),
+        "flux-2-klein-4b"
+    ));
+    assert!(lora_arch_mismatch(Some("flux-2-klein-9b"), "flux"));
+    assert!(lora_arch_mismatch(Some("sdxl"), "flux-2-klein-9b"));
+}
+
+#[test]
+fn validate_create_model_aceita_9b_lora_checkpoint_mas_nao_text_encoder() {
+    let base = |kind: Option<&str>, arch: Option<&str>| CreateModelRequest {
+        id: Uuid::new_v4(),
+        engine: "diffusion".to_string(),
+        name: "m.safetensors".to_string(),
+        model: None,
+        s3_key: "models/diffusion/x/m.safetensors".to_string(),
+        source: "upload".to_string(),
+        url: None,
+        hash: "d41d8cd98f00b204e9800998ecf8427e".to_string(),
+        bytes: 100,
+        job_id: None,
+        kind: kind.map(|s| s.to_string()),
+        arch: arch.map(|s| s.to_string()),
+    };
+    assert!(validate_create_model(&base(Some("lora"), Some("flux-2-klein-9b"))).is_ok());
+    assert!(validate_create_model(&base(Some("checkpoint"), Some("flux-2-klein-9b"))).is_ok());
+    assert!(validate_create_model(&base(Some("text_encoder"), Some("flux-2-klein-9b"))).is_err());
+}
+
+#[test]
+fn vram_table_real_tem_9b_e_sem_linhas_orfas() {
+    let vt =
+        crate::policy::VramTable::parse(include_str!("../../../packages/policies/vram-table.yaml"))
+            .expect("vram-table.yaml");
+    assert_eq!(
+        vt.resolve_min_gb("diffusion", "flux-2-klein-9b", "train"),
+        Some(12)
+    );
+    assert_eq!(
+        vt.resolve_min_gb("diffusion", "flux-2-klein-9b", "generate"),
+        Some(12)
+    );
+    assert_eq!(
+        vt.resolve_min_gb("diffusion", "flux2-klein-9b", "train"),
+        None
+    );
+    assert_eq!(
+        vt.resolve_min_gb("diffusion", "flux2-klein-9b-8bit", "infer"),
+        None
+    );
+}
+
+#[test]
+fn derive_diffusion_arch_9b() {
+    let p = serde_json::json!({"baseModel": "flux-2-klein-9b"});
+    assert_eq!(
+        derive_diffusion_arch("flux-2-klein-9b", &p, None),
+        Some("flux-2-klein-9b".into())
+    );
+    assert_eq!(
+        derive_diffusion_arch(
+            "x",
+            &serde_json::json!({}),
+            Some("model: \"flux-2-klein-9b\"")
+        ),
+        Some("flux-2-klein-9b".into())
+    );
+}
+
+#[test]
 fn normalize_diffusion_arch_desconhecido_e_none() {
     assert_eq!(normalize_diffusion_arch("unsupported"), None);
     assert_eq!(normalize_diffusion_arch(""), None);

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::constants::{lora_arch_mismatch, normalize_diffusion_arch_str};
 use crate::error::ManagerError;
 
 /// Referência resolvida de optimizer state (Adam) para continuidade de treino
@@ -207,9 +208,13 @@ pub async fn resolve_orchestrator_hint(
 }
 
 /// Valida até 4 LoRAs e extrai referências com s3_key, md5 e scale.
+///
+/// `effective_arch` é o arch efetivo da geração (checkpoint custom ou base,
+/// normalizado; `None` = indeterminado, sem guarda); LoRA com arch não nulo ≠ efetivo ⇒ 400 nomeando o modelo.
 pub async fn resolve_loras(
     pool: &PgPool,
     loras_arr: &[serde_json::Value],
+    effective_arch: Option<&str>,
 ) -> Result<Vec<ResolvedLora>, ManagerError> {
     if loras_arr.len() > 4 {
         return Err(ManagerError::InvalidRequest(
@@ -245,11 +250,19 @@ pub async fn resolve_loras(
                     "lora modelId at index {i} not found"
                 )));
             }
-            Some((s3_key, hash, kind, _arch)) => {
+            Some((s3_key, hash, kind, arch)) => {
                 if kind.as_deref() != Some("lora") {
                     return Err(ManagerError::InvalidRequest(format!(
                         "lora modelId at index {i} must have kind='lora', got {:?}",
                         kind
+                    )));
+                }
+                if let Some(effective_arch) =
+                    effective_arch.filter(|e| lora_arch_mismatch(arch.as_deref(), e))
+                {
+                    return Err(ManagerError::InvalidRequest(format!(
+                        "lora modelId {model_id_str} (index {i}) has arch '{}', incompatible with generation arch '{effective_arch}'",
+                        arch.as_deref().unwrap_or_default()
                     )));
                 }
                 resolved_loras.push(ResolvedLora {
@@ -263,11 +276,13 @@ pub async fn resolve_loras(
     Ok(resolved_loras)
 }
 
-/// Valida checkpoint customizado para difusão (SDXL, SD15, Flux, Qwen).
+/// Valida checkpoint customizado para difusão (SDXL, SD15, Flux 4B, Qwen).
+/// Retorna a referência e o arch canônico do checkpoint (alias `flux` ⇒ 4B).
+/// Checkpoint custom FLUX.2 Klein 9B está fora de escopo ⇒ 400.
 pub async fn resolve_custom_checkpoint(
     pool: &PgPool,
     custom_id_str: &str,
-) -> Result<ResolvedCheckpoint, ManagerError> {
+) -> Result<(ResolvedCheckpoint, String), ManagerError> {
     let custom_uuid = Uuid::parse_str(custom_id_str)
         .map_err(|_| ManagerError::InvalidRequest("customModelId must be a valid UUID".into()))?;
 
@@ -290,11 +305,7 @@ pub async fn resolve_custom_checkpoint(
                 )));
             }
             let arch_val = arch.as_deref().unwrap_or("");
-            let arch_norm = if arch_val == "flux" {
-                "flux-2-klein-4b"
-            } else {
-                arch_val
-            };
+            let arch_norm = normalize_diffusion_arch_str(arch_val).unwrap_or(arch_val);
             if !matches!(
                 arch_norm,
                 "sdxl" | "sd15" | "flux-2-klein-4b" | "qwen-image-2.1"
@@ -303,7 +314,10 @@ pub async fn resolve_custom_checkpoint(
                     "customModelId arch must be 'sdxl', 'sd15', 'flux-2-klein-4b' or 'qwen-image-2.1', got '{arch_val}'"
                 )));
             }
-            Ok(ResolvedCheckpoint { s3_key, md5: hash })
+            Ok((
+                ResolvedCheckpoint { s3_key, md5: hash },
+                arch_norm.to_string(),
+            ))
         }
     }
 }

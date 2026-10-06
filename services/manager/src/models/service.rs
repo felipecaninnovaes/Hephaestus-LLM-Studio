@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::constants::is_flux2_klein_family;
 use crate::error::ManagerError;
 use crate::jobs::lifecycle::is_valid_md5;
 
@@ -141,17 +142,20 @@ pub fn validate_create_model(req: &CreateModelRequest) -> Result<(), ManagerErro
         }
     }
     if let Some(ref arch) = req.arch {
-        if arch != "flux-2-klein-4b" && arch != "sdxl" && arch != "sd15" && arch != "qwen-image-2.1"
+        if !is_flux2_klein_family(arch)
+            && arch != "sdxl"
+            && arch != "sd15"
+            && arch != "qwen-image-2.1"
         {
             return Err(ManagerError::InvalidRequest(format!(
-                "arch must be 'flux-2-klein-4b', 'sdxl', 'sd15', or 'qwen-image-2.1', got '{}'",
+                "arch must be 'flux-2-klein-4b', 'flux-2-klein-9b', 'sdxl', 'sd15', or 'qwen-image-2.1', got '{}'",
                 arch
             )));
         }
     }
     if req.kind.as_deref() == Some("checkpoint") && req.arch.is_none() {
         return Err(ManagerError::InvalidRequest(
-            "checkpoint requires arch ('flux-2-klein-4b', 'sdxl', 'sd15', or 'qwen-image-2.1')"
+            "checkpoint requires arch ('flux-2-klein-4b', 'flux-2-klein-9b', 'sdxl', 'sd15', or 'qwen-image-2.1')"
                 .into(),
         ));
     }

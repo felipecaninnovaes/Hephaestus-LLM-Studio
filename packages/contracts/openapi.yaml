@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hephaestus Studio API
-  version: 0.30.0
+  version: 0.31.0
   summary: Contrato público do backend principal (api-principal :8080)
   description: |
     Fatia 2 (auth single-user) + Fatia 3a (datasets núcleo) + `/health`.
@@ -3020,8 +3020,10 @@ paths:
         DefaultBodyLimit 8 GiB+8 MiB envelope (ADR-0023 D4); magic bytes obrigatórios;
         md5 hex computado; PUT S3; compensação delete se INSERT no manager falhar.
         Para `.safetensors` (diffusion): header JSON inspecionado para classificar
-        kind (lora/checkpoint/text_encoder) e arch (flux-2-klein-4b/sdxl/sd15;
-        text_encoder só admite flux-2-klein-4b).
+        kind (lora/checkpoint/text_encoder) e arch (flux-2-klein-4b/flux-2-klein-9b/sdxl/sd15;
+        text_encoder só admite flux-2-klein-4b). 4B vs 9B: `__metadata__.base_model`
+        e, sem metadata, shapes do transformer Flux.2 (hidden 3072 ⇒ 4B, 4096 ⇒ 9B);
+        indeterminável ⇒ 4B, exceto se o hint `arch` pedir `flux-2-klein-9b`.
         Erros: 400 `invalid_request` (engine/ext/magic/name/kind/arch conflito),
         413 `invalid_request` (envelope), 503 `queue_unavailable` (manager),
         503 `storage_unavailable` (S3).
@@ -3051,7 +3053,7 @@ paths:
                   description: "Hint: tipo do modelo diffusion (lora, checkpoint ou text_encoder). Sniff do servidor é autoritativo."
                 arch:
                   type: string
-                  enum: [flux-2-klein-4b, sdxl, sd15, qwen-image-2.1]
+                  enum: [flux-2-klein-4b, flux-2-klein-9b, sdxl, sd15, qwen-image-2.1]
                   description: "Hint: arquitetura do modelo diffusion. Sniff do servidor é autoritativo."
       responses:
         "201":
@@ -3682,17 +3684,17 @@ components:
           description: "PK do dataset com imagens e legendas. Não-UUID ou inexistente ⇒ 404 `not_found`."
         baseModel:
           type: [string, "null"]
-          enum: [sdxl, flux, sd15, flux-2-klein-4b, qwen-image-2.1]
+          enum: [sdxl, flux, sd15, flux-2-klein-4b, flux-2-klein-9b, qwen-image-2.1]
           default: sdxl
-          description: "Modelo de difusão base para treino do adaptador LoRA. XOR com customModelId."
+          description: "Modelo de difusão base para treino do adaptador LoRA. XOR com customModelId. `flux-2-klein-9b` = FLUX.2 Klein base 9B (VRAM mínima 12 GB com 2bit/4bit, 20 GB com 6bit/8bit, 28 GB sem quantização); o alias legado `flux` equivale a `flux-2-klein-4b`."
         customModelId:
           type: [string, "null"]
           format: uuid
-          description: "UUID de checkpoint customizado (tabela `models`, kind=checkpoint) como base do treino. XOR com baseModel; inexistente ou kind≠checkpoint ⇒ 400/404."
+          description: "UUID de checkpoint customizado (tabela `models`, kind=checkpoint) como base do treino. XOR com baseModel; inexistente ou kind≠checkpoint ⇒ 400/404; checkpoint com arch flux-2-klein-9b ⇒ 400 `unsupported_architecture` (checkpoint custom 9B não suportado)."
         textEncoderModelId:
           type: [string, "null"]
           format: uuid
-          description: "UUID de modelo text encoder (tabela `models`, kind=text_encoder) para substituir o encoder padrão no treino. Só tem efeito com arch flux-2-klein-4b; outro arch ⇒ 400. Inexistente ou kind≠text_encoder ⇒ 404/400."
+          description: "UUID de modelo text encoder (tabela `models`, kind=text_encoder) para substituir o encoder padrão no treino. Só tem efeito com arch flux-2-klein-4b; outro arch (incluindo flux-2-klein-9b) ⇒ 400. Inexistente ou kind≠text_encoder ⇒ 404/400."
         triggerWord:
           type: [string, "null"]
           maxLength: 100
@@ -3827,9 +3829,9 @@ components:
       properties:
         baseModel:
           type: string
-          enum: [sdxl, flux, sd15, flux-2-klein-4b, qwen-image-2.1]
+          enum: [sdxl, flux, sd15, flux-2-klein-4b, flux-2-klein-9b, qwen-image-2.1]
           default: flux-2-klein-4b
-          description: "Modelo base para geração Text-to-Image. XOR com customModelId."
+          description: "Modelo base para geração Text-to-Image. XOR com customModelId. `flux-2-klein-9b` = FLUX.2 Klein base 9B (VRAM mínima 12 GB com 2bit/4bit, 20 GB com 6bit/8bit, 28 GB sem quantização); o alias legado `flux` equivale a `flux-2-klein-4b`."
         prompt:
           type: string
           minLength: 1
@@ -3876,7 +3878,7 @@ components:
           type: string
           enum: [default, euler, euler_a, heun, dpmpp_2m, dpmpp_2m_karras, dpmpp_2m_sde, dpmpp_2m_sde_karras, dpmpp_sde, ddim]
           default: default
-          description: "Amostrador do scheduler de difusão (motor Flux.2). A base flux-2-klein-4b aceita apenas default, euler e heun; demais valores nessa base ⇒ 400."
+          description: "Amostrador do scheduler de difusão (motor Flux.2). As bases Flux.2 (flux-2-klein-4b e flux-2-klein-9b, e o alias flux) aceitam apenas default, euler e heun; demais valores nessas bases ⇒ 400."
         upscale:
           anyOf:
             - $ref: "#/components/schemas/DiffusionUpscale"
@@ -3885,7 +3887,7 @@ components:
         distilled:
           type: boolean
           default: false
-          description: "Variante destilada em passos (ex: FLUX.2 Klein 4B Schnell / 4-8 passos com CFG 1.0)."
+          description: "Variante destilada em passos (ex: FLUX.2 Klein 4B Schnell / 4-8 passos com CFG 1.0). Não existe para flux-2-klein-9b: distilled=true com essa base ⇒ 400 `invalid_request`."
         weights:
           type: [string, "null"]
           format: uuid
@@ -3909,15 +3911,15 @@ components:
           maxItems: 4
           items:
             $ref: "#/components/schemas/LoraRef"
-          description: "Lista de adaptadores LoRA (máx. 4, aplicados em ordem)."
+          description: "Lista de adaptadores LoRA (máx. 4, aplicados em ordem). LoRA com arch não nulo diferente do arch efetivo da geração (baseModel ou arch do customModelId) ⇒ 400 `invalid_request` nomeando o modelo; arch nulo (legado) passa."
         customModelId:
           type: [string, "null"]
           format: uuid
-          description: "UUID de checkpoint customizado (tabela `models`, kind=checkpoint). XOR com baseModel."
+          description: "UUID de checkpoint customizado (tabela `models`, kind=checkpoint). XOR com baseModel. Checkpoint com arch flux-2-klein-9b ⇒ 400 `unsupported_architecture` (checkpoint custom 9B não suportado)."
         textEncoderModelId:
           type: [string, "null"]
           format: uuid
-          description: "UUID de modelo text encoder (tabela `models`, kind=text_encoder) para substituir o encoder padrão na geração. Só tem efeito com arch flux-2-klein-4b; outro arch ⇒ 400. Inexistente ou kind≠text_encoder ⇒ 404/400."
+          description: "UUID de modelo text encoder (tabela `models`, kind=text_encoder) para substituir o encoder padrão na geração. Só tem efeito com arch flux-2-klein-4b; outro arch (incluindo flux-2-klein-9b) ⇒ 400. Inexistente ou kind≠text_encoder ⇒ 404/400."
         orchestratorId:
           type: [string, "null"]
           format: uuid
@@ -5602,7 +5604,7 @@ components:
           description: "Hint diffusion; sniff do servidor é autoritativo."
         arch:
           type: string
-          enum: [flux-2-klein-4b, sdxl, sd15, qwen-image-2.1]
+          enum: [flux-2-klein-4b, flux-2-klein-9b, sdxl, sd15, qwen-image-2.1]
           description: "Hint diffusion; sniff do servidor é autoritativo."
         size:
           type: integer
@@ -5723,7 +5725,7 @@ components:
         arch:
           type: string
           nullable: true
-          enum: [flux-2-klein-4b, sdxl, sd15, qwen-image-2.1]
+          enum: [flux-2-klein-4b, flux-2-klein-9b, sdxl, sd15, qwen-image-2.1]
           description: "Arquitetura do modelo (ADR-0023 D4). Null para engines não-difusão."
 
     StorageUsage:

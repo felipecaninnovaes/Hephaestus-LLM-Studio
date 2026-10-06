@@ -1788,6 +1788,91 @@ async fn submit_diffusion_generate_custom_unsupported_arch_400() {
     assert_eq!(json["code"], "unsupported_architecture");
 }
 #[tokio::test]
+async fn submit_diffusion_generate_custom_9b_unsupported_architecture_400() {
+    // Checkpoint custom FLUX.2 Klein 9B é classificado no registro, mas fora
+    // de escopo na geração ⇒ 400 `unsupported_architecture`.
+    let custom_id = "550e8400-e29b-41d4-a716-446655440098";
+    let mut mock = MockManager::default();
+    mock.list_models_result = Some(vec![InternalModel {
+        id: custom_id.into(),
+        name: "my-flux2-9b.safetensors".into(),
+        engine: "diffusion".into(),
+        model: None,
+        source: "upload".into(),
+        md5: "abc123".into(),
+        bytes: 18_000_000_000,
+        path: "models/diffusion/custom/my-flux2-9b.safetensors".into(),
+        job_id: None,
+        created_at: "2026-10-06T00:00:00Z".into(),
+        kind: Some("checkpoint".into()),
+        arch: Some("flux-2-klein-9b".into()),
+    }]);
+    let state = test_state(mock);
+    let body_json = serde_json::json!({"prompt": "test", "customModelId": custom_id});
+    let resp = submit_diffusion_generate_job(
+        axum::extract::State(state),
+        Ok(axum::body::Bytes::from(
+            serde_json::to_string(&body_json).unwrap(),
+        )),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(json["code"], "unsupported_architecture");
+}
+
+#[tokio::test]
+async fn submit_diffusion_generate_base_9b_202_vram_por_quantization() {
+    for (quant, expected) in [("4bit", 12), ("8bit", 20), ("none", 28)] {
+        let mut mock = MockManager::default();
+        mock.create_job_result = Some(CreateJobResponse {
+            job_id: "job-9b".into(),
+            status: "queued".into(),
+            queue_position: None,
+        });
+        let mock_arc = std::sync::Arc::new(mock);
+        let mock_ref = std::sync::Arc::clone(&mock_arc);
+        let mut state = test_state(MockManager::default());
+        state.manager = mock_arc;
+        let body_json = serde_json::json!({
+            "prompt": "test", "baseModel": "flux-2-klein-9b", "quantization": quant,
+            "sampler": "heun"
+        });
+        let resp = submit_diffusion_generate_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                serde_json::to_string(&body_json).unwrap(),
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::ACCEPTED, "{quant}");
+        let body = mock_ref.last_create_job_body().expect("body");
+        assert_eq!(body["model"], "flux-2-klein-9b");
+        assert_eq!(body["params"]["base_model"], "flux-2-klein-9b");
+        assert_eq!(body["vram_min_gb"], expected, "{quant}");
+    }
+}
+
+#[tokio::test]
+async fn submit_diffusion_generate_9b_distilled_400() {
+    let state = test_state(MockManager::default());
+    let body_json = serde_json::json!({
+        "prompt": "test", "baseModel": "flux-2-klein-9b", "distilled": true
+    });
+    let resp = submit_diffusion_generate_job(
+        axum::extract::State(state),
+        Ok(axum::body::Bytes::from(
+            serde_json::to_string(&body_json).unwrap(),
+        )),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn submit_diffusion_generate_custom_flux2_202() {
     // Fatia feat/pesos-custom-flux2: checkpoint flux-2-klein-4b ⇒ 202,
     // arch efetivo flux-2-klein-4b no body do manager.

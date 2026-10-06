@@ -785,8 +785,24 @@ autolabel:
 // Diffusion Job (ADR-0018 D1)
 // ---------------------------------------------------------------------------
 
-pub const ALLOWED_DIFFUSION_BASE_MODELS: &[&str] =
-    &["sdxl", "flux", "sd15", "flux-2-klein-4b", "qwen-image-2.1"];
+pub const ALLOWED_DIFFUSION_BASE_MODELS: &[&str] = &[
+    "sdxl",
+    "flux",
+    "sd15",
+    "flux-2-klein-4b",
+    "flux-2-klein-9b",
+    "qwen-image-2.1",
+];
+
+pub const ARCH_FLUX2_KLEIN_4B: &str = "flux-2-klein-4b";
+pub const ARCH_FLUX2_KLEIN_9B: &str = "flux-2-klein-9b";
+
+/// Base/arch pertence à família FLUX.2 Klein (4B, 9B ou alias legado `flux`)?
+/// Regras compartilhadas (samplers) valem para a família; text encoder custom
+/// e checkpoint custom são só-4B e ficam explícitos nos chamadores.
+pub fn is_flux2_klein_family(base: &str) -> bool {
+    matches!(base, "flux" | ARCH_FLUX2_KLEIN_4B | ARCH_FLUX2_KLEIN_9B)
+}
 const ALLOWED_DIFFUSION_BATCH: &[u32] = &[1, 2, 4, 8];
 const ALLOWED_DIFFUSION_RESOLUTIONS: &[u32] = &[256, 512, 768, 1024, 1280, 1328, 1536, 2048];
 const ALLOWED_DIFFUSION_GRAD_ACCUM: &[u32] = &[1, 2, 4, 8];
@@ -817,8 +833,8 @@ const ALLOWED_DIFFUSION_SAMPLERS: &[&str] = &[
     "dpmpp_sde",
     "ddim",
 ];
-/// Samplers aceitos pela base `flux-2-klein-4b` (arch-aware: o motor Flux.2
-/// só suporta estes; os demais → 400 com mensagem clara).
+/// Samplers aceitos pela família FLUX.2 Klein, 4B e 9B (arch-aware: o motor
+/// Flux.2 só suporta estes; os demais → 400 com mensagem clara).
 const ALLOWED_FLUX2_KLEIN_SAMPLERS: &[&str] = &["default", "euler", "heun"];
 /// Modelos de upscale suportados no generate (`upscale.model`, default "4x").
 const ALLOWED_DIFFUSION_UPSCALE_MODELS: &[&str] = &["4x", "ultrasharp", "siax"];
@@ -836,7 +852,7 @@ pub struct DiffusionJobRequest {
     #[serde(default)]
     pub custom_model_id: Option<String>,
     /// UUID de text encoder custom (kind=text_encoder). Só tem efeito com
-    /// arch flux-2-klein-4b; outro arch ⇒ 400.
+    /// arch flux-2-klein-4b (nunca 9B); outro arch ⇒ 400.
     #[serde(default)]
     pub text_encoder_model_id: Option<String>,
     #[serde(default)]
@@ -1563,13 +1579,17 @@ pub fn validate_diffusion_generate_request(
             .unwrap_or("flux-2-klein-4b")
             .to_string()
     };
-    if effective_base == "flux-2-klein-4b"
+    if is_flux2_klein_family(&effective_base)
         && !ALLOWED_FLUX2_KLEIN_SAMPLERS.contains(&req.sampler.as_str())
     {
         return Err(format!(
-            "sampler '{}' not supported for baseModel 'flux-2-klein-4b' (use one of {:?})",
-            req.sampler, ALLOWED_FLUX2_KLEIN_SAMPLERS
+            "sampler '{}' not supported for baseModel '{}' (use one of {:?})",
+            req.sampler, effective_base, ALLOWED_FLUX2_KLEIN_SAMPLERS
         ));
+    }
+    // Variante destilada só existe para o 4B.
+    if req.distilled && effective_base == ARCH_FLUX2_KLEIN_9B {
+        return Err("distilled variant not available for flux-2-klein-9b".to_string());
     }
 
     // --- Upscale (RRDBNet x4): model ∈ ["4x", "ultrasharp", "siax"], scale ∈ [2, 4] ---
@@ -1775,13 +1795,36 @@ output_path: "{{output_path}}"
     )
 }
 
+/// VRAM mínima (GB) da família FLUX.2 Klein 9B por quantization — vale para
+/// treino e geração (spike RTX 3060 12 GB): 2/4bit→12, 6/8bit→20, none→28.
+fn flux2_klein_9b_vram_min_gb(quantization: &str) -> i32 {
+    match quantization {
+        "2bit" | "4bit" | "4bit-nf4" => 12,
+        "6bit" | "8bit" | "8bit-bnb" => 20,
+        _ => 28,
+    }
+}
+
+/// VRAM mínima de treino por arch efetivo (ADR-0018 D2). FLUX.2 Klein 4B
+/// ~10 GB; 9B depende da quantization; sdxl/default 12.
+pub fn diffusion_train_vram_min_gb(arch: &str, quantization: &str) -> i32 {
+    match arch {
+        "sd15" | "qwen-image-2.1" => 8,
+        "flux" | ARCH_FLUX2_KLEIN_4B => 10,
+        ARCH_FLUX2_KLEIN_9B => flux2_klein_9b_vram_min_gb(quantization),
+        _ => 12, // sdxl e default
+    }
+}
+
 /// VRAM mínima de generate por (arch efetiva, quantization) — D8 estendido.
 ///
 /// sd15 fixo 6; sdxl e flux: none→16, 6bit→10, 4bit→8, 2bit→7, 8bit→12
-/// (aliases legados 4bit-nf4/8bit-bnb seguem o nível da família).
+/// (aliases legados 4bit-nf4/8bit-bnb seguem o nível da família);
+/// flux-2-klein-9b: 2/4bit→12, 6/8bit→20, none→28.
 pub fn diffusion_generate_vram_min_gb(arch: &str, quantization: &str) -> i32 {
     match arch {
         "sd15" => 6,
+        ARCH_FLUX2_KLEIN_9B => flux2_klein_9b_vram_min_gb(quantization),
         "qwen-image-2.1" => match quantization {
             "2bit" => 7,
             "4bit" | "4bit-nf4" => 8,
@@ -3815,6 +3858,84 @@ mod tests {
             parsed["control_dataset_path"].as_str(),
             Some("{control_dataset_path}")
         );
+    }
+
+    #[test]
+    fn generate_9b_aceito_samplers_flux2_e_distilled_400() {
+        // Mesma allowlist Flux.2 do 4B.
+        for sampler in ["default", "euler", "heun"] {
+            let req: DiffusionGenerateJobRequest = serde_json::from_str(&format!(
+                r#"{{"prompt":"t","baseModel":"flux-2-klein-9b","sampler":"{sampler}"}}"#
+            ))
+            .unwrap();
+            let v = validate_diffusion_generate_request(req).unwrap();
+            let yaml = generate_diffusion_generate_config_yaml("job-9b", &v, None);
+            assert!(yaml.contains(r#"model: "flux-2-klein-9b""#), "{yaml}");
+            assert!(yaml.contains(r#"base_model: "flux-2-klein-9b""#), "{yaml}");
+        }
+        let req: DiffusionGenerateJobRequest = serde_json::from_str(
+            r#"{"prompt":"t","baseModel":"flux-2-klein-9b","sampler":"dpmpp_2m"}"#,
+        )
+        .unwrap();
+        let err = validate_diffusion_generate_request(req).unwrap_err();
+        assert!(err.contains("flux-2-klein-9b"), "{err}");
+        // distilled + 9B ⇒ erro; distilled + 4B segue ok.
+        let req: DiffusionGenerateJobRequest = serde_json::from_str(
+            r#"{"prompt":"t","baseModel":"flux-2-klein-9b","distilled":true}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            validate_diffusion_generate_request(req).unwrap_err(),
+            "distilled variant not available for flux-2-klein-9b"
+        );
+        let req: DiffusionGenerateJobRequest = serde_json::from_str(
+            r#"{"prompt":"t","baseModel":"flux-2-klein-4b","distilled":true}"#,
+        )
+        .unwrap();
+        assert!(validate_diffusion_generate_request(req).is_ok());
+    }
+
+    #[test]
+    fn vram_min_9b_por_quantization_treino_e_geracao() {
+        for (q, gb) in [
+            ("2bit", 12),
+            ("4bit", 12),
+            ("6bit", 20),
+            ("8bit", 20),
+            ("none", 28),
+        ] {
+            assert_eq!(
+                diffusion_generate_vram_min_gb("flux-2-klein-9b", q),
+                gb,
+                "{q}"
+            );
+            assert_eq!(diffusion_train_vram_min_gb("flux-2-klein-9b", q), gb, "{q}");
+        }
+        // 4B/sdxl/sd15 inalterados no treino.
+        assert_eq!(diffusion_train_vram_min_gb("flux-2-klein-4b", "none"), 10);
+        assert_eq!(diffusion_train_vram_min_gb("flux", "4bit"), 10);
+        assert_eq!(diffusion_train_vram_min_gb("sdxl", "4bit"), 12);
+        assert_eq!(diffusion_train_vram_min_gb("sd15", "4bit"), 8);
+    }
+
+    #[test]
+    fn train_yaml_9b_emite_model_9b() {
+        let json = r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001","baseModel":"flux-2-klein-9b","quantization":"4bit"}"#;
+        let req: DiffusionJobRequest = serde_json::from_str(json).unwrap();
+        let v = validate_diffusion_request(req).unwrap();
+        assert_eq!(v.base_model.as_deref(), Some("flux-2-klein-9b"));
+        let yaml = generate_diffusion_config_yaml("job-9b", &v, None);
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("yaml válido");
+        assert_eq!(parsed["model"].as_str(), Some("flux-2-klein-9b"));
+    }
+
+    #[test]
+    fn flux2_family_helper() {
+        assert!(is_flux2_klein_family("flux"));
+        assert!(is_flux2_klein_family("flux-2-klein-4b"));
+        assert!(is_flux2_klein_family("flux-2-klein-9b"));
+        assert!(!is_flux2_klein_family("sdxl"));
+        assert!(!is_flux2_klein_family(""));
     }
 
     #[test]

@@ -23,7 +23,11 @@ from trainer_yolo.autolabel_pkg.captions import (
     _generate_caption_mock,
     _generate_caption_qwen,
 )
-from trainer_yolo.autolabel_pkg.vision_api import _call_openai_vision_api
+from trainer_yolo.autolabel_pkg.vision_api import (
+    VisionApiFatalError,
+    _call_openai_vision_api,
+    _positive_int_env,
+)
 from trainer_yolo.config import load_and_validate_autolabel_config
 from trainer_yolo.dataset import _discover_dataset_images
 
@@ -68,6 +72,7 @@ def _autolabel_pipeline(cfg: dict, output_dir: Path) -> None:
     )
 
     step_time_ema: float | None = None
+    skipped_count = 0
 
     if model == "openai":
         raw_concurrency = os.environ.get("AUTOLABEL_CONCURRENCY", "4")
@@ -131,9 +136,29 @@ def _autolabel_pipeline(cfg: dict, output_dir: Path) -> None:
             if remaining_to_submit:
                 time.sleep(0.005)
         buffer_completed: dict[str, str] = {}
+        failures: dict[str, str] = {}
+        consecutive_failures = 0
+        last_error = ""
+        max_consecutive_failures = _positive_int_env("AUTOLABEL_MAX_CONSECUTIVE_FAILURES") or 10
         next_flush_idx = 0
         step_num = 0
         last_completion_time = time.monotonic()
+
+        def _flush_ready() -> None:
+            """Escreve o prefixo contíguo resolvido; imagens puladas contam como resolvidas."""
+            nonlocal next_flush_idx
+            while next_flush_idx < total_imgs:
+                expected_f = sorted_filenames[next_flush_idx]
+                if expected_f in buffer_completed:
+                    line = json.dumps(
+                        {"filename": expected_f, "caption": buffer_completed[expected_f]},
+                        ensure_ascii=False,
+                    )
+                    f.write(line + "\n")
+                    f.flush()
+                elif expected_f not in failures:
+                    break
+                next_flush_idx += 1
 
         with open(captions_path, "w", encoding="utf-8") as f:
             try:
@@ -148,25 +173,24 @@ def _autolabel_pipeline(cfg: dict, output_dir: Path) -> None:
                         try:
                             fname, caption, _ = fut.result()
                         except Exception as exc:
-                            executor.shutdown(wait=False, cancel_futures=True)
-                            _die(f"AutoLabel OpenAI falhou na imagem '{fname_orig}': {exc}")
-
-                        buffer_completed[fname] = caption
+                            if isinstance(exc, VisionApiFatalError):
+                                executor.shutdown(wait=False, cancel_futures=True)
+                                _die(f"AutoLabel OpenAI falhou na imagem '{fname_orig}': {exc}")
+                            print(
+                                f"[autolabel-openai] Pulando '{fname_orig}': {exc}",
+                                file=sys.stderr,
+                            )
+                            failures[fname_orig] = str(exc)
+                            last_error = str(exc)
+                            consecutive_failures += 1
+                            fname = fname_orig
+                        else:
+                            consecutive_failures = 0
+                            buffer_completed[fname] = caption
                         step_num += 1
 
                         # Escreve em captions.jsonl o prefixo contíguo na ordem de sorted_filenames
-                        while next_flush_idx < total_imgs:
-                            expected_f = sorted_filenames[next_flush_idx]
-                            if expected_f in buffer_completed:
-                                line = json.dumps(
-                                    {"filename": expected_f, "caption": buffer_completed[expected_f]},
-                                    ensure_ascii=False,
-                                )
-                                f.write(line + "\n")
-                                f.flush()
-                                next_flush_idx += 1
-                            else:
-                                break
+                        _flush_ready()
 
                         now = time.monotonic()
                         dt_completion = max(0.0, now - last_completion_time)
@@ -183,13 +207,25 @@ def _autolabel_pipeline(cfg: dict, output_dir: Path) -> None:
 
                         emitter.emit(
                             phase="labeling",
-                            message=f"Anotando imagem {step_num}/{total_imgs}: {fname}",
+                            message=(
+                                f"Pulando imagem {step_num}/{total_imgs}: {fname}"
+                                if fname in failures
+                                else f"Anotando imagem {step_num}/{total_imgs}: {fname}"
+                            ),
                             progress=progress,
                             step=step_num,
                             total_steps=total_imgs,
                             step_time_seconds=round(step_time_ema, 4),
                             eta_seconds=eta_s,
                         )
+
+                        if consecutive_failures >= max_consecutive_failures:
+                            executor.shutdown(wait=False, cancel_futures=True)
+                            _die(
+                                f"AutoLabel OpenAI abortado: {consecutive_failures} falhas "
+                                f"consecutivas (limite {max_consecutive_failures}, "
+                                f"AUTOLABEL_MAX_CONSECUTIVE_FAILURES). Último erro: {last_error}"
+                            )
 
                         # Submete novas tarefas para manter a janela de até 'concurrency' em voo
                         while len(futures) < concurrency and remaining_to_submit:
@@ -200,18 +236,25 @@ def _autolabel_pipeline(cfg: dict, output_dir: Path) -> None:
                 executor.shutdown(wait=False, cancel_futures=True)
 
             # Flush final caso reste algo no buffer
-            while next_flush_idx < total_imgs:
-                expected_f = sorted_filenames[next_flush_idx]
-                if expected_f in buffer_completed:
-                    line = json.dumps(
-                        {"filename": expected_f, "caption": buffer_completed[expected_f]},
-                        ensure_ascii=False,
-                    )
-                    f.write(line + "\n")
-                    next_flush_idx += 1
-                else:
-                    break
+            _flush_ready()
             f.flush()
+
+        skipped_count = len(failures)
+        if total_imgs and skipped_count == total_imgs:
+            _die(
+                f"AutoLabel OpenAI falhou em todas as {total_imgs} imagens. "
+                f"Último erro: {last_error}"
+            )
+        if failures:
+            failures_path = output_dir / "autolabel_failures.jsonl"
+            with open(failures_path, "w", encoding="utf-8") as ff:
+                for fail_name, fail_err in sorted(failures.items()):
+                    ff.write(
+                        json.dumps(
+                            {"filename": fail_name, "error": fail_err}, ensure_ascii=False
+                        )
+                        + "\n"
+                    )
     else:
         with open(captions_path, "w", encoding="utf-8") as f:
             for idx, fname in enumerate(sorted_filenames):
@@ -249,9 +292,16 @@ def _autolabel_pipeline(cfg: dict, output_dir: Path) -> None:
                     step_time_seconds=round(step_time_ema, 4),
                     eta_seconds=eta_s,
                 )
+    if skipped_count:
+        completed_message = (
+            f"AutoLabel concluído: {total_imgs - skipped_count}/{total_imgs} imagens anotadas; "
+            f"{skipped_count} puladas por erro."
+        )
+    else:
+        completed_message = f"AutoLabel concluído: {total_imgs} imagens anotadas com sucesso."
     emitter.emit(
         phase="completed",
-        message=f"AutoLabel concluído: {total_imgs} imagens anotadas com sucesso.",
+        message=completed_message,
         progress=1.0,
     )
 

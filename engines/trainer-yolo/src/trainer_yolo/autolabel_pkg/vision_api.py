@@ -17,6 +17,18 @@ import urllib.request
 from pathlib import Path
 
 
+# Erros HTTP que indicam configuração inválida (chave/endpoint/modelo), não falha por imagem.
+_FATAL_HTTP_STATUS = frozenset({401, 403, 404})
+
+
+class VisionApiFatalError(RuntimeError):
+    """Erro de API que afeta o job inteiro (HTTP 401/403/404); não deve ser pulado."""
+
+    def __init__(self, message: str, status: int) -> None:
+        super().__init__(message)
+        self.status = status
+
+
 def _get_mime_type(file_path: Path) -> str:
     ext = file_path.suffix.lower()
     if ext == ".png":
@@ -237,6 +249,10 @@ def _call_openai_vision_api(
                 time.sleep(1.5 * (attempt + 1))
                 continue
 
+            if exc.code in _FATAL_HTTP_STATUS:
+                raise VisionApiFatalError(
+                    f"OpenAI API error ({url}): {err_msg}", status=exc.code
+                ) from exc
             raise RuntimeError(f"OpenAI API error ({url}): {err_msg}") from exc
         except (TimeoutError, urllib.error.URLError, OSError) as exc:
             err_msg = f"Falha de conexão ({url}): {exc}"

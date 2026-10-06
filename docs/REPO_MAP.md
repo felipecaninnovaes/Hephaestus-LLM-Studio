@@ -83,7 +83,10 @@ Fonte: tabela de contrato em `services/api-principal/src/auth/routes.rs`
   `thumb_unavailable`; `/boxes`, `DELETE /:id/images/:imageId`,
   `/restore`, trash `/:id/trash`); `PUT /:id/images/:imageId/boxes`,
   `POST /:id/boxes/batch`, captions `/:id/images/:imageId/caption`,
-  classes `/:id/classes`; export/import `POST /:id/export`, `/:id/package`,
+  classes `/:id/classes`; export/import `POST /:id/export?layout=backup|captions`
+  (default `backup` = zip com `manifest.json`; `captions` só difusão →
+  `{slug}-captions.zip` com `images/{file}` + `images/{stem}.txt`, sem manifest,
+  não reimportável; outro caso → 400 `invalid_request`), `/:id/package`,
   `POST /api/datasets/import`.
 - **Busca semântica:** `POST /:id/search/index`, `GET /:id/search/status`,
   `GET /:id/search`, `POST /:id/search/by-image`.

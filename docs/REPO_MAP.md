@@ -105,7 +105,10 @@ Fonte: tabela de contrato em `services/api-principal/src/auth/routes.rs`
   (UUID efetivo, nullable); erros 400 `invalid_gpu_device`,
   `gpu_device_requires_orchestrator`, `unknown_gpu_device`,
   `insufficient_gpu_vram` (manual valida `vram_min_gb` sem headroom);
-  previews `POST /jobs/:id/autolabel|autotracker/preview` + `/apply`;
+  previews `GET /jobs/:id/autolabel|autotracker/preview` + `POST …/apply`
+  (autotracker exige `done`; autolabel aceita `done|failed|cancelled` p/
+  legendas parciais, sem artefato `captions` ⇒ 404, outro status ⇒ 409
+  `job_not_done`);
   telemetria `GET /api/telemetry` (com `gpuDevices`); geração `POST /jobs/diffusion/generate`;
   `POST /jobs/diffusion` aceita `cacheTextEmbeddings` (opcional, bool) para
   reuso de text-embeds entre jobs via cache compartilhado do nó GPU.

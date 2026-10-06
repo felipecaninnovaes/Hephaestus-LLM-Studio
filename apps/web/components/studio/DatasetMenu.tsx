@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import type { Dataset } from "@/types/studio";
 import { ApiError } from "@/lib/api";
 import { showToast } from "@/components/ui/Toast";
-import { exportDataset, exportErrorMessage } from "@/lib/backup";
+import { exportDataset, exportErrorMessage, type ExportLayout } from "@/lib/backup";
 import {
   IconDownload,
   IconLayers,
@@ -13,7 +13,7 @@ import {
   IconTrash,
 } from "@/components/icons";
 
-import { canTrainDataset, trainDatasetDisabledReason, trainDatasetActionLabel } from "@/lib/datasets";
+import { canTrainDataset, isDiffusionDataset, trainDatasetDisabledReason, trainDatasetActionLabel } from "@/lib/datasets";
 
 interface Props {
   dataset: Dataset;
@@ -49,6 +49,27 @@ export default function DatasetMenu({ dataset, x, y, onClose, onDelete, onTrain 
 
   const trainEnabled = canTrainDataset(dataset);
   const trainTitle = trainEnabled ? trainDatasetActionLabel(dataset) : trainDatasetDisabledReason(dataset);
+
+  async function runExport(layout: ExportLayout) {
+    onClose();
+    try {
+      await exportDataset(dataset.id, dataset.slug, layout);
+    } catch (err) {
+      if (
+        err instanceof ApiError &&
+        (err.code === "unauthorized" || err.status === 401)
+      ) {
+        router.replace("/login");
+        return;
+      }
+      showToast(
+        err instanceof ApiError
+          ? exportErrorMessage(err.code)
+          : "Falha ao exportar dataset.",
+        "error",
+      );
+    }
+  }
 
   return (
     <>
@@ -105,31 +126,24 @@ export default function DatasetMenu({ dataset, x, y, onClose, onDelete, onTrain 
         <button
           type="button"
           role="menuitem"
-          onClick={async () => {
-            onClose();
-            try {
-              await exportDataset(dataset.id, dataset.slug);
-            } catch (err) {
-              if (
-                err instanceof ApiError &&
-                (err.code === "unauthorized" || err.status === 401)
-              ) {
-                router.replace("/login");
-                return;
-              }
-              showToast(
-                err instanceof ApiError
-                  ? exportErrorMessage(err.code)
-                  : "Falha ao exportar dataset.",
-                "error",
-              );
-            }
-          }}
+          onClick={() => runExport("backup")}
           className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-zinc-200 transition-colors hover:bg-brand-500/20 hover:text-brand-300"
         >
           <IconDownload className="w-3.5 h-3.5 shrink-0" />
           <span>Exportar</span>
         </button>
+        {isDiffusionDataset(dataset) && (
+          <button
+            type="button"
+            role="menuitem"
+            title="Imagens + legendas .txt (não reimportável)"
+            onClick={() => runExport("captions")}
+            className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-zinc-200 transition-colors hover:bg-brand-500/20 hover:text-brand-300"
+          >
+            <IconDownload className="w-3.5 h-3.5 shrink-0" />
+            <span>Exportar com legendas (.txt)</span>
+          </button>
+        )}
         <div className="my-1 h-px bg-white/10" />
         <button
           type="button"

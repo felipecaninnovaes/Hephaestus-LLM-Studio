@@ -53,6 +53,11 @@ export function autoTrackDisabledReason(ds: Dataset): string {
   return "AutoTracker indisponível neste dataset.";
 }
 
+/** Categoria difusão (aceita alias "diffusion" vindo do backend). */
+export function isDiffusionDataset(ds: Dataset): boolean {
+  return ds.category === "difusao" || (ds.category as string) === "diffusion";
+}
+
 /** Habilita Treino de Difusão: dataset com ≥1 imagem. */
 export function canTrainDiffusion(ds: Dataset): boolean {
   return ds.imagesCount > 0;
@@ -69,7 +74,7 @@ export function canTrainDataset(ds: Dataset): boolean {
   if (ds.category === "yolo") {
     return ds.classes.length > 0 && ds.imagesCount > 0;
   }
-  if (ds.category === "difusao" || (ds.category as string) === "diffusion") {
+  if (isDiffusionDataset(ds)) {
     return ds.imagesCount > 0;
   }
   return false;
@@ -82,7 +87,7 @@ export function trainDatasetDisabledReason(ds: Dataset): string {
     if (ds.imagesCount === 0) return "Treino YOLO exige dataset com ≥1 imagem.";
     return "Abrir modal de treino YOLO";
   }
-  if (ds.category === "difusao" || (ds.category as string) === "diffusion") {
+  if (isDiffusionDataset(ds)) {
     if (ds.imagesCount === 0) return "Treino de difusão exige dataset com ≥1 imagem.";
     return "Iniciar treino de difusão LoRA";
   }
@@ -91,7 +96,7 @@ export function trainDatasetDisabledReason(ds: Dataset): string {
 
 /** Rótulo da ação de treino ("Treinar YOLO" vs "Treinar Difusão"). */
 export function trainDatasetActionLabel(ds: Dataset): string {
-  if (ds.category === "difusao" || (ds.category as string) === "diffusion") {
+  if (isDiffusionDataset(ds)) {
     return "Treinar Difusão";
   }
   return "Treinar YOLO";

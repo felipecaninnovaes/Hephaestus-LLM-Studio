@@ -16,6 +16,7 @@ export interface SegmentedControlProps<T extends string = string> {
   onChange: (value: T) => void;
   ariaLabel?: string;
   className?: string;
+  disabled?: boolean;
 }
 
 export function SegmentedControl<T extends string = string>({
@@ -24,10 +25,12 @@ export function SegmentedControl<T extends string = string>({
   onChange,
   ariaLabel = "Opções",
   className = "",
+  disabled = false,
 }: SegmentedControlProps<T>) {
   return (
     <fieldset
       aria-label={ariaLabel}
+      disabled={disabled}
       className={`inline-flex gap-1 rounded-full border border-white/10 bg-black/40 backdrop-blur-sm p-1 ${className}`.trim()}
     >
       {options.map((opt) => {
@@ -39,6 +42,7 @@ export function SegmentedControl<T extends string = string>({
             key={opt.id}
             type="button"
             aria-pressed={active}
+            disabled={disabled}
             aria-label={opt.ariaLabel || opt.label || opt.id}
             title={titleText}
             onClick={() => onChange(opt.id)}

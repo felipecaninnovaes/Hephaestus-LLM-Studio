@@ -5,6 +5,13 @@ import { IconSliders } from "@/components/icons";
 import { showToast } from "@/components/ui/Toast";
 import { useJobTelemetry } from "@/hooks/useJobTelemetry";
 import { isApiError } from "@/lib/api";
+import {
+	FLUX2_KLEIN_9B,
+	isFlux2Klein,
+	isFlux2Klein4b,
+	isFlux2Klein9b,
+	isLoraCompatible,
+} from "@/lib/diffusionArch";
 import { getGenerationDataUrl } from "@/lib/generations";
 import {
 	clearGeracaoForm,
@@ -15,6 +22,7 @@ import {
 	GERACAO_INIT_SOURCE_EVENT,
 	GERACAO_INIT_SOURCE_KEY,
 	GERACAO_SAMPLERS,
+	type GeracaoBaseModel,
 	type GeracaoQuantization,
 	type GeracaoSampler,
 	type GeracaoUpscaleModel,
@@ -62,9 +70,8 @@ export function GenerationPanel() {
 	const [loadingModels, setLoadingModels] = useState(true);
 
 	/* ── Form state ── */
-	const [baseModel, setBaseModel] = useState<
-		"flux-2-klein-4b" | "sdxl" | "sd15" | "qwen-image-2.1"
-	>("flux-2-klein-4b");
+	const [baseModel, setBaseModel] =
+		useState<GeracaoBaseModel>("flux-2-klein-4b");
 	const [customModelId, setCustomModelId] = useState<string>("");
 	const [textEncoderModelId, setTextEncoderModelId] = useState<string>("");
 	const [distilled, setDistilled] = useState(true);
@@ -138,12 +145,16 @@ export function GenerationPanel() {
 		() => allModels.filter((m) => m.engine === "diffusion"),
 		[allModels],
 	);
-	const loraModels = useMemo(
+	const allLoraModels = useMemo(
 		() => diffusionModels.filter((m) => m.kind === "lora" || !m.kind),
 		[diffusionModels],
 	);
+	/* Checkpoint custom com arch 9B é rejeitado pelo BFF (unsupported_architecture) — não é oferecido. */
 	const checkpointModels = useMemo(
-		() => diffusionModels.filter((m) => m.kind === "checkpoint"),
+		() =>
+			diffusionModels.filter(
+				(m) => m.kind === "checkpoint" && !isFlux2Klein9b(m.arch),
+			),
 		[diffusionModels],
 	);
 	const textEncoderModels = useMemo(
@@ -158,7 +169,39 @@ export function GenerationPanel() {
 		}
 		return baseModel;
 	}, [customModelId, checkpointModels, baseModel]);
-	const isFlux2 = effectiveArch === "flux-2-klein-4b";
+	/* Família Flux.2 (samplers, defaults base) vs. regras exclusivas do 4B (destilado, encoder custom). */
+	const isFlux2 = isFlux2Klein(effectiveArch);
+	const isFlux2Only4b = isFlux2Klein4b(effectiveArch);
+	const isFlux29b = isFlux2Klein9b(effectiveArch);
+	/* Manager rejeita LoRA com arch ≠ arch efetivo (arch nulo passa). */
+	const loraModels = useMemo(
+		() => allLoraModels.filter((m) => isLoraCompatible(m.arch, effectiveArch)),
+		[allLoraModels, effectiveArch],
+	);
+
+	/* 9B: sem variante destilada nem text encoder custom (BFF ⇒ 400). */
+	useEffect(() => {
+		if (!isFlux29b) return;
+		setDistilled(false);
+		setTextEncoderModelId("");
+	}, [isFlux29b]);
+
+	/* Troca de arch: remove LoRAs já escolhidas que ficaram incompatíveis. */
+	useEffect(() => {
+		if (loadingModels) return;
+		const next = loras.filter(
+			(l) =>
+				!l.modelId ||
+				loraModels.some((m) => m.id === l.modelId) ||
+				!allLoraModels.some((m) => m.id === l.modelId),
+		);
+		if (next.length === loras.length) return;
+		setLoras(next);
+		showToast(
+			"LoRAs incompatíveis com o modelo selecionado foram removidas.",
+			"info",
+		);
+	}, [loadingModels, loras, loraModels, allLoraModels]);
 
 	const modelSelectOptions = useMemo(() => {
 		const opts = BASE_MODEL_OPTIONS.map((o) => ({
@@ -360,20 +403,23 @@ export function GenerationPanel() {
 
 	const handleBaseModelChange = useCallback(
 		(modelVal: string) => {
-			const b = modelVal as
-				| "flux-2-klein-4b"
-				| "sdxl"
-				| "sd15"
-				| "qwen-image-2.1";
+			const b = modelVal as GeracaoBaseModel;
 			setBaseModel(b);
 			setSampler((prev) =>
-				b === "flux-2-klein-4b"
+				isFlux2Klein(b)
 					? (GERACAO_FLUX_SAMPLERS as readonly string[]).includes(prev)
 						? prev
 						: "default"
 					: prev,
 			);
-			if (b === "flux-2-klein-4b") {
+			if (b === FLUX2_KLEIN_9B) {
+				/* 9B base (spike 12 GB): 28 steps · CFG 4 · sem destilado. */
+				setDistilled(false);
+				setGuidanceScale(4.0);
+				setSteps(28);
+				setWidth(1024);
+				setHeight(1024);
+			} else if (b === "flux-2-klein-4b") {
 				setGuidanceScale(distilled ? 1.0 : 3.5);
 				setSteps(distilled ? 4 : 20);
 				setWidth(1024);
@@ -406,11 +452,7 @@ export function GenerationPanel() {
 			let nextCustom = "";
 			let nextBase = baseModel;
 			if (val.startsWith("preset:")) {
-				nextBase = val.slice("preset:".length) as
-					| "flux-2-klein-4b"
-					| "sdxl"
-					| "sd15"
-					| "qwen-image-2.1";
+				nextBase = val.slice("preset:".length) as GeracaoBaseModel;
 				setBaseModel(nextBase);
 				setCustomModelId("");
 			} else {
@@ -420,7 +462,7 @@ export function GenerationPanel() {
 			const nextArch = nextCustom
 				? (checkpointModels.find((m) => m.id === nextCustom)?.arch ?? null)
 				: nextBase;
-			if (nextArch !== "flux-2-klein-4b") setTextEncoderModelId("");
+			if (!isFlux2Klein4b(nextArch)) setTextEncoderModelId("");
 			if (!nextCustom) handleBaseModelChange(nextBase);
 		},
 		[baseModel, checkpointModels, handleBaseModelChange],
@@ -586,7 +628,7 @@ export function GenerationPanel() {
 				typeof overrideSeed === "number" && Number.isFinite(overrideSeed)
 					? overrideSeed
 					: seed;
-			const isDistilledActive = isFlux2 ? distilled : false;
+			const isDistilledActive = isFlux2Only4b ? distilled : false;
 
 			const request: DiffusionGenerateJobRequest = {
 				prompt: prompt.trim(),
@@ -616,7 +658,7 @@ export function GenerationPanel() {
 			} else {
 				request.baseModel = baseModel;
 			}
-			if (isFlux2 && textEncoderModelId) {
+			if (isFlux2Only4b && textEncoderModelId) {
 				request.textEncoderModelId = textEncoderModelId;
 			}
 
@@ -700,7 +742,7 @@ export function GenerationPanel() {
 			upscaleScale,
 			batchSize,
 			distilled,
-			isFlux2,
+			isFlux2Only4b,
 			loras,
 			selectedOrchestratorId,
 			selectedGpuDevice,
@@ -944,6 +986,7 @@ export function GenerationPanel() {
 						textEncoderModelId={textEncoderModelId}
 						setTextEncoderModelId={setTextEncoderModelId}
 						isFlux2={isFlux2}
+						isFlux2Only4b={isFlux2Only4b}
 						distilled={distilled}
 						onVariantChange={handleVariantChange}
 						loras={loras}

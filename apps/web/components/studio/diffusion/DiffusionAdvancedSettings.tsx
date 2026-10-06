@@ -231,7 +231,9 @@ export function DiffusionAdvancedSettings({
               id="diffusion-quant"
               label="Quantização do Modelo Base"
               hint={
-                baseModel === "flux"
+                baseModel === "flux-2-klein-9b"
+                  ? "9B: 4-bit NF4 é o mínimo prático (~12 GB, text encoder descarregado). 6/8-bit exigem ≥ 20 GB e Nenhum exige ≥ 28 GB."
+                  : baseModel === "flux"
                   ? "2-bit/4-bit permitem rodar em GPUs ≤ 12 GB. 6-bit intermediário (~10 GB), 8-bit exige ≥ 16 GB e Nenhum exige ≥ 24 GB."
                   : "Quantização do backbone para redução drástica de memória VRAM (2-bit só p/ testes)."
               }

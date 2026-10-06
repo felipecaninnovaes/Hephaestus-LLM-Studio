@@ -22,6 +22,8 @@ export interface GenerationModelSectionProps {
   textEncoderModelId: string;
   setTextEncoderModelId: (val: string) => void;
   isFlux2: boolean;
+  /** Regras exclusivas do 4B: text encoder custom e variante destilada. */
+  isFlux2Only4b: boolean;
   distilled: boolean;
   onVariantChange: (variant: "distilled" | "base") => void;
   loras: LoraRef[];
@@ -42,6 +44,7 @@ export function GenerationModelSection({
   textEncoderModelId,
   setTextEncoderModelId,
   isFlux2,
+  isFlux2Only4b,
   distilled,
   onVariantChange,
   loras,
@@ -77,25 +80,25 @@ export function GenerationModelSection({
         )}
       </div>
 
-      {/* ══ Text encoder (somente flux-2-klein-4b) ══ */}
+      {/* ══ Text encoder (somente flux-2-klein-4b; 9B usa o encoder oficial) ══ */}
       <div className="space-y-2">
         <span className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-300">
           Text encoder
         </span>
         <Select
           options={textEncoderOptions}
-          value={isFlux2 ? textEncoderModelId : ""}
+          value={isFlux2Only4b ? textEncoderModelId : ""}
           onChange={(v) => setTextEncoderModelId(v)}
-          disabled={disabled || !isFlux2}
+          disabled={disabled || !isFlux2Only4b}
           placeholder={
-            isFlux2
+            isFlux2Only4b
               ? "Encoder oficial BFL (padrão)"
               : "Disponível só p/ FLUX.2 Klein 4B"
           }
           size="sm"
           fontMono
         />
-        {!isFlux2 && (
+        {!isFlux2Only4b && (
           <p className="font-mono text-3xs text-zinc-500">
             Text encoder custom só tem efeito com arch flux-2-klein-4b.
           </p>
@@ -110,7 +113,11 @@ export function GenerationModelSection({
               Variante
             </span>
             <span className="shrink-0 font-mono text-3xs text-brand-400">
-              {distilled ? "4–8 steps · CFG 1.0" : "20+ steps · CFG 3.5+"}
+              {!isFlux2Only4b
+                ? "28 steps · CFG 4 · só base"
+                : distilled
+                  ? "4–8 steps · CFG 1.0"
+                  : "20+ steps · CFG 3.5+"}
             </span>
           </div>
           <SegmentedControl
@@ -126,8 +133,9 @@ export function GenerationModelSection({
                 icon: <IconSliders className="size-3.5" />,
               },
             ]}
-            value={distilled ? "distilled" : "base"}
+            value={isFlux2Only4b && distilled ? "distilled" : "base"}
             onChange={onVariantChange}
+            disabled={disabled || !isFlux2Only4b}
             ariaLabel="Variante do modelo"
           />
         </div>

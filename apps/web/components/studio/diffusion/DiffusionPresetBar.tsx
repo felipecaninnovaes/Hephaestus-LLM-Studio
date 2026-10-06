@@ -67,7 +67,7 @@ export function DiffusionPresetBar({
       </div>
 
       {/* Botões de presets rápidos */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
         <button
           type="button"
           disabled={busy}
@@ -96,6 +96,37 @@ export function DiffusionPresetBar({
           </span>
           <span className="font-mono text-3xs text-zinc-400 mt-0.5">
             1024px · QLoRA 4-bit · ~8-10GB
+          </span>
+        </button>
+
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() =>
+            onApplyPreset({
+              name: "FLUX.2 Klein 9B (4-bit NF4)",
+              baseModel: "flux-2-klein-9b",
+              epochs: 10,
+              batchSize: 1,
+              rank: 16,
+              alpha: 16,
+              learningRate: "0.00003",
+              resolution: 768,
+              gradientAccumulationSteps: 1,
+              optimizer: "paged_adamw8bit",
+              lrScheduler: "cosine",
+              lrWarmupSteps: 0,
+              mixedPrecision: "bf16",
+              quantization: "4bit",
+            })
+          }
+          className="flex flex-col text-left p-2.5 rounded-lg border border-white/10 bg-white/[0.02] hover:border-brand-500/40 hover:bg-white/[0.05] transition-colors text-zinc-300 group focus:outline-none focus:ring-2 focus:ring-brand-500/40 cursor-pointer"
+        >
+          <span className="font-display text-xs font-medium text-zinc-200 group-hover:text-brand-300 transition-colors">
+            FLUX.2 Klein 9B
+          </span>
+          <span className="font-mono text-3xs text-zinc-400 mt-0.5">
+            768–1024px · QLoRA 4-bit · ~12GB
           </span>
         </button>
 

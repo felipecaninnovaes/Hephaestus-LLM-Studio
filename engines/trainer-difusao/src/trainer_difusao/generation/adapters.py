@@ -9,6 +9,99 @@ import os
 from collections import OrderedDict
 from typing import Any, List
 
+# Prefixos de chave que o diffusers já sabe rotear por componente / converter
+# (diffusers `transformer.`/`unet.`/`text_encoder*.`, ai-toolkit/ComfyUI
+# `diffusion_model.`, PEFT cru `base_model.model.`, kohya `lora_*`).
+_KNOWN_LORA_KEY_PREFIXES = (
+    "transformer.",
+    "unet.",
+    "text_encoder.",
+    "text_encoder_2.",
+    "diffusion_model.",
+    "base_model.model.",
+    "lora_unet_",
+    "lora_te",
+    "lora_transformer_",
+)
+_LORA_TENSOR_MARKERS = (".lora_A.", ".lora_B.", ".lora_down.", ".lora_up.")
+
+
+class LoraLoadError(RuntimeError):
+    """LoRA que não pôde ser carregada/aplicada — a requisição DEVE falhar (PITFALLS:34)."""
+
+
+def lora_component_prefix(base_model: str) -> str:
+    """Prefixo de componente que o loader do diffusers exige p/ a arquitetura."""
+    return "unet." if base_model in ("sdxl", "sd15") else "transformer."
+
+
+def prepare_lora_for_load(path: str, base_model: str) -> Any:
+    """Devolve o argumento p/ `pipe.load_lora_weights`: o `path` ou um state_dict remapeado.
+
+    O adapter salvo pela engine (`_save_lora_safetensors`, contrato ComfyUI) NÃO tem
+    prefixo de componente (`transformer_blocks.0...lora_A.weight`); o diffusers filtra
+    por `transformer.`/`unet.` e carregaria 0 chaves (só um warning). Arquivo nesse
+    layout → state_dict com o prefixo da arquitetura. Já prefixado/kohya/ComfyUI →
+    passthrough (o diffusers converte). Arquivo sem nenhum tensor LoRA → LoraLoadError.
+    """
+    if not str(path).endswith(".safetensors"):
+        return path
+    try:
+        from safetensors.torch import load_file
+
+        state = load_file(path)
+    except Exception as exc:
+        raise LoraLoadError(f"LoRA {path} ilegível como safetensors: {exc}") from exc
+    keys = list(state)
+    if not any(m in k for k in keys for m in _LORA_TENSOR_MARKERS):
+        raise LoraLoadError(
+            f"LoRA {path} não contém nenhum tensor LoRA (lora_A/lora_B/lora_down/"
+            f"lora_up) — {len(keys)} chave(s) no arquivo. Requisição abortada."
+        )
+    if any(k.startswith(_KNOWN_LORA_KEY_PREFIXES) for k in keys):
+        return path
+    prefix = lora_component_prefix(base_model)
+    print(
+        f"[DIFFUSION-GEN] LoRA {path}: layout da engine sem prefixo de componente — "
+        f"remapeando {len(keys)} chaves com '{prefix}'.",
+        flush=True,
+    )
+    return {prefix + k: v for k, v in state.items()}
+
+
+def count_injected_lora_modules(pipe: Any, adapter_name: str) -> int | None:
+    """Nº de módulos LoRA do adapter nos componentes do pipeline (None = não verificável)."""
+    components = getattr(pipe, "components", None)
+    if not isinstance(components, dict):
+        return None
+    try:
+        import torch
+    except ImportError:
+        return None
+    total = 0
+    for comp in components.values():
+        if not isinstance(comp, torch.nn.Module):
+            continue
+        if adapter_name not in (getattr(comp, "peft_config", None) or {}):
+            continue
+        for sub in comp.modules():
+            lora_a = getattr(sub, "lora_A", None)
+            if lora_a is not None and adapter_name in lora_a:
+                total += 1
+    return total
+
+
+def _is_model_cpu_offloaded(pipe: Any) -> bool:
+    """True se o pipeline usa `enable_model_cpu_offload` (hooks accelerate CpuOffload)."""
+    components = getattr(pipe, "components", None)
+    if not isinstance(components, dict):
+        return False
+    try:
+        from accelerate.hooks import CpuOffload
+    except ImportError:
+        return False
+    return any(isinstance(getattr(c, "_hf_hook", None), CpuOffload) for c in components.values())
+
 
 class DaemonLoraCache:
     """Gerencia adaptadores LoRA nomeados carregados no pipeline via LRU.
@@ -115,7 +208,33 @@ class DaemonLoraCache:
                     f"[DIFFUSION-GEN] Carregando LoRA {name}: {path} (scale={scale})",
                     flush=True,
                 )
-                pipe.load_lora_weights(path, adapter_name=name)
+                load_arg = prepare_lora_for_load(path, base_model)
+                offloaded = _is_model_cpu_offloaded(pipe)
+                try:
+                    pipe.load_lora_weights(load_arg, adapter_name=name)
+                except Exception as exc:
+                    # diffusers remove os hooks de offload antes de injetar e só os
+                    # recoloca no caminho de sucesso: sem isto o pipeline quente fica
+                    # sem offload (device errado) após uma LoRA inválida.
+                    if offloaded:
+                        pipe.enable_model_cpu_offload()
+                    raise LoraLoadError(
+                        f"Falha ao carregar LoRA {path}: {exc}"
+                    ) from exc
+                injected = count_injected_lora_modules(pipe, name)
+                if injected == 0:
+                    self._delete_adapter(pipe, base_model, name)
+                    raise LoraLoadError(
+                        f"LoRA {path} não injetou nenhuma camada no modelo "
+                        f"({base_model}): 0 chaves aplicadas (formato/arquitetura "
+                        "incompatível). Requisição abortada."
+                    )
+                if injected is not None:
+                    print(
+                        f"[DIFFUSION-GEN] LoRA {name} ({path}): {injected} módulo(s) "
+                        "LoRA injetado(s).",
+                        flush=True,
+                    )
 
                 self.adapters[name] = {"key": fp, "path": path, "scale": scale}
                 self.key_to_name[fp] = name

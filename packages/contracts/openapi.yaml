@@ -3686,7 +3686,7 @@ components:
           type: [string, "null"]
           enum: [sdxl, flux, sd15, flux-2-klein-4b, flux-2-klein-9b, qwen-image-2.1]
           default: sdxl
-          description: "Modelo de difusão base para treino do adaptador LoRA. XOR com customModelId. `flux-2-klein-9b` = FLUX.2 Klein base 9B (VRAM mínima 12 GB com 2bit/4bit, 20 GB com 6bit/8bit, 28 GB sem quantização); o alias legado `flux` equivale a `flux-2-klein-4b`."
+          description: "Modelo de difusão base para treino do adaptador LoRA. XOR com customModelId. `flux-2-klein-9b` = FLUX.2 Klein base 9B (VRAM mínima 10 GB com 2bit/4bit, 18 GB com 6bit/8bit, 26 GB sem quantização (sem headroom; o manager soma +2 GB na eleição)); o alias legado `flux` equivale a `flux-2-klein-4b`."
         customModelId:
           type: [string, "null"]
           format: uuid
@@ -3831,7 +3831,7 @@ components:
           type: string
           enum: [sdxl, flux, sd15, flux-2-klein-4b, flux-2-klein-9b, qwen-image-2.1]
           default: flux-2-klein-4b
-          description: "Modelo base para geração Text-to-Image. XOR com customModelId. `flux-2-klein-9b` = FLUX.2 Klein base 9B (VRAM mínima 12 GB com 2bit/4bit, 20 GB com 6bit/8bit, 28 GB sem quantização); o alias legado `flux` equivale a `flux-2-klein-4b`."
+          description: "Modelo base para geração Text-to-Image. XOR com customModelId. `flux-2-klein-9b` = FLUX.2 Klein base 9B (VRAM mínima 10 GB com 2bit/4bit, 18 GB com 6bit/8bit, 26 GB sem quantização (sem headroom; o manager soma +2 GB na eleição)); o alias legado `flux` equivale a `flux-2-klein-4b`."
         prompt:
           type: string
           minLength: 1

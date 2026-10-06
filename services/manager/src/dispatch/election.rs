@@ -250,3 +250,47 @@ pub async fn select_eligible_orchestrator(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::select_best_gpu_for_devices;
+    use crate::policy::VramTable;
+
+    fn rtx_3060_12gb() -> Vec<heph_contracts::GpuDeviceTelemetry> {
+        vec![heph_contracts::GpuDeviceTelemetry {
+            index: 0,
+            uuid: "GPU-3060".into(),
+            name: "NVIDIA GeForce RTX 3060".into(),
+            vram_total: 12288,
+            vram_used: 0,
+            power_watts: None,
+            gpu_utilization_pct: None,
+            temperature_c: None,
+        }]
+    }
+
+    /// Regressão (job 644afe63): com a tabela real, Klein 9B (train e generate)
+    /// e 4B elegem uma GPU de 12288 MiB; `vram_min_gb` exclui o headroom.
+    #[test]
+    fn tabela_real_klein_elege_gpu_12gb() {
+        let vt = VramTable::parse(include_str!(
+            "../../../../packages/policies/vram-table.yaml"
+        ))
+        .expect("vram-table.yaml");
+        let devices = rtx_3060_12gb();
+        for (model, mode) in [
+            ("flux-2-klein-9b", "train"),
+            ("flux-2-klein-9b", "generate"),
+            ("flux-2-klein-4b", "train"),
+            ("flux-2-klein-4b", "generate"),
+        ] {
+            let required = vt.resolve_required_gb("diffusion", model, mode);
+            assert!(required.is_some(), "{model}/{mode} sem linha na tabela");
+            assert_eq!(
+                select_best_gpu_for_devices(&devices, required).as_deref(),
+                Some("GPU-3060"),
+                "{model}/{mode} required={required:?} deveria caber em 12288 MiB"
+            );
+        }
+    }
+}

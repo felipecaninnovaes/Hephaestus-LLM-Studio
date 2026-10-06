@@ -1796,12 +1796,13 @@ output_path: "{{output_path}}"
 }
 
 /// VRAM mínima (GB) da família FLUX.2 Klein 9B por quantization — vale para
-/// treino e geração (spike RTX 3060 12 GB): 2/4bit→12, 6/8bit→20, none→28.
+/// treino e geração (spike RTX 3060 12 GB): 2/4bit→10, 6/8bit→18, none→26 (sem headroom, como
+/// `vram-table.yaml`: o manager soma +2).
 fn flux2_klein_9b_vram_min_gb(quantization: &str) -> i32 {
     match quantization {
-        "2bit" | "4bit" | "4bit-nf4" => 12,
-        "6bit" | "8bit" | "8bit-bnb" => 20,
-        _ => 28,
+        "2bit" | "4bit" | "4bit-nf4" => 10,
+        "6bit" | "8bit" | "8bit-bnb" => 18,
+        _ => 26,
     }
 }
 
@@ -1820,7 +1821,7 @@ pub fn diffusion_train_vram_min_gb(arch: &str, quantization: &str) -> i32 {
 ///
 /// sd15 fixo 6; sdxl e flux: none→16, 6bit→10, 4bit→8, 2bit→7, 8bit→12
 /// (aliases legados 4bit-nf4/8bit-bnb seguem o nível da família);
-/// flux-2-klein-9b: 2/4bit→12, 6/8bit→20, none→28.
+/// flux-2-klein-9b: 2/4bit→10, 6/8bit→18, none→26.
 pub fn diffusion_generate_vram_min_gb(arch: &str, quantization: &str) -> i32 {
     match arch {
         "sd15" => 6,
@@ -3898,11 +3899,11 @@ mod tests {
     #[test]
     fn vram_min_9b_por_quantization_treino_e_geracao() {
         for (q, gb) in [
-            ("2bit", 12),
-            ("4bit", 12),
-            ("6bit", 20),
-            ("8bit", 20),
-            ("none", 28),
+            ("2bit", 10),
+            ("4bit", 10),
+            ("6bit", 18),
+            ("8bit", 18),
+            ("none", 26),
         ] {
             assert_eq!(
                 diffusion_generate_vram_min_gb("flux-2-klein-9b", q),

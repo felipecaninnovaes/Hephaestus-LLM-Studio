@@ -540,11 +540,11 @@ fn vram_table_real_tem_9b_e_sem_linhas_orfas() {
             .expect("vram-table.yaml");
     assert_eq!(
         vt.resolve_min_gb("diffusion", "flux-2-klein-9b", "train"),
-        Some(12)
+        Some(10)
     );
     assert_eq!(
         vt.resolve_min_gb("diffusion", "flux-2-klein-9b", "generate"),
-        Some(12)
+        Some(10)
     );
     assert_eq!(
         vt.resolve_min_gb("diffusion", "flux2-klein-9b", "train"),

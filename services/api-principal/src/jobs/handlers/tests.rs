@@ -1826,7 +1826,7 @@ async fn submit_diffusion_generate_custom_9b_unsupported_architecture_400() {
 
 #[tokio::test]
 async fn submit_diffusion_generate_base_9b_202_vram_por_quantization() {
-    for (quant, expected) in [("4bit", 12), ("8bit", 20), ("none", 28)] {
+    for (quant, expected) in [("4bit", 10), ("8bit", 18), ("none", 26)] {
         let mut mock = MockManager::default();
         mock.create_job_result = Some(CreateJobResponse {
             job_id: "job-9b".into(),

@@ -28,8 +28,10 @@ do engine (ver PITFALLS, seção Engines).
   `flux-2-klein-4b` (`baseModel` de treino/geração, `Model.arch`, hint de
   upload); `models_arch_check` expandido pela migration 0025. Alias legado
   `flux` continua = 4B. `distilled=true` + 9B ⇒ 400 `invalid_request`.
-- **D2 — 4-bit como alvo.** VRAM mínima 9B (treino e geração): 12 GB
-  (2/4bit), 20 GB (6/8bit), 28 GB (none); linhas `flux-2-klein-9b` em
+- **D2 — 4-bit como alvo.** VRAM mínima 9B (treino e geração), sem
+  headroom (o manager soma +2 GB ⇒ 12 GB exigidos em 4bit): 10 GB
+  (2/4bit), 18 GB (6/8bit), 26 GB (none); picos reais 11,9 GiB (treino) e
+  10,4 GiB (geração); linhas `flux-2-klein-9b` em
   `packages/policies/vram-table.yaml` com as notas do spike.
 - **D3 — Unload do text encoder forçado no 9B.** O engine liga cache de
   embeds + unload do encoder no 9B independentemente de

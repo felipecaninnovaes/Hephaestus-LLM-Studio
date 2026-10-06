@@ -31,6 +31,7 @@ from trainer_difusao.generation.text_encoder import (
     _flux2_repo_id,
     _load_flux2_custom_transformer,
     _load_flux2_text_encoder_override,
+    load_flux2_quantized_components,
 )
 
 
@@ -101,8 +102,12 @@ def _real_generate(
             f"Quantização {quant} exige GPU CUDA (device atual: {device}). "
             "Use quantization 'none' em CPU."
         )
+    # Klein: transformer + text encoder quantizados pelos loaders do treino
+    # (load_flux2_quantized_components, cache quantizado compartilhado), nunca
+    # via quantization_config do pipeline (que era no-op).
+    klein_quant = base_model == "flux-2-klein-4b" and quant != "none"
     quantization_config = None
-    if quant in ("4bit", "8bit") and device == "cuda":
+    if not klein_quant and quant in ("4bit", "8bit") and device == "cuda":
         try:
             from transformers import BitsAndBytesConfig
 
@@ -125,7 +130,7 @@ def _real_generate(
                 f"[WARN] Falha ao configurar BitsAndBytes: {e}. Usando precisão padrão.",
                 flush=True,
             )
-    elif quant in ("2bit", "6bit"):
+    elif not klein_quant and quant in ("2bit", "6bit"):
         from trainer_difusao.quantization import build_torchao_config
 
         emitter.emit(
@@ -189,25 +194,47 @@ def _real_generate(
             pipe_dtype = torch.bfloat16 if device == "cuda" else torch.float32
             flux_kwargs: dict[str, Any] = {"torch_dtype": pipe_dtype}
             encoder_override = params.get("text_encoder_path")
-            if encoder_override:
-                try:
-                    enc_model, enc_tok = _load_flux2_text_encoder_override(
-                        encoder_override, model_repo, pipe_dtype,
-                        quantization_config=quantization_config,
-                    )
-                except SystemExit:
-                    raise
-                except Exception as exc:
-                    _die(
-                        f"Falha ao carregar text_encoder custom "
-                        f"({encoder_override}): {exc}"
-                    )
-                flux_kwargs["text_encoder"] = enc_model
-                flux_kwargs["tokenizer"] = enc_tok
-            if custom_cp and arch == "flux-2-klein-4b":
-                flux_kwargs["transformer"] = _load_flux2_custom_transformer(
-                    custom_cp, pipe_dtype, quantization_config=quantization_config
+            if klein_quant:
+                emitter.emit(
+                    phase="quantizing",
+                    message=f"Carregando transformer + text encoder Klein em {quant}...",
+                    progress=0.15,
                 )
+                flux_kwargs.update(
+                    load_flux2_quantized_components(
+                        model_repo,
+                        quant,
+                        pipe_dtype,
+                        custom_cp=custom_cp if arch == "flux-2-klein-4b" else None,
+                        text_encoder_path=encoder_override,
+                        hub_cache=hub_cache,
+                        hf_token=(
+                            os.environ.get("HF_TOKEN")
+                            or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+                            or None
+                        ),
+                    )
+                )
+            else:
+                if encoder_override:
+                    try:
+                        enc_model, enc_tok = _load_flux2_text_encoder_override(
+                            encoder_override, model_repo, pipe_dtype,
+                        )
+                    except SystemExit:
+                        raise
+                    except Exception as exc:
+                        _die(
+                            f"Falha ao carregar text_encoder custom "
+                            f"({encoder_override}): {exc}"
+                        )
+                    flux_kwargs["text_encoder"] = enc_model
+                    flux_kwargs["tokenizer"] = enc_tok
+                if custom_cp and arch == "flux-2-klein-4b":
+                    flux_kwargs["transformer"] = _load_flux2_custom_transformer(
+                        custom_cp, pipe_dtype
+                    )
+            if custom_cp and arch == "flux-2-klein-4b":
                 print(
                     f"[DIFFUSION-GEN] Carregando FLUX.2 Klein 4B custom: "
                     f"{custom_cp} (componentes base: {model_repo})",
@@ -227,7 +254,7 @@ def _real_generate(
                 _die(
                     f"Falha ao carregar pipeline FLUX.2 Klein ({model_repo}): {exc}"
                 )
-            if quantization_config is None and device == "cuda":
+            if not klein_quant and device == "cuda":
                 pipe.to(device)
             else:
                 pipe.enable_model_cpu_offload()
@@ -560,4 +587,9 @@ def cmd_generate(args: list[str]) -> None:
     if is_mock_mode:
         _mock_generate(params, output_dir)
     else:
-        _real_generate(params, output_dir)
+        from trainer_difusao.generation.adapters import LoraLoadError
+
+        try:
+            _real_generate(params, output_dir)
+        except LoraLoadError as exc:
+            _die(str(exc))

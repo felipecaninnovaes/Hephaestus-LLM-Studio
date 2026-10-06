@@ -128,8 +128,15 @@ class TestDaemonLoraCache(unittest.TestCase):
         self._tmpdir.cleanup()
 
     def _create_lora_file(self, name: str, content: bytes = b"lora-weights") -> str:
+        import torch
+        from safetensors.torch import save_file
+
         p = self.tmp / f"{name}.safetensors"
-        p.write_bytes(content)
+        # tensor LoRA válido (já prefixado → passthrough); `content` só varia o fingerprint
+        save_file(
+            {"transformer.x.lora_A.weight": torch.full((1, 1), float(len(content)))},
+            str(p),
+        )
         return str(p)
 
     def test_lora_cache_hit_without_reload(self):

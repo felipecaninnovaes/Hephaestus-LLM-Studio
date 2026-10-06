@@ -22,6 +22,7 @@ import {
   ProgressBar,
 } from "@/components/ui";
 import { copyToClipboard } from "@/lib/clipboard";
+import { usePartialCaptions } from "@/hooks/usePartialCaptions";
 import { formatDuration, formatRelativeTime } from "@/lib/format";
 import { imageProgressLabel, jobCapabilities } from "@/lib/jobCapabilities";
 import { latestTrainingMetric } from "@/lib/jobMetrics";
@@ -95,6 +96,7 @@ export function ActionCenterJobItem({
   const duration = formatDuration(job.createdAt, job.finishedAt);
   const latestMetric = latestTrainingMetric(metrics);
   const caps = jobCapabilities(job);
+  const hasPartialCaptions = usePartialCaptions(job);
   const [zipBusy, setZipBusy] = useState(false);
 
   return (
@@ -540,6 +542,24 @@ export function ActionCenterJobItem({
                     title="Aplicar todas as legendas direto sem inspeção"
                   >
                     <span>{applyBusy ? "Aplicando…" : "Aplicar Todas"}</span>
+                  </Button>
+                </div>
+              )}
+
+            {/* AutoLabel: revisar legendas parciais de jobs failed/cancelled */}
+            {caps.applyAction &&
+              job.kind === "autolabel" &&
+              (job.status === "failed" || job.status === "cancelled") &&
+              hasPartialCaptions && (
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={() => onReviewAutolabel(job)}
+                    leftIcon={<IconSparkles />}
+                    title="Inspecionar, editar e curar as legendas geradas antes da interrupção"
+                  >
+                    <span>Revisar legendas parciais</span>
                   </Button>
                 </div>
               )}

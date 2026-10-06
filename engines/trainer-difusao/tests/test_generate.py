@@ -4,6 +4,8 @@ Cobre: batch, seed, retrocompat, loras, custom, limites, cancel, thumbs.
 Todos os testes usam ENGINE_MOCK=1 (CPU-only).
 """
 
+import contextlib
+import io
 import json
 import os
 import tempfile
@@ -17,6 +19,7 @@ from trainer_difusao.generate import (
     _write_thumb,
     load_and_validate_generate_config,
 )
+from trainer_difusao.generation.config import MissingInputError
 from trainer_difusao.train import main
 
 
@@ -221,11 +224,23 @@ class TestRetrocompat(_BaseGenerateTest):
         self.assertEqual(lines[0]["loras"][0]["path"], str(real_lora))
         self.assertEqual(lines[0]["loras"][0]["scale"], 0.7)
 
+    def _run_expect_exit1(self, cfg: dict, missing: str) -> None:
+        cfg_path = self._write_config(cfg)
+        out_dir = self.tmp_path / "output"
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as ctx:
+            main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertIn(missing, err.getvalue())
+        self.assertFalse((out_dir / "generated_0001.png").exists())
+        self.assertFalse((out_dir / "generation_meta.json").exists())
+
     def test_legacy_config_with_weights_path_nonexistent(self):
-        """weights_path legado com arquivo inexistente → loras: [] (base puro)."""
+        """weights_path legado inexistente → exit 1 nomeando o path (sem base puro silencioso)."""
+        missing = "/nonexistent/path/lora.safetensors"
         cfg = {
             "job_id": "test-legacy-weights-nonexist",
-            "weights_path": "/nonexistent/path/lora.safetensors",
+            "weights_path": missing,
             "generate": {
                 "base_model": "flux-2-klein-4b",
                 "prompt": "test legacy weights nonexistent",
@@ -237,16 +252,28 @@ class TestRetrocompat(_BaseGenerateTest):
                 "lora_scale": 0.7,
             },
         }
-        cfg_path = self._write_config(cfg)
-        out_dir = self.tmp_path / "output"
+        self._run_expect_exit1(cfg, missing)
 
-        main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
+    def test_missing_lora_in_loras_list_exits_1(self):
+        missing = "/outputs/job/weights/lora_0.safetensors"
+        cfg = self._base_cfg(loras=[{"path": missing, "scale": 1.0}])
+        self._run_expect_exit1(cfg, missing)
 
-        meta_path = out_dir / "generation_meta.json"
-        lines = [json.loads(l) for l in meta_path.read_text().splitlines() if l.strip()]
-        self.assertEqual(len(lines), 1)
-        # weights_path inexistente → loras vazio
-        self.assertEqual(lines[0]["loras"], [])
+    def test_missing_text_encoder_exits_1(self):
+        missing = "/models/enc_ausente.safetensors"
+        cfg = self._base_cfg(text_encoder_path=missing)
+        self._run_expect_exit1(cfg, missing)
+
+    def test_missing_custom_checkpoint_exits_1(self):
+        missing = "/models/ckpt_ausente.safetensors"
+        cfg = self._base_cfg(custom_checkpoint_path=missing, arch="sdxl")
+        del cfg["generate"]["base_model"]
+        self._run_expect_exit1(cfg, missing)
+
+    def test_missing_init_image_exits_1(self):
+        missing = "/datasets/init_ausente.png"
+        cfg = self._base_cfg(init_image_path=missing)
+        self._run_expect_exit1(cfg, missing)
 
     def test_legacy_config_with_weights_path_literal_placeholder(self):
         """weights_path='{weights_path}' (placeholder) → loras: [] (base puro)."""
@@ -324,9 +351,11 @@ class TestCustom(_BaseGenerateTest):
     custom sem arch → erro; custom+base_model juntos → erro."""
 
     def test_custom_with_arch_registers_in_meta(self):
+        custom = self.tmp_path / "custom.safetensors"
+        custom.touch()
         cfg = self._base_cfg(
             batch_size=1,
-            custom_checkpoint_path="/fake/custom.safetensors",
+            custom_checkpoint_path=str(custom),
             arch="sdxl",
         )
         # Remove base_model para evitar conflito XOR
@@ -339,7 +368,7 @@ class TestCustom(_BaseGenerateTest):
         meta_path = out_dir / "generation_meta.json"
         lines = [json.loads(l) for l in meta_path.read_text().splitlines() if l.strip()]
         self.assertEqual(len(lines), 1)
-        self.assertEqual(lines[0]["custom_model_path"], "/fake/custom.safetensors")
+        self.assertEqual(lines[0]["custom_model_path"], str(custom))
         self.assertEqual(lines[0]["arch"], "sdxl")
         # base_model deve ser derivado do arch
         self.assertEqual(lines[0]["base_model"], "sdxl")
@@ -369,11 +398,15 @@ class TestCustom(_BaseGenerateTest):
             main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
 
     def test_custom_flux2_registers_in_meta(self):
+        flux_ckpt = self.tmp_path / "flux2.safetensors"
+        flux_ckpt.touch()
+        enc_dir = self.tmp_path / "qwen3-custom"
+        enc_dir.mkdir()
         cfg = self._base_cfg(
             batch_size=1,
-            custom_checkpoint_path="/fake/flux2.safetensors",
+            custom_checkpoint_path=str(flux_ckpt),
             arch="flux-2-klein-4b",
-            text_encoder_path="/fake/qwen3-custom",
+            text_encoder_path=str(enc_dir),
         )
         del cfg["generate"]["base_model"]
         cfg_path = self._write_config(cfg)
@@ -387,10 +420,10 @@ class TestCustom(_BaseGenerateTest):
             if l.strip()
         ]
         self.assertEqual(len(lines), 1)
-        self.assertEqual(lines[0]["custom_model_path"], "/fake/flux2.safetensors")
+        self.assertEqual(lines[0]["custom_model_path"], str(flux_ckpt))
         self.assertEqual(lines[0]["arch"], "flux-2-klein-4b")
         self.assertEqual(lines[0]["base_model"], "flux-2-klein-4b")
-        self.assertEqual(lines[0]["text_encoder_path"], "/fake/qwen3-custom")
+        self.assertEqual(lines[0]["text_encoder_path"], str(enc_dir))
 
 
 class TestLimits(_BaseGenerateTest):
@@ -428,9 +461,11 @@ class TestLimits(_BaseGenerateTest):
 
     def test_scale_0_0_valid(self):
         """scale 0.0 é válido (desativar LoRA visualmente)."""
+        fake_lora = self.tmp_path / "lora.safetensors"
+        fake_lora.touch()
         cfg = self._base_cfg(
             batch_size=1,
-            loras=[{"path": "/fake/lora.safetensors", "scale": 0.0}],
+            loras=[{"path": str(fake_lora), "scale": 0.0}],
         )
         cfg_path = self._write_config(cfg)
         out_dir = self.tmp_path / "output"
@@ -536,10 +571,12 @@ class TestMetaJsonlFields(_BaseGenerateTest):
     """Validação dos campos do JSONL de metadados."""
 
     def test_meta_has_all_required_fields(self):
+        fake_lora = self.tmp_path / "lora.safetensors"
+        fake_lora.touch()
         cfg = self._base_cfg(
             batch_size=1,
             seed=42,
-            loras=[{"path": "/fake/lora.safetensors", "scale": 0.6}],
+            loras=[{"path": str(fake_lora), "scale": 0.6}],
         )
         cfg_path = self._write_config(cfg)
         out_dir = self.tmp_path / "output"
@@ -670,12 +707,13 @@ class TestResolveLorasFromLegacy(unittest.TestCase):
         )
         self.assertEqual(result, [])
 
-    def test_weights_path_nonexistent_returns_empty(self):
-        """weights_path apontando para path inexistente → []."""
-        result = _resolve_loras_from_legacy(
-            {"weights_path": "/nonexistent/path/lora.safetensors", "lora_scale": 0.7}
-        )
-        self.assertEqual(result, [])
+    def test_weights_path_nonexistent_raises(self):
+        """weights_path apontando para path inexistente → MissingInputError."""
+        with self.assertRaises(MissingInputError) as ctx:
+            _resolve_loras_from_legacy(
+                {"weights_path": "/nonexistent/path/lora.safetensors", "lora_scale": 0.7}
+            )
+        self.assertIn("/nonexistent/path/lora.safetensors", str(ctx.exception))
 
     def test_weights_path_real_file_maps_correctly(self):
         """weights_path apontando para arquivo REAL → [{path, scale}]."""
@@ -689,8 +727,8 @@ class TestResolveLorasFromLegacy(unittest.TestCase):
             self.assertEqual(result[0]["path"], str(real_path))
             self.assertEqual(result[0]["scale"], 0.85)
 
-    def test_loras_mixed_existing_nonexistent(self):
-        """Seção loras com 2 entradas, 1 path inexistente → só a existente, ordem preservada."""
+    def test_loras_mixed_existing_nonexistent_raises(self):
+        """Seção loras com 1 path inexistente → falha nomeando-o (sem descartar)."""
         with tempfile.TemporaryDirectory() as tmpdir:
             real_path = Path(tmpdir) / "real.safetensors"
             real_path.touch()
@@ -698,19 +736,19 @@ class TestResolveLorasFromLegacy(unittest.TestCase):
                 {"path": "/nonexistent/first.safetensors", "scale": 0.6},
                 {"path": str(real_path), "scale": 0.9},
             ]
-            result = _resolve_loras_from_legacy({"loras": loras})
-            self.assertEqual(len(result), 1)
-            self.assertEqual(result[0]["path"], str(real_path))
-            self.assertEqual(result[0]["scale"], 0.9)
+            with self.assertRaises(MissingInputError) as ctx:
+                _resolve_loras_from_legacy({"loras": loras})
+            self.assertIn("/nonexistent/first.safetensors", str(ctx.exception))
 
-    def test_loras_all_nonexistent_returns_empty(self):
-        """Seção loras com paths inexistentes → []."""
+    def test_loras_all_nonexistent_raises(self):
+        """Seção loras com path inexistente → MissingInputError nomeando o primeiro path."""
         loras = [
             {"path": "/fake/a.safetensors", "scale": 0.5},
             {"path": "/fake/b.safetensors", "scale": 0.7},
         ]
-        result = _resolve_loras_from_legacy({"loras": loras})
-        self.assertEqual(result, [])
+        with self.assertRaises(MissingInputError) as ctx:
+            _resolve_loras_from_legacy({"loras": loras})
+        self.assertIn("/fake/a.safetensors", str(ctx.exception))
 
     def test_loras_all_existing_preserves_order(self):
         """Seção loras com 2 paths existentes → mantém ordem."""

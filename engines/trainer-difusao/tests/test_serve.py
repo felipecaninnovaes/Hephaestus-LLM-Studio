@@ -665,6 +665,48 @@ class TestLoraFailureIsExplicit(_BaseServeTest):
         self.assertEqual(resp["error"], "generation_failed")
         self.assertIn(lora, resp["message"])
 
+    def _assert_missing_input_500(self, body: dict, missing: str) -> None:
+        self._start_server()
+        self.assertTrue(self._wait_for_server())
+        status, resp = self._post_generate(body)
+        self.assertEqual(status, 500)
+        self.assertEqual(resp["error"], "generation_failed")
+        self.assertIn(missing, resp["message"])
+        # Nada foi gerado: sem imagens "base pura" silenciosas.
+        self.assertFalse((Path(body["output_dir"]) / "generated_0001.png").exists())
+
+    def test_missing_lora_path_returns_500_naming_path(self):
+        missing = "/outputs/job/weights/lora_0.safetensors"
+        body = self._make_config(loras=[{"path": missing, "scale": 1.0}])
+        self._assert_missing_input_500(body, missing)
+
+    def test_missing_legacy_weights_path_returns_500(self):
+        missing = "/outputs/job/weights/legacy.safetensors"
+        body = self._make_config()
+        body["config"]["weights_path"] = missing
+        self._assert_missing_input_500(body, missing)
+
+    def test_missing_text_encoder_path_returns_500(self):
+        missing = "/models/text_encoder_ausente.safetensors"
+        body = self._make_config(text_encoder_path=missing)
+        self._assert_missing_input_500(body, missing)
+
+    def test_missing_custom_checkpoint_returns_500(self):
+        missing = "/models/ckpt_ausente.safetensors"
+        body = self._make_config(custom_checkpoint_path=missing, arch="sdxl")
+        del body["config"]["generate"]["base_model"]
+        self._assert_missing_input_500(body, missing)
+
+    def test_existing_lora_still_returns_200(self):
+        lora = self.tmp_path / "ok.safetensors"
+        lora.touch()
+        self._start_server()
+        self.assertTrue(self._wait_for_server())
+        status, resp = self._post_generate(
+            self._make_config(loras=[{"path": str(lora), "scale": 1.0}])
+        )
+        self.assertEqual(status, 200)
+
 
 if __name__ == "__main__":
     unittest.main()

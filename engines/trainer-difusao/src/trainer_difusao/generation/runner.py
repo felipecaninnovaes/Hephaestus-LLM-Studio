@@ -22,7 +22,9 @@ from trainer_difusao.generation.artifacts import (
     _write_thumb,
 )
 from trainer_difusao.generation.config import (
+    MissingInputError,
     _resolve_loras_from_legacy,
+    check_requested_inputs,
     load_and_validate_generate_config,
 )
 from trainer_difusao.generation.mock import _mock_generate
@@ -595,6 +597,11 @@ def cmd_generate(args: list[str]) -> None:
 
     params = load_and_validate_generate_config(cfg)
     output_dir = Path(opts.output)
+
+    try:
+        check_requested_inputs(params)
+    except MissingInputError as exc:
+        _die(str(exc))
 
     is_mock_mode = is_mock()
     if is_mock_mode:

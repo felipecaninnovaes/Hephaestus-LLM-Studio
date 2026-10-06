@@ -205,8 +205,6 @@ def load_and_validate_generate_config(cfg: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(raw_init_path, str) or not raw_init_path.strip():
             _die("Campo 'init_image_path' deve ser uma string não vazia.")
         init_image_path = raw_init_path.strip()
-        if not os.path.isfile(init_image_path):
-            _die(f"init_image_path não encontrado: {init_image_path}")
         if raw_init_strength is None:
             init_strength = 0.6
         else:
@@ -249,30 +247,59 @@ def load_and_validate_generate_config(cfg: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+_WEIGHTS_PATH_PLACEHOLDER = "{weights_path}"
+
+
+class MissingInputError(RuntimeError):
+    """Input pedido (LoRA, checkpoint, text encoder) cujo path não existe.
+
+    A requisição DEVE falhar nomeando o path — nunca ser degradada em silêncio
+    para base puro (PITFALLS:34/84). No daemon vira HTTP 500 (RuntimeError);
+    no one-shot vira exit 1.
+    """
+
+
+def _legacy_weights_path(params: dict[str, Any]) -> str | None:
+    """weights_path legado efetivamente pedido (placeholder não renderizado = ausente)."""
+    weights_path = params.get("weights_path")
+    if not weights_path or weights_path == _WEIGHTS_PATH_PLACEHOLDER:
+        return None
+    return weights_path
+
+
 def _resolve_loras_from_legacy(params: dict[str, Any]) -> list[dict[str, Any]]:
-    """Converte weights_path+lora_scale legado para lista loras[] padrão."""
+    """Converte weights_path+lora_scale legado para lista loras[] padrão.
+
+    LoRA pedida cujo arquivo não existe → MissingInputError (sem descarte silencioso).
+    """
     loras = params.get("loras", [])
     if loras:
-        valid: list[dict[str, Any]] = []
         for i, entry in enumerate(loras):
             path = entry.get("path", "")
-            if path and os.path.exists(path):
-                valid.append(entry)
-            else:
-                print(
-                    f"[DIFFUSION-GEN] lora[{i}] path não existe: {path} — descartando",
-                    flush=True,
+            if not path or not os.path.exists(path):
+                raise MissingInputError(
+                    f"lora[{i}] path não existe: {path} — requisição abortada"
                 )
-        return valid
+        return list(loras)
 
-    weights_path = params.get("weights_path")
-    lora_scale = params.get("lora_scale", 1.0)
+    weights_path = _legacy_weights_path(params)
     if weights_path:
-        if os.path.exists(weights_path):
-            return [{"path": weights_path, "scale": lora_scale}]
-        print(
-            f"[DIFFUSION-GEN] weights_path informado ({weights_path}) "
-            f"mas arquivo não encontrado — geração com base puro",
-            flush=True,
-        )
+        if not os.path.exists(weights_path):
+            raise MissingInputError(
+                f"weights_path informado não existe: {weights_path} — requisição abortada"
+            )
+        return [{"path": weights_path, "scale": params.get("lora_scale", 1.0)}]
     return []
+
+
+def check_requested_inputs(params: dict[str, Any]) -> None:
+    """Falha cedo (antes de carregar o pipeline) se algum input pedido não existe.
+
+    Cobre LoRAs/weights_path, custom_checkpoint_path, text_encoder_path e
+    init_image_path (a validação de formato fica em `load_and_validate_generate_config`).
+    """
+    _resolve_loras_from_legacy(params)
+    for key in ("custom_checkpoint_path", "text_encoder_path", "init_image_path"):
+        path = params.get(key)
+        if path and not os.path.exists(path):
+            raise MissingInputError(f"{key} não existe: {path} — requisição abortada")

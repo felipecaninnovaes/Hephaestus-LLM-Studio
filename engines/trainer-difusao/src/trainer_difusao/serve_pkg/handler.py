@@ -192,6 +192,11 @@ class DiffusionHandler(BaseHTTPRequestHandler):
 
         try:
             state._busy = True
+            from trainer_difusao.generation.config import check_requested_inputs
+
+            # Input pedido inexistente → 500 explícito (nunca base puro silencioso),
+            # antes de qualquer reload/carga de pipeline.
+            check_requested_inputs(params)
             output_dir = Path(output_dir_str)
 
             telemetry_path = None

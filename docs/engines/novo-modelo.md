@@ -20,14 +20,14 @@ Seguir a ordem sequencial dos pilares garante zero quebras em contratos, CI dete
 2. **`packages/contracts/openapi.yaml`:**
    - Adicionar o identificador canônico do modelo nos enums e schemas da API:
      - `DiffusionBaseModel` (para difusão) ou `YoloBaseModel` (para detecção).
-     - Exemplos: `flux-2-klein-4b`, `sdxl-1.0`, `sd15`, `yolo11n`.
+     - Exemplos: `flux-2-klein-4b`, `flux-2-klein-9b`, `sdxl-1.0`, `sd15`, `yolo11n`.
 
 3. **Migrations de Banco (`services/api-principal/migrations/`):**
-   - A tabela `models` possui a CHECK CONSTRAINT `models_arch_check` limitando os valores de `arch`.
-   - Adicionar uma migration SQL não-destrutiva expandindo a constraint para aceitar o novo identificador:
+   - A tabela `models` possui a CHECK CONSTRAINT `models_arch_check` limitando os valores de `arch` (lista atual em `0025_models_arch_flux2_9b.sql`).
+   - Adicionar uma migration SQL não-destrutiva expandindo a constraint para aceitar o novo identificador, partindo da lista vigente:
      ```sql
      ALTER TABLE models DROP CONSTRAINT models_arch_check;
-     ALTER TABLE models ADD CONSTRAINT models_arch_check CHECK (arch IS NULL OR arch IN ('flux-2-klein-4b', 'sdxl', 'sd15', 'novo-modelo-4b'));
+     ALTER TABLE models ADD CONSTRAINT models_arch_check CHECK (arch IS NULL OR arch IN ('flux-2-klein-4b', 'flux-2-klein-9b', 'sdxl', 'sd15', 'qwen-image-2.1', 'novo-modelo-4b'));
      ```
 ---
 

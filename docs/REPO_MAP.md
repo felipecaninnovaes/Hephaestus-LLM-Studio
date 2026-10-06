@@ -47,12 +47,13 @@ GPU real (VM dedicada `docker-04`, `10.15.50.114`, 60GB disco): `infra/compose.g
 
 ## 3. Posse de Dados (Postgres único, schema compartilhado)
 
-Migrations canônicas: `services/api-principal/migrations/0001..0024.sql`.
+Migrations canônicas: `services/api-principal/migrations/0001..0025.sql`.
 - **Domínio aplicação/dados (escrita: api-principal):** `users`, `auth_state`,
   `datasets`, `dataset_versions`, `job_prepares` (aceite assíncrono ADR-0025 —
   0015 tabela, 0016 índice único parcial `state='preparing'`), `images`,
   `videos`, `boxes`, `classes`, `captions`, `image_embeddings` (pgvector),
-  `models` (`kind` += `text_encoder` — 0018, arch só `flux-2-klein-4b`),
+  `models` (`kind` += `text_encoder` — 0018; arch `flux-2-klein-4b`|`flux-2-klein-9b`
+  — 0025|`sdxl`|`sd15`|`qwen-image-2.1`),
   `generations`, `generation_inputs` (img2img — 0017 tabela efêmera
   de inputs avulsos, sem GC; `used_at` marca consumo, linhas permanecem p/ auditoria).
 - **Domínio execução (escrita: manager/orchestrator):** `jobs` (status inclui
@@ -159,7 +160,8 @@ substituindo o placeholder → engine consome
 
 Cadeia pesos custom flux-2 (treino+geração, nunca via browser): wire
 `customModelId` (treino: XOR `baseModel`, default `sdxl`; geração: XOR já
-existia, arch += `flux-2-klein-4b`) + `textEncoderModelId` (treino+geração,
+existia, arch += `flux-2-klein-4b`; arch `flux-2-klein-9b` ⇒ 400
+`unsupported_architecture`) + `textEncoderModelId` (treino+geração,
 só arch `flux-2-klein-4b`, senão 400; kind≠alvo ⇒ 400, inexistente ⇒ 404) →
 api-principal emite `config.yaml` só com placeholders literais (treino
 root-level `custom_checkpoint_path`/`text_encoder_path`; geração dentro de
@@ -173,6 +175,16 @@ text_encoder.safetensors}`, substituindo os placeholders → engine carrega
 `Flux2Transformer2DModel.from_single_file` + encoder/tokenizer override;
 treino: transformer via `load_state_dict` sobre repo; cache isolado por
 checkpoint+encoder).
+
+FLUX.2 Klein 9B base (ADR-0026, OpenAPI 0.31.0): `baseModel=flux-2-klein-9b`
+aceito em `/jobs/diffusion` e `/jobs/diffusion/generate` (só base;
+`distilled=true` + 9B ⇒ 400 `invalid_request`). Manager
+(`jobs/resolve.rs::resolve_loras`): LoRA com `arch` ≠ arch efetivo da geração
+(base ou custom, normalizado; alias `flux` = 4B) ⇒ 400 nomeando o modelo;
+`arch` NULL passa. Sniff do upload (`models/validate.rs`) separa 4B/9B por
+`__metadata__.base_model`, depois por shape (hidden 3072/4096, joint
+7680/12288); indeterminável ⇒ 4B com `variant_assumed` (hint 9B do cliente
+desempata; conflito com sniff confiante ⇒ 400).
 
 ## 5. Módulos do Frontend (`apps/web/app/`)
 

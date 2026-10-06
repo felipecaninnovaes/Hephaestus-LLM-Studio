@@ -872,6 +872,13 @@ pub async fn submit_diffusion_job(
                     Some(arch.to_string())
                 }
             }
+            Some(models::ARCH_FLUX2_KLEIN_9B) => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "unsupported_architecture",
+                    "custom checkpoint for flux-2-klein-9b is not supported",
+                );
+            }
             Some(_) => {
                 return err(
                     StatusCode::BAD_REQUEST,
@@ -973,12 +980,7 @@ pub async fn submit_diffusion_job(
 
     // 7. VRAM mínima por arch efetivo (ADR-0018 D2 — FLUX.2 Klein 4B requer
     //    ~10 GB; fatia: custom flux-2 custa como flux-2-klein-4b).
-    let vram_min = match effective_base.as_str() {
-        "sd15" => 8,
-        "qwen-image-2.1" => 8,
-        "flux" | "flux-2-klein-4b" => 10,
-        _ => 12, // sdxl e default
-    };
+    let vram_min = models::diffusion_train_vram_min_gb(&effective_base, &req.quantization);
 
     // 8. Body ao manager em modo preparing (package_ref null; prepare no accept).
     let mut manager_body = serde_json::json!({
@@ -1155,6 +1157,13 @@ pub async fn submit_diffusion_generate_job(
                 } else {
                     Some(arch.to_string())
                 }
+            }
+            Some(models::ARCH_FLUX2_KLEIN_9B) => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "unsupported_architecture",
+                    "custom checkpoint for flux-2-klein-9b is not supported",
+                );
             }
             Some(_other) => {
                 return err(

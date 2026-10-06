@@ -639,5 +639,32 @@ class TestPipelineCache(_BaseServeTest):
             gen_mod.ensure_pipeline = old_ensure
 
 
+class TestLoraFailureIsExplicit(_BaseServeTest):
+    """LoRA que não aplica nenhuma chave → HTTP 500 nomeando o arquivo (nunca 200 sem LoRA)."""
+
+    def test_zero_key_lora_returns_generation_failed(self):
+        from unittest import mock
+
+        import trainer_difusao.generate as gen_mod
+        import trainer_difusao.serve_pkg.state as state
+        from trainer_difusao.generation.adapters import LoraLoadError
+
+        self._start_server()
+        self.assertTrue(self._wait_for_server())
+        lora = "/loras/zero.safetensors"
+        with (
+            mock.patch.object(state, "_MOCK", False),
+            mock.patch.object(
+                gen_mod,
+                "_real_generate",
+                side_effect=LoraLoadError(f"LoRA {lora} não injetou nenhuma camada"),
+            ),
+        ):
+            status, resp = self._post_generate(self._make_config())
+        self.assertEqual(status, 500)
+        self.assertEqual(resp["error"], "generation_failed")
+        self.assertIn(lora, resp["message"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -33,6 +33,7 @@ O ciclo de vida dos jobs segue transições de estado bem definidas e auditávei
    - **`done`:** Treinamento ou processamento concluído com sucesso e artefatos de saída gravados no S3.
    - **`failed`:** Erro fatal no script do container, falha de infraestrutura ou estouro de timeout.
    - **`cancelled`:** Interrupção voluntária solicitada pelo usuário na UI.
+   - Artefatos enviados junto com reports `failed`/`cancelled` também são persistidos em `job_artifacts` (ex.: `captions.jsonl` parcial do AutoLabel).
 
 ### Métricas no wire de jobs
 

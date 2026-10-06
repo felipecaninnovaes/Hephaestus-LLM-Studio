@@ -44,6 +44,7 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { Spinner } from "@/components/ui/Spinner";
 import { showToast } from "@/components/ui/Toast";
 import { useJobAlerts } from "@/hooks/useJobAlerts";
+import { usePartialCaptions } from "@/hooks/usePartialCaptions";
 import { useJobLifecycle } from "@/hooks/useJobLifecycle";
 import { useJobMetricSeries } from "@/hooks/useJobMetricSeries";
 import { useJobTelemetry } from "@/hooks/useJobTelemetry";
@@ -275,6 +276,7 @@ function JobsPageContent() {
 	}, [jobs, selectedJobId, activeJobs, terminalJobs]);
 
 	const isSelectedActive = selectedJob ? isActive(selectedJob.status) : false;
+	const hasPartialCaptions = usePartialCaptions(selectedJob);
 
 	/** Alternância da seleção múltipla de comparação de runs (fatia 4c, máx. 4). */
 	const toggleCompare = useCallback((jobId: string) => {
@@ -919,6 +921,24 @@ function JobsPageContent() {
 															</span>
 														</Button>
 													</div>
+												</div>
+											)}
+
+										{caps?.applyAction &&
+											selectedJob.kind === "autolabel" &&
+											(selectedJob.status === "failed" ||
+												selectedJob.status === "cancelled") &&
+											hasPartialCaptions && (
+												<div className="flex items-center gap-3 flex-wrap">
+													<Button
+														type="button"
+														variant="primary"
+														size="sm"
+														onClick={() => setReviewJob(selectedJob)}
+													>
+														<IconSparkles className="size-3.5 text-brand-400" />
+														<span>Revisar legendas parciais</span>
+													</Button>
 												</div>
 											)}
 

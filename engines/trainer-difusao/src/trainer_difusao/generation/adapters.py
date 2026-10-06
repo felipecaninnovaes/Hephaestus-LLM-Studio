@@ -9,6 +9,8 @@ import os
 from collections import OrderedDict
 from typing import Any, List
 
+from trainer_difusao.klein import KLEIN_ARCHS
+
 # Prefixos de chave que o diffusers já sabe rotear por componente / converter
 # (diffusers `transformer.`/`unet.`/`text_encoder*.`, ai-toolkit/ComfyUI
 # `diffusion_model.`, PEFT cru `base_model.model.`, kohya `lora_*`).
@@ -247,7 +249,7 @@ class DaemonLoraCache:
         """Deleta adaptador do pipeline ou do transformer se suportado."""
         target = (
             pipe.transformer
-            if (base_model == "flux-2-klein-4b" and hasattr(pipe, "transformer"))
+            if (base_model in KLEIN_ARCHS and hasattr(pipe, "transformer"))
             else pipe
         )
         if hasattr(target, "delete_adapters"):
@@ -289,7 +291,7 @@ class DaemonLoraCache:
         """Desativa adaptadores para requisição sem LoRA sem vazamento."""
         target = (
             pipe.transformer
-            if (base_model == "flux-2-klein-4b" and hasattr(pipe, "transformer"))
+            if (base_model in KLEIN_ARCHS and hasattr(pipe, "transformer"))
             else pipe
         )
         if hasattr(target, "disable_lora"):
@@ -322,7 +324,7 @@ class DaemonLoraCache:
         """Ativa lista de adaptadores com seus respectivos pesos/escalas."""
         target = (
             pipe.transformer
-            if (base_model == "flux-2-klein-4b" and hasattr(pipe, "transformer"))
+            if (base_model in KLEIN_ARCHS and hasattr(pipe, "transformer"))
             else pipe
         )
         if hasattr(target, "enable_lora"):

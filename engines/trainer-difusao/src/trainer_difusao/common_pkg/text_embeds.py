@@ -231,9 +231,12 @@ _cleanup_encoders = _offload_encoders_to_cpu
 
 
 @contextlib.contextmanager
-def _temporary_device_encoders(encoders: list[Any], device: Any):
-    """Garante que encoders estejam em `device` durante o bloco e retorna para CPU ao sair."""
-    if not ENABLE_TEXT_ENCODER_UNLOAD or not encoders or device is None:
+def _temporary_device_encoders(encoders: list[Any], device: Any, *, force: bool = False):
+    """Garante que encoders estejam em `device` durante o bloco e retorna para CPU ao sair.
+
+    `force` ignora ENABLE_TEXT_ENCODER_UNLOAD (archs cujo encoder é descarregado à força).
+    """
+    if not (ENABLE_TEXT_ENCODER_UNLOAD or force) or not encoders or device is None:
         yield
         return
 
@@ -280,6 +283,7 @@ def _cached_encode(
     cache: TextEmbedsCache,
     encoders: list[Any] | None = None,
     device: Any = None,
+    force_device_swap: bool = False,
 ) -> dict[str, Any]:
     """Resolve os embeddings do batch via cache (hit) ou encoder (miss com warm)."""
     import torch
@@ -289,7 +293,7 @@ def _cached_encode(
     hits = [cache.get(c) for c in captions]
     miss_idx = [i for i, h in enumerate(hits) if h is None]
     if miss_idx:
-        with _temporary_device_encoders(encoders or [], device):
+        with _temporary_device_encoders(encoders or [], device, force=force_device_swap):
             out = encode_fn([captions[i] for i in miss_idx])
         for k, i in enumerate(miss_idx):
             payload = {name: t[k].detach().cpu() for name, t in out.items()}

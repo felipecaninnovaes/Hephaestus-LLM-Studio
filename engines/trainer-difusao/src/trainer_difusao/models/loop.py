@@ -195,6 +195,24 @@ def parse_lora_train_config(
     )
 
 
+def resolve_text_encoder_unload(
+    tcfg: LoraTrainConfig, cache_text_embeddings: bool
+) -> tuple[bool, bool, bool]:
+    """Decide cache de embeds e unload do text encoder → (cache, forçado, descarregar).
+
+    Archs que não cabem em 12 GB com o encoder residente (Klein 9B) marcam
+    `extra["force_text_encoder_unload"]`: o cache de embeds é ligado e o encoder sai
+    da GPU após o pré-compute, independente de ENABLE_TEXT_ENCODER_UNLOAD e de resume.
+    Sem a marca, vale a flag global (só em epoch_offset == 0).
+    """
+    forced = bool(tcfg.extra.get("force_text_encoder_unload"))
+    cache = cache_text_embeddings or forced
+    should_unload = cache and (
+        forced or (ENABLE_TEXT_ENCODER_UNLOAD and tcfg.epoch_offset == 0)
+    )
+    return cache, forced, should_unload
+
+
 class ModelComponents(TypedDict):
     """Componentes carregados de um modelo de difusão com LoRA injetado."""
 
@@ -418,6 +436,16 @@ class TrainingLoopRunner:
         # Pré-computa embeddings da amostra
         sample_embeds = self.adapter.precompute_sample_embeds(comp, tcfg)
 
+        cache_text_embeddings, force_encoder_unload, should_unload = resolve_text_encoder_unload(
+            tcfg, cache_text_embeddings
+        )
+        if force_encoder_unload and not aux["cache_text_embeddings"]:
+            print(
+                f"[{self.adapter.arch_label}] cache_text_embeddings ligado à força: "
+                "o unload do text encoder exige embeds pré-computados.",
+                flush=True,
+            )
+
         # Cache de text embeddings
         text_cache = TextEmbedsCache(
             output,
@@ -428,7 +456,13 @@ class TrainingLoopRunner:
         text_cache_encoders = self.adapter.text_cache_encoders(comp)
 
         if cache_text_embeddings:
-            should_unload = ENABLE_TEXT_ENCODER_UNLOAD and tcfg.epoch_offset == 0
+            if force_encoder_unload:
+                print(
+                    f"[{self.adapter.arch_label}] Unload do text encoder FORÇADO "
+                    f"(arch exige; ENABLE_TEXT_ENCODER_UNLOAD={ENABLE_TEXT_ENCODER_UNLOAD}) "
+                    f"· model_id={tcfg.model_id}",
+                    flush=True,
+                )
             if should_unload:
                 _precompute_text_cache_with_cleanup(
                     text_cache,
@@ -579,6 +613,7 @@ class TrainingLoopRunner:
                     text_cache,
                     encoders=text_cache_encoders,
                     device=device,
+                    force_device_swap=force_encoder_unload,
                 )
                 loss = self.adapter.forward_and_loss(comp, batch, tcfg, cached_encode)
                 loss = loss / tcfg.grad_accum

@@ -16,6 +16,19 @@ import trainer_difusao.serve_pkg.state as state
 from trainer_difusao.serve_pkg.state import _make_spec, _spec_matches
 
 
+def _release_gpu_memory() -> None:
+    """Libera o pipeline anterior da VRAM antes de carregar outro (ex.: 9B ↔ 4B em 12 GB)."""
+    import gc
+
+    gc.collect()
+    try:
+        import torch
+    except ImportError:
+        return
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 class DiffusionHandler(BaseHTTPRequestHandler):
     """Handler para os endpoints /health, /generate, /shutdown."""
 
@@ -203,6 +216,7 @@ class DiffusionHandler(BaseHTTPRequestHandler):
                 clear_daemon_lora_cache(cached_pipeline)
                 state._pipeline_cache.clear()
                 cached_pipeline = None
+                _release_gpu_memory()
                 if telemetry_path:
                     try:
                         from trainer_difusao.telemetry import TelemetryEmitter

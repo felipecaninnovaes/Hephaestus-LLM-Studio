@@ -6,6 +6,7 @@ from __future__ import annotations
 import struct
 from typing import Any
 
+from trainer_difusao.klein import canonical_klein_arch
 from engine_kit.mock import seed_bytes as _seed_bytes_impl, synthetic_loss as _synthetic_loss_impl
 from engine_kit.runtime import die as _die_impl
 
@@ -29,8 +30,9 @@ def _synthetic_loss(seed: int, epoch: int, total_epochs: int) -> float:
 
 def _canonical_model_name(raw_model: str) -> str:
     norm = raw_model.strip().lower()
-    if norm in ("flux", "flux2", "flux-2", "flux2-klein-4b", "flux.2-klein-4b"):
-        return "flux-2-klein-4b"
+    klein = canonical_klein_arch(norm)
+    if klein is not None:
+        return klein
     if norm in ("sdxl", "sdxl-1.0"):
         return "sdxl"
     if norm in ("sd15", "sd-1.5", "stable-diffusion-v1-5"):

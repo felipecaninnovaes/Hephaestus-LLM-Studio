@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from trainer_difusao.common_pkg.core import _die
+from trainer_difusao.klein import KLEIN_4B, klein_repo_id
 from trainer_difusao.loaders.text_encoder_loader import (
     _apply_loose_encoder_state,
     _load_flux2_loose_encoder_merged,
@@ -17,16 +18,17 @@ from trainer_difusao.loaders.transformer_loader import (
 )
 
 
-def _flux2_repo_id(*, distilled: bool) -> str:
-    """Repo BFL do FLUX.2 Klein (overrides por env, defaults oficiais)."""
-    if distilled:
-        return (
-            os.environ.get("FLUX_DISTILLED_MODEL_ID")
-            or "black-forest-labs/FLUX.2-klein-4B"
-        )
-    return (
-        os.environ.get("FLUX_MODEL_ID") or "black-forest-labs/FLUX.2-klein-base-4B"
-    )
+def _flux2_repo_id(*, distilled: bool, arch: str = KLEIN_4B) -> str:
+    """Repo BFL da variante Klein `arch` (env por variante, defaults oficiais).
+
+    O arch decide o repo: `FLUX_MODEL_ID`/`FLUX_DISTILLED_MODEL_ID` valem só p/ 4B,
+    `FLUX_9B_MODEL_ID` só p/ 9B (9B não tem variante destilada → `_die`).
+    """
+    try:
+        return klein_repo_id(arch, distilled=distilled)
+    except ValueError as exc:
+        _die(str(exc))
+        raise
 
 
 def _text_encoder_merge_dir(encoder_path: str) -> tuple[Path, str]:

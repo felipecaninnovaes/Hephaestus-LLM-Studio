@@ -7,6 +7,12 @@ import os
 from typing import Any
 
 from trainer_difusao.common_pkg.core import _canonical_model_name, _die
+from trainer_difusao.klein import (
+    KLEIN_9B,
+    KLEIN_ARCHS,
+    canonical_klein_arch,
+    klein_9b_unsupported_option,
+)
 
 
 def load_and_validate_generate_config(cfg: dict[str, Any]) -> dict[str, Any]:
@@ -66,8 +72,9 @@ def load_and_validate_generate_config(cfg: dict[str, Any]) -> dict[str, Any]:
             _die("custom_checkpoint_path deve ser uma string não vazia.")
         custom_checkpoint_path = custom_checkpoint_path.strip()
         arch = str(arch).strip().lower() if arch else None
-        if arch in ("flux", "flux2", "flux-2", "flux2-klein-4b", "flux.2-klein-4b"):
-            arch = "flux-2-klein-4b"
+        arch = canonical_klein_arch(arch) or arch
+        if arch == KLEIN_9B:
+            _die(klein_9b_unsupported_option(arch, custom_checkpoint_path=custom_checkpoint_path))
         elif arch in ("qwen", "qwen-image", "qwen-image-2.1", "qwen2.1", "qwen_image", "qwen-image-2-1"):
             arch = "qwen-image-2.1"
         if arch not in ("sdxl", "sd15", "flux-2-klein-4b", "qwen-image-2.1"):
@@ -105,7 +112,7 @@ def load_and_validate_generate_config(cfg: dict[str, Any]) -> dict[str, Any]:
                 f"{arch}. Use 'sdxl', 'sd15', 'flux-2-klein-4b' ou 'qwen-image-2.1'."
             )
         base_model = arch
-    elif base_model not in ("flux-2-klein-4b", "sdxl", "sd15", "qwen-image-2.1"):
+    elif base_model not in (*KLEIN_ARCHS, "sdxl", "sd15", "qwen-image-2.1"):
         _die(f"Modelo base de difusão não suportado: {raw_base_model}")
 
     width = int(gen_cfg.get("width", 1024))
@@ -136,10 +143,10 @@ def load_and_validate_generate_config(cfg: dict[str, Any]) -> dict[str, Any]:
     sampler = str(gen_cfg.get("sampler", "default")).strip().lower()
     if sampler not in SAMPLER_CHOICES:
         _die(f"Sampler inválido: {sampler}. Use: {', '.join(SAMPLER_CHOICES)}.")
-    if base_model == "flux-2-klein-4b" and sampler not in FLUX_SAMPLER_CHOICES:
+    if base_model in KLEIN_ARCHS and sampler not in FLUX_SAMPLER_CHOICES:
         _die(
             f"Sampler '{sampler}' incompatível com FLUX.2 (flow-match). "
-            f"Modelo flux-2-klein-4b aceita apenas: {', '.join(FLUX_SAMPLER_CHOICES)}."
+            f"Modelo {base_model} aceita apenas: {', '.join(FLUX_SAMPLER_CHOICES)}."
         )
 
     # --- upscale (fatia flux2-motor-treino): pós-passo Real-ESRGAN, fora do cache ---
@@ -177,6 +184,14 @@ def load_and_validate_generate_config(cfg: dict[str, Any]) -> dict[str, Any]:
     weights_path = cfg.get("weights_path") or gen_cfg.get("weights_path")
     negative_prompt = gen_cfg.get("negative_prompt") or ""
     distilled = bool(gen_cfg.get("distilled", False))
+    err_9b = klein_9b_unsupported_option(
+        base_model,
+        custom_checkpoint_path=custom_checkpoint_path,
+        text_encoder_path=text_encoder_path,
+        distilled=distilled,
+    )
+    if err_9b:
+        _die(err_9b)
 
     # --- img2img: init_image_path + init_strength (S2 feat/img2img) ---
     raw_init_path = gen_cfg.get("init_image_path")

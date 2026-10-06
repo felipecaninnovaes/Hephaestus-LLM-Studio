@@ -10,7 +10,7 @@ O pacote foi desenhado para desacoplar modelos, pipelines de inferência e ciclo
 
 ### 1. `models/` e `models/flux_pkg/`
 Implementações de treinamento organizadas sob a abstração `BaseModelTrainer`:
-- **`FluxTrainer` / `flux_pkg/`**: Suporte ao FLUX.2 Klein 4B. Implementa `rope.py` (Rotary Positional Embeddings 3D), `quant_cache.py` (quantização de pesos e cache), `encoding.py` e rotinas especializadas de amostragem em `sample.py`.
+- **`FluxTrainer` / `flux_pkg/`**: Suporte ao FLUX.2 Klein 4B e 9B base (ver §5). Implementa `rope.py` (Rotary Positional Embeddings 3D), `quant_cache.py` (quantização de pesos e cache), `encoding.py` e rotinas especializadas de amostragem em `sample.py`.
 - **`SDXLTrainer`**: Treinamento para Stable Diffusion XL 1.0 com duplo text-encoder (CLIP ViT-L e OpenCLIP ViT-bigG) e condicionamento por tamanho/crop.
 - **`SD15Trainer`**: Treinamento para Stable Diffusion 1.5 clássico (UNet e CLIP Text Encoder).
 - **`MockTrainer`**: Emite loss decrescente determinística e gera arquivos `.safetensors` simulados sem alocar GPU.
@@ -36,6 +36,13 @@ Pipeline de inferência pontual e em lote:
 Daemon HTTP de longa duração para inferência interativa, gerenciado pelo orchestrator:
 - **Endpoints**: `/health` (status, spec carregada, uso de VRAM), `/generate` (execução da geração) e `/shutdown` (encerramento gracioso).
 - **`state.py`**: Mantém o modelo aquecido em memória (`loaded_spec`), gerencia trava de concorrência (`_busy`) para garantir inferência atômica e computa tempos de atividade.
+
+### 5. Família FLUX.2 Klein (`klein.py`) — 4B e 9B base
+Registro único arch → (repo base, repo destilado, env): o **arch do config decide o repo**, então 4B e 9B coexistem no mesmo nó. `flux-2-klein-4b` (aliases legados `flux`/`flux2`/`flux-2`): `FLUX_MODEL_ID` / `FLUX_DISTILLED_MODEL_ID` ou `black-forest-labs/FLUX.2-klein-base-4B` / `FLUX.2-klein-4B`. `flux-2-klein-9b` (só o base, sem destilado): `FLUX_9B_MODEL_ID` ou `black-forest-labs/FLUX.2-klein-base-9B`. Nenhuma env de uma variante vaza para a outra. Usado pelo treino (`FluxAdapter`), por `generation/text_encoder.py::_flux2_repo_id` e pelos aliases de `_canonical_model_name`.
+- **Treino 9B**: `model: flux-2-klein-9b` força `cache_text_embeddings` e o **unload do text encoder** após o pré-compute (`models/loop.py::resolve_text_encoder_unload`, `extra["force_text_encoder_unload"]`), ignorando `ENABLE_TEXT_ENCODER_UNLOAD` e resume — sem isso, transformer 9B + Qwen3 estouram 12 GB (spike RTX 3060: 768/1024 px, rank 16/32, pico ≈11,9 GiB no pré-compute; loop 7,4–9,0 GiB; ≈2× o tempo do 4B por step). Metadata do adapter: `base_model=flux-2-klein-9b` (4B: `flux-2-klein-4b`).
+- **Geração 9B**: `base_model: flux-2-klein-9b` usa `Flux2KleinPipeline` do repo 9B com quantização real (`load_flux2_quantized_components`), mesma allowlist de samplers Flux.2 (`default|euler|heun`) e o mesmo remap de LoRA `transformer.`. A chave/spec do pipeline residente do daemon inclui `base_model`: trocar 4B↔9B recarrega o pipeline (o anterior é liberado e `empty_cache` roda antes do load; um pipeline por vez).
+- **Rejeições explícitas (`_die`)**: no 9B, `custom_checkpoint_path`, `text_encoder_path` (treino e geração) e `distilled: true` (geração). Uma LoRA de outra variante falha ao carregar (shapes diferentes; `LoraLoadError`).
+- **Env**: `FLUX_9B_MODEL_ID` (opcional; override do repo 9B) vive ao lado de `FLUX_MODEL_ID`/`FLUX_DISTILLED_MODEL_ID` nas envs do nó GPU.
 
 ---
 

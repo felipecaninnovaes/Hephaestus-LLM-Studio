@@ -10,7 +10,8 @@ def pipeline_cache_key(params: dict[str, Any]) -> tuple:
     """Extrai chave de cache do pipeline a partir dos params validados.
 
     Chave: (base_model|custom_checkpoint_path+arch, quantization, distilled,
-    text_encoder_path).
+    text_encoder_path). `base_model` é o arch canônico (4B e 9B têm repos e pesos
+    distintos e nunca compartilham pipeline).
     """
     custom_cp = params.get("custom_checkpoint_path")
     return (

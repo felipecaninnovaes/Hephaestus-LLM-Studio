@@ -32,6 +32,27 @@ Consolidação única de pendências e melhorias prioritárias. Rotas canônicas
   pipeline nativa Qwen-Image-2.1 com a interface completa acima, ou
   reescrever o trecho relevante de `generation/runner.py` para não
   depender dela. Spec de origem: `tasks/specs/qwen-image-2.1-native-rewrite.md`.
+- **FLUX.2 Klein 9B destilado:** fora da fatia 9B (ADR-0026) — licença gated
+  não aceita no HF e +~35 GB de disco no `docker-04` (60 GB). Hoje
+  `distilled=true` + `flux-2-klein-9b` ⇒ 400 no BFF e `_die` no engine (`0625d3c`).
+- **Text encoder custom p/ 9B:** `textEncoderModelId` segue só
+  `flux-2-klein-4b` (`submit.rs` "requires arch 'flux-2-klein-4b'"); exige
+  sniff do encoder por hidden 2560 (4B) vs 4096 (9B) e kind `text_encoder`
+  com arch 9B no manager (`validate_create_model` hoje recusa).
+- **Checkpoint custom 9B:** `customModelId` com arch `flux-2-klein-9b` ⇒ 400
+  `unsupported_architecture` (`jobs/handlers/submit.rs`); registro/sniff já
+  classificam 9B; falta carregar o transformer custom 9B no engine.
+- **Bugs de follow-up achados na fatia 9B (fix `ea2ed14` cobriu só Klein):**
+  - Geração base SDXL/SD15 ignora `quantization`: `from_pretrained` sem
+    `quantization_config` nos ramos `sdxl`/`sd15` de
+    `engines/trainer-difusao/src/trainer_difusao/generation/runner.py`
+    (develop `f13dfd1`: :262-287; ~:270-295 após o merge do engine 9B).
+  - Falha no setup do bitsandbytes só emite `[WARN] Falha ao configurar
+    BitsAndBytes … Usando precisão padrão` e segue em precisão cheia
+    (`runner.py`, develop :128-132) — deve falhar explícito.
+  - LoRA salva sem `alpha`: `common_pkg/lora_io.py::_save_lora_safetensors`
+    não grava tensores `.alpha`; o diffusers assume alpha=rank ⇒ escala
+    diverge do treino quando `lora_alpha≠rank`.
 
 ---
 

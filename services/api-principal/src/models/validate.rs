@@ -220,7 +220,16 @@ pub fn url_basename(url: &url::Url) -> String {
 // ---------------------------------------------------------------------------
 
 /// Arquiteturas de difusão suportadas.
-pub const ALLOWED_ARCHS: &[&str] = &["flux-2-klein-4b", "sdxl", "sd15", "qwen-image-2.1"];
+pub const ALLOWED_ARCHS: &[&str] = &[
+    "flux-2-klein-4b",
+    "flux-2-klein-9b",
+    "sdxl",
+    "sd15",
+    "qwen-image-2.1",
+];
+
+const ARCH_4B: &str = "flux-2-klein-4b";
+const ARCH_9B: &str = "flux-2-klein-9b";
 
 /// Kinds de modelo suportados (text_encoder = text encoders custom flux-2,
 /// fatia feat/pesos-custom-flux2 — só admite arch flux-2-klein-4b, regra
@@ -235,8 +244,108 @@ pub const SAFETENSORS_HEADER_MAX: usize = 2 * 1024 * 1024;
 #[derive(Debug, Clone, PartialEq)]
 pub struct SafetensorsSniff {
     pub kind: String,    // "lora" ou "checkpoint"
-    pub arch: String,    // "flux-2-klein-4b", "sdxl" ou "sd15"
+    pub arch: String,    // "flux-2-klein-4b", "flux-2-klein-9b", "sdxl", "sd15"…
     pub confidence: f64, // 0.0 a 1.0 (qualidade do sniff)
+    /// Família Flux.2 reconhecida mas variante (4B/9B) indeterminável: `arch`
+    /// é o default legado 4B e um hint 9B do cliente pode sobrescrevê-lo.
+    pub variant_assumed: bool,
+}
+
+impl SafetensorsSniff {
+    fn new(kind: &str, arch: &str, confidence: f64) -> Self {
+        Self {
+            kind: kind.to_string(),
+            arch: arch.to_string(),
+            confidence,
+            variant_assumed: false,
+        }
+    }
+}
+
+/// Dimensões do `Flux2Transformer2DModel` (diffusers) por variante:
+/// 4B hidden 3072 / `joint_attention_dim` 7680; 9B hidden 4096 / 12288.
+fn flux2_variant_from_dim(hidden_or_joint: u64) -> Option<&'static str> {
+    match hidden_or_joint {
+        3072 | 7680 => Some(ARCH_4B),
+        4096 | 12288 => Some(ARCH_9B),
+        _ => None,
+    }
+}
+
+/// Distingue 9B de 4B num header Flux.2: primeiro `__metadata__.base_model`,
+/// depois shapes. `None` = indeterminável (caller assume 4B).
+///
+/// Shapes (campo `shape` de cada tensor no header):
+/// - `context_embedder.weight` = `[hidden, joint_dim]` (full) ou
+///   `context_embedder.lora_A.weight` = `[r, joint_dim]` / `lora_B` = `[hidden, r]`;
+/// - `attn.to_{q,k,v}.weight` = `[hidden, hidden]`; LoRA peft `lora_A` =
+///   `[r, hidden]`, `lora_B` = `[hidden, r]` (kohya `lora_down`/`lora_up` idem).
+fn flux2_variant(keys: &serde_json::Map<String, serde_json::Value>) -> Option<&'static str> {
+    if let Some(serde_json::Value::Object(meta)) = keys.get("__metadata__") {
+        if let Some(serde_json::Value::String(bm)) = meta.get("base_model") {
+            let bm = bm.to_ascii_lowercase();
+            if bm.contains("klein") {
+                if bm.contains("9b") {
+                    return Some(ARCH_9B);
+                }
+                if bm.contains("4b") {
+                    return Some(ARCH_4B);
+                }
+            }
+        }
+    }
+    let shape = |v: &serde_json::Value| -> Option<Vec<u64>> {
+        v.get("shape")?
+            .as_array()?
+            .iter()
+            .map(|d| d.as_u64())
+            .collect()
+    };
+    for (name, v) in keys {
+        let is_ctx = name.contains("context_embedder.");
+        let is_qkv = [".attn.to_q.", ".attn.to_k.", ".attn.to_v."]
+            .iter()
+            .any(|p| name.contains(p));
+        if !is_ctx && !is_qkv {
+            continue;
+        }
+        let Some(dims) = shape(v) else { continue };
+        if dims.len() != 2 {
+            continue;
+        }
+        // Lado da matriz que carrega a dimensão da arquitetura.
+        let is_a = name.contains("lora_A") || name.contains("lora_down");
+        let is_b = name.contains("lora_B") || name.contains("lora_up");
+        let dim = match (is_ctx, is_a, is_b) {
+            // context_embedder: full [hidden, joint] → joint (último eixo);
+            // lora_A [r, joint] → joint; lora_B [hidden, r] → hidden.
+            (true, _, true) => dims[0],
+            (true, _, false) => dims[1],
+            // to_q/k/v: full [hidden, hidden]; lora_A [r, hidden]; lora_B [hidden, r].
+            (false, true, _) => dims[1],
+            (false, false, _) => dims[0],
+        };
+        if let Some(arch) = flux2_variant_from_dim(dim) {
+            return Some(arch);
+        }
+    }
+    None
+}
+
+/// Sniff de arch Flux.2 com variante: metadata/shape confiantes → 0.95/0.9;
+/// indeterminável → 4B assumido (`variant_assumed`).
+fn flux2_sniff(
+    kind: &str,
+    keys: &serde_json::Map<String, serde_json::Value>,
+    base_confidence: f64,
+) -> SafetensorsSniff {
+    match flux2_variant(keys) {
+        Some(arch) => SafetensorsSniff::new(kind, arch, base_confidence),
+        None => SafetensorsSniff {
+            variant_assumed: true,
+            ..SafetensorsSniff::new(kind, ARCH_4B, base_confidence)
+        },
+    }
 }
 
 /// Erro do sniff.
@@ -321,11 +430,7 @@ pub fn sniff_safetensors(
         if let Some(serde_json::Value::Object(meta)) = keys.get("__metadata__") {
             if let Some(serde_json::Value::String(bm)) = meta.get("base_model") {
                 if bm.contains("qwen") {
-                    return Ok(SafetensorsSniff {
-                        kind: "lora".to_string(),
-                        arch: "qwen-image-2.1".to_string(),
-                        confidence: 0.95,
-                    });
+                    return Ok(SafetensorsSniff::new("lora", "qwen-image-2.1", 0.95));
                 }
             }
         }
@@ -340,11 +445,12 @@ pub fn sniff_safetensors(
         let has_conditioner = key_names.iter().any(|k| k.starts_with("conditioner."));
         let has_unet = key_names.iter().any(|k| k.starts_with("unet."));
 
+        if !has_qwen && (has_transformer || has_guidance) {
+            // Flux LoRA: transformer.* ou transformer_blocks.* ou guidance_embedder
+            return Ok(flux2_sniff("lora", keys, 0.9));
+        }
         let arch = if has_qwen {
             "qwen-image-2.1".to_string()
-        } else if has_transformer || has_guidance {
-            // Flux LoRA: transformer.* ou transformer_blocks.* ou guidance_embedder
-            "flux-2-klein-4b".to_string()
         } else if has_conditioner {
             // SDXL tem conditioner.embedders
             "sdxl".to_string()
@@ -356,11 +462,7 @@ pub fn sniff_safetensors(
             String::new()
         };
 
-        return Ok(SafetensorsSniff {
-            kind: "lora".to_string(),
-            arch,
-            confidence: 0.9,
-        });
+        return Ok(SafetensorsSniff::new("lora", &arch, 0.9));
     }
 
     // Checkpoint: classificação por padrões de chaves.
@@ -377,38 +479,22 @@ pub fn sniff_safetensors(
 
     if has_transformer && has_guidance {
         // Flux checkpoint.
-        return Ok(SafetensorsSniff {
-            kind: "checkpoint".to_string(),
-            arch: "flux-2-klein-4b".to_string(),
-            confidence: 0.85,
-        });
+        return Ok(flux2_sniff("checkpoint", keys, 0.85));
     }
 
     // Flux checkpoint sem guidance explícito mas com transformer.
     if has_transformer {
-        return Ok(SafetensorsSniff {
-            kind: "checkpoint".to_string(),
-            arch: "flux-2-klein-4b".to_string(),
-            confidence: 0.7,
-        });
+        return Ok(flux2_sniff("checkpoint", keys, 0.7));
     }
 
     if has_diffusion_model && has_conditioner {
         // SDXL: model.diffusion_model.* + conditioner.embedders.*
-        return Ok(SafetensorsSniff {
-            kind: "checkpoint".to_string(),
-            arch: "sdxl".to_string(),
-            confidence: 0.9,
-        });
+        return Ok(SafetensorsSniff::new("checkpoint", "sdxl", 0.9));
     }
 
     if has_diffusion_model && !has_conditioner {
         // SD15: model.diffusion_model.* sem conditioner.
-        return Ok(SafetensorsSniff {
-            kind: "checkpoint".to_string(),
-            arch: "sd15".to_string(),
-            confidence: 0.85,
-        });
+        return Ok(SafetensorsSniff::new("checkpoint", "sd15", 0.85));
     }
 
     Err(SniffError::UnknownClassification)
@@ -435,13 +521,17 @@ pub fn resolve_kind_arch(
                     return Err("sniff and hint conflict on kind");
                 }
             }
+            // Variante Flux.2 só assumida (sem metadata/shape): hint 9B vence.
+            let hint_picks_variant = s.variant_assumed && hint_arch == Some(ARCH_9B);
             if let Some(ha) = hint_arch {
-                if !s.arch.is_empty() && ha != s.arch {
+                if !s.arch.is_empty() && ha != s.arch && !hint_picks_variant {
                     return Err("sniff and hint conflict on arch");
                 }
             }
             // Arch vazio do sniff → usar hint se disponível.
-            let arch = if s.arch.is_empty() {
+            let arch = if hint_picks_variant {
+                ARCH_9B.to_string()
+            } else if s.arch.is_empty() {
                 hint_arch.map(|a| a.to_string()).unwrap_or_default()
             } else {
                 s.arch
@@ -780,6 +870,180 @@ mod tests {
         assert_eq!(sniff.kind, "lora");
         assert_eq!(sniff.arch, "flux-2-klein-4b");
     }
+    /// Header sintético com shapes reais por tensor e `__metadata__` opcional.
+    fn header_with_shapes(tensors: &[(&str, [u64; 2])], base_model: Option<&str>) -> Vec<u8> {
+        let mut map = serde_json::Map::new();
+        if let Some(bm) = base_model {
+            map.insert(
+                "__metadata__".to_string(),
+                serde_json::json!({ "base_model": bm }),
+            );
+        }
+        for (k, shape) in tensors {
+            map.insert(
+                k.to_string(),
+                serde_json::json!({"dtype": "BF16", "shape": shape, "data_offsets": [0, 2]}),
+            );
+        }
+        let json_bytes = serde_json::to_vec(&serde_json::Value::Object(map)).unwrap();
+        let mut header = (json_bytes.len() as u64).to_le_bytes().to_vec();
+        header.extend_from_slice(&json_bytes);
+        header
+    }
+
+    fn sniff_of(header: &[u8]) -> SafetensorsSniff {
+        sniff_safetensors(&parse_safetensors_header(header).unwrap()).unwrap()
+    }
+
+    const Q_A: &str = "transformer.transformer_blocks.0.attn.to_q.lora_A.weight";
+    const Q_B: &str = "transformer.transformer_blocks.0.attn.to_q.lora_B.weight";
+
+    #[test]
+    fn sniff_flux2_lora_4b_por_shape() {
+        let h = header_with_shapes(&[(Q_A, [16, 3072]), (Q_B, [3072, 16])], None);
+        let s = sniff_of(&h);
+        assert_eq!(
+            (s.kind.as_str(), s.arch.as_str()),
+            ("lora", "flux-2-klein-4b")
+        );
+        assert!(!s.variant_assumed);
+    }
+
+    #[test]
+    fn sniff_flux2_lora_9b_por_metadata() {
+        // Shapes mínimos (1x1) — só o metadata decide.
+        let h = header_with_shapes(
+            &[(Q_A, [1, 1]), (Q_B, [1, 1])],
+            Some("black-forest-labs/FLUX.2-klein-base-9B"),
+        );
+        let s = sniff_of(&h);
+        assert_eq!(
+            (s.kind.as_str(), s.arch.as_str()),
+            ("lora", "flux-2-klein-9b")
+        );
+        assert!(!s.variant_assumed);
+        let h = header_with_shapes(&[(Q_A, [1, 1])], Some("flux-2-klein-9b"));
+        assert_eq!(sniff_of(&h).arch, "flux-2-klein-9b");
+    }
+
+    #[test]
+    fn sniff_flux2_lora_9b_por_shape_sem_metadata() {
+        let h = header_with_shapes(&[(Q_A, [32, 4096]), (Q_B, [4096, 32])], None);
+        let s = sniff_of(&h);
+        assert_eq!(s.arch, "flux-2-klein-9b");
+        assert!(!s.variant_assumed);
+        // Só lora_B (hidden no eixo 0).
+        let h = header_with_shapes(&[(Q_B, [4096, 16])], None);
+        assert_eq!(sniff_of(&h).arch, "flux-2-klein-9b");
+        // lora_A do context_embedder: [r, joint_dim].
+        let h = header_with_shapes(
+            &[("transformer.context_embedder.lora_A.weight", [16, 12288])],
+            None,
+        );
+        assert_eq!(sniff_of(&h).arch, "flux-2-klein-9b");
+        // kohya lora_down/lora_up.
+        let h = header_with_shapes(
+            &[
+                (
+                    "transformer.transformer_blocks.0.attn.to_k.lora_down.weight",
+                    [16, 4096],
+                ),
+                (
+                    "transformer.transformer_blocks.0.attn.to_k.lora_up.weight",
+                    [4096, 16],
+                ),
+            ],
+            None,
+        );
+        assert_eq!(sniff_of(&h).arch, "flux-2-klein-9b");
+    }
+
+    #[test]
+    fn sniff_flux2_metadata_vence_shape() {
+        let h = header_with_shapes(&[(Q_A, [16, 4096])], Some("flux-2-klein-4b"));
+        assert_eq!(sniff_of(&h).arch, "flux-2-klein-4b");
+    }
+
+    #[test]
+    fn sniff_flux2_checkpoint_4b_e_9b() {
+        let h9 = header_with_shapes(
+            &[
+                ("context_embedder.weight", [4096, 12288]),
+                ("transformer_blocks.0.attn.to_q.weight", [4096, 4096]),
+            ],
+            None,
+        );
+        let s = sniff_of(&h9);
+        assert_eq!(
+            (s.kind.as_str(), s.arch.as_str()),
+            ("checkpoint", "flux-2-klein-9b")
+        );
+        let h4 = header_with_shapes(
+            &[
+                ("context_embedder.weight", [3072, 7680]),
+                ("transformer_blocks.0.attn.to_q.weight", [3072, 3072]),
+            ],
+            None,
+        );
+        let s = sniff_of(&h4);
+        assert_eq!(
+            (s.kind.as_str(), s.arch.as_str()),
+            ("checkpoint", "flux-2-klein-4b")
+        );
+        assert!(!s.variant_assumed);
+        // context_embedder sozinho (checkpoint 9B).
+        let h = header_with_shapes(
+            &[
+                ("context_embedder.weight", [4096, 12288]),
+                ("transformer_blocks.0.ff.linear_in.weight", [1, 1]),
+            ],
+            None,
+        );
+        assert_eq!(sniff_of(&h).arch, "flux-2-klein-9b");
+    }
+
+    #[test]
+    fn sniff_flux2_ambiguo_assume_4b_e_aceita_hint_9b() {
+        // Shapes não reconhecíveis, sem metadata ⇒ 4B assumido (comportamento atual).
+        let h = header_with_shapes(&[(Q_A, [1, 1]), (Q_B, [1, 1])], None);
+        let s = sniff_of(&h);
+        assert_eq!(s.arch, "flux-2-klein-4b");
+        assert!(s.variant_assumed);
+        // Hint 9B resolve a ambiguidade; hint 4B concorda; hint de outra família conflita.
+        let (_, a) =
+            resolve_kind_arch(Ok(s.clone()), Some("lora"), Some("flux-2-klein-9b")).unwrap();
+        assert_eq!(a, "flux-2-klein-9b");
+        let (_, a) =
+            resolve_kind_arch(Ok(s.clone()), Some("lora"), Some("flux-2-klein-4b")).unwrap();
+        assert_eq!(a, "flux-2-klein-4b");
+        assert!(resolve_kind_arch(Ok(s), Some("lora"), Some("sdxl")).is_err());
+    }
+
+    #[test]
+    fn resolve_flux2_sniff_confiante_vs_hint_conflitante() {
+        let h = header_with_shapes(&[(Q_A, [16, 4096])], None);
+        // 9B confiante + hint 4B ⇒ 400.
+        assert!(
+            resolve_kind_arch(Ok(sniff_of(&h)), Some("lora"), Some("flux-2-klein-4b")).is_err()
+        );
+        let h = header_with_shapes(&[(Q_A, [16, 3072])], None);
+        // 4B confiante + hint 9B ⇒ 400.
+        assert!(
+            resolve_kind_arch(Ok(sniff_of(&h)), Some("lora"), Some("flux-2-klein-9b")).is_err()
+        );
+    }
+
+    #[test]
+    fn resolve_9b_hint_e_text_encoder() {
+        let unknown: Result<SafetensorsSniff, SniffError> = Err(SniffError::UnknownClassification);
+        let (k, a) =
+            resolve_kind_arch(unknown.clone(), Some("checkpoint"), Some("flux-2-klein-9b"))
+                .unwrap();
+        assert_eq!((k.as_str(), a.as_str()), ("checkpoint", "flux-2-klein-9b"));
+        // text_encoder segue só 4B.
+        assert!(resolve_kind_arch(unknown, Some("text_encoder"), Some("flux-2-klein-9b")).is_err());
+    }
+
     #[test]
     fn sniff_qwen_lora() {
         let header = build_fake_safetensors_header(&[
@@ -818,6 +1082,7 @@ mod tests {
             kind: "checkpoint".to_string(),
             arch: "sdxl".to_string(),
             confidence: 0.9,
+            variant_assumed: false,
         });
         let result = resolve_kind_arch(sniff, Some("lora"), Some("sd15"));
         assert!(result.is_err());
@@ -831,6 +1096,7 @@ mod tests {
             kind: "checkpoint".to_string(),
             arch: "sdxl".to_string(),
             confidence: 0.9,
+            variant_assumed: false,
         });
         let (kind, arch) = resolve_kind_arch(sniff, Some("checkpoint"), Some("sdxl")).unwrap();
         assert_eq!(kind, "checkpoint");
@@ -858,6 +1124,7 @@ mod tests {
             kind: "lora".to_string(),
             arch: String::new(), // arch não derivável
             confidence: 0.9,
+            variant_assumed: false,
         });
         let (kind, arch) = resolve_kind_arch(sniff, None, Some("sdxl")).unwrap();
         assert_eq!(kind, "lora");
@@ -871,6 +1138,7 @@ mod tests {
             kind: "lora".to_string(),
             arch: String::new(),
             confidence: 0.9,
+            variant_assumed: false,
         });
         let (kind, arch) = resolve_kind_arch(sniff, None, None).unwrap();
         assert_eq!(kind, "lora");
@@ -884,6 +1152,7 @@ mod tests {
             kind: "checkpoint".to_string(),
             arch: String::new(),
             confidence: 0.9,
+            variant_assumed: false,
         });
         let result = resolve_kind_arch(sniff, None, None);
         assert!(result.is_err());
@@ -914,6 +1183,7 @@ mod tests {
             kind: "text_encoder".to_string(),
             arch: "sdxl".to_string(),
             confidence: 0.9,
+            variant_assumed: false,
         });
         assert!(resolve_kind_arch(sniff, None, None).is_err());
     }

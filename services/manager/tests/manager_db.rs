@@ -5942,6 +5942,97 @@ async fn create_job_lora_inexistente_falha() {
     );
 }
 
+/// Helper: LoRA com arch explícito.
+async fn set_model_arch(pool: &PgPool, id: uuid::Uuid, arch: &str) {
+    sqlx::query("UPDATE models SET arch = $2 WHERE id = $1")
+        .bind(id)
+        .bind(arch)
+        .execute(pool)
+        .await
+        .expect("set arch");
+}
+
+/// Migration 0025: models_arch_check aceita 'flux-2-klein-9b' e continua
+/// rejeitando arch desconhecida.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn migration_0025_aceita_arch_9b() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let id = insert_diffusion_lora(&p, "l9b-mig.safetensors").await;
+    set_model_arch(&p, id, "flux-2-klein-9b").await;
+    let arch: Option<String> = sqlx::query_scalar("SELECT arch FROM models WHERE id = $1")
+        .bind(id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(arch.as_deref(), Some("flux-2-klein-9b"));
+    let bad = sqlx::query("UPDATE models SET arch = 'flux-2-klein-13b' WHERE id = $1")
+        .bind(id)
+        .execute(&p)
+        .await;
+    assert!(bad.is_err(), "arch fora da lista deve violar o CHECK");
+}
+
+/// Guarda de arch da LoRA: mismatch ⇒ 400 nomeando o modelo; NULL passa;
+/// alias `flux` ⇒ 4B; 9B base com LoRA 4B ⇒ 400.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_job_lora_arch_guard() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+
+    let lora_4b = insert_diffusion_lora(&p, "l4b.safetensors").await;
+    set_model_arch(&p, lora_4b, "flux-2-klein-4b").await;
+    let lora_9b = insert_diffusion_lora(&p, "l9b.safetensors").await;
+    set_model_arch(&p, lora_9b, "flux-2-klein-9b").await;
+    let lora_null = insert_diffusion_lora(&p, "lnull.safetensors").await;
+
+    let req_with = |base: &str, lora: uuid::Uuid| {
+        let mut req = diffusion_generate_request();
+        req.params = Some(serde_json::json!({
+            "prompt": "x", "baseModel": base,
+            "loras": [{"modelId": lora.to_string(), "scale": 1.0}]
+        }));
+        req
+    };
+
+    // 9B base + LoRA 4B ⇒ 400 com id do modelo.
+    let err = manager::create_job(&p, req_with("flux-2-klein-9b", lora_4b))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ManagerError::InvalidRequest(ref m) if m.contains(&lora_4b.to_string()) && m.contains("incompatible")),
+        "{err:?}"
+    );
+    // 4B base + LoRA 9B ⇒ 400.
+    assert!(
+        manager::create_job(&p, req_with("flux-2-klein-4b", lora_9b))
+            .await
+            .is_err()
+    );
+    // Alias legado `flux` = 4B: LoRA 4B passa, LoRA 9B falha.
+    manager::create_job(&p, req_with("flux", lora_4b))
+        .await
+        .expect("flux alias + lora 4b");
+    assert!(manager::create_job(&p, req_with("flux", lora_9b))
+        .await
+        .is_err());
+    // 9B + LoRA 9B passa; arch NULL passa em qualquer base.
+    manager::create_job(&p, req_with("flux-2-klein-9b", lora_9b))
+        .await
+        .expect("9b + lora 9b");
+    manager::create_job(&p, req_with("flux-2-klein-9b", lora_null))
+        .await
+        .expect("null arch passa");
+    manager::create_job(&p, req_with("flux-2-klein-4b", lora_null))
+        .await
+        .expect("null arch passa 4b");
+}
+
 /// custom de kind lora → falha.
 #[tokio::test]
 #[ignore = "requer Postgres (bash scripts/test-db.sh)"]
@@ -7776,7 +7867,7 @@ async fn report_diffusion_train_preenche_kind_arch_lora() {
     // Prova do Bug 009: o LoRA agora resolve em diffusion generate.
     let mut gen = diffusion_generate_request();
     gen.params = Some(serde_json::json!({
-        "prompt": "a cyberpunk city",
+        "prompt": "a cyberpunk city", "baseModel": "sdxl",
         "width": 1024, "height": 1024, "steps": 20, "guidance_scale": 7.5, "seed": 42,
         "loras": [{"modelId": row.0.to_string(), "scale": 0.8}]
     }));

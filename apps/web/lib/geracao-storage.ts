@@ -9,12 +9,13 @@
    (disponibilidade de nós muda entre sessões) ou estado de execução.
    ═══════════════════════════════════════════════════════════════════ */
 
+import { isFlux2Klein, isFlux2Klein9b } from "@/lib/diffusionArch";
 import type { Generation, LoraRef } from "@/types/studio";
 
 export const GERACAO_FORM_KEY = "geracao:form:v1";
 const GERACAO_FORM_VERSION = 1;
 
-export type GeracaoBaseModel = "flux-2-klein-4b" | "sdxl" | "sd15" | "qwen-image-2.1";
+export type GeracaoBaseModel = "flux-2-klein-4b" | "flux-2-klein-9b" | "sdxl" | "sd15" | "qwen-image-2.1";
 export type GeracaoQuantization = "none" | "2bit" | "4bit" | "6bit" | "8bit";
 export type GeracaoSampler =
   | "default"
@@ -37,7 +38,7 @@ export interface GeracaoUpscale {
 export interface GeracaoFormState {
   baseModel: GeracaoBaseModel;
   customModelId: string;
-  /* UUID de text encoder custom (kind=text_encoder). "" = encoder oficial BFL. Só vale p/ arch flux-2-klein-4b. */
+  /* UUID de text encoder custom (kind=text_encoder). "" = encoder oficial BFL. Só vale p/ arch flux-2-klein-4b (9B ⇒ 400). */
   textEncoderModelId: string;
   distilled: boolean;
   loras: LoraRef[];
@@ -60,7 +61,7 @@ export interface GeracaoFormState {
   initStrength: number;
 }
 
-const BASE_MODELS: readonly GeracaoBaseModel[] = ["flux-2-klein-4b", "sdxl", "sd15", "qwen-image-2.1"];
+const BASE_MODELS: readonly GeracaoBaseModel[] = ["flux-2-klein-4b", "flux-2-klein-9b", "sdxl", "sd15", "qwen-image-2.1"];
 const QUANTIZATIONS: readonly GeracaoQuantization[] = ["none", "2bit", "4bit", "6bit", "8bit"];
 const SAMPLERS: readonly GeracaoSampler[] = [
   "default",
@@ -192,6 +193,11 @@ export function loadGeracaoForm(): PartialGeracaoForm | null {
     const encoderId = asString(s.textEncoderModelId, 256);
     if (encoderId !== null) out.textEncoderModelId = encoderId;
     if (typeof s.distilled === "boolean") out.distilled = s.distilled;
+    /* 9B não tem variante destilada nem text encoder custom (BFF ⇒ 400): normaliza estado legado/adulterado. */
+    if (isFlux2Klein9b(out.baseModel) && !(out.customModelId ?? "")) {
+      out.distilled = false;
+      out.textEncoderModelId = "";
+    }
     const loras = sanitizeLoras(s.loras);
     if (loras !== null) out.loras = loras;
     const prompt = asString(s.prompt, 4000);
@@ -502,7 +508,7 @@ export function geracaoFormFromGeneration(gen: Generation): GeracaoFormFromGener
   if (snap.sampler !== null
     && (SAMPLERS as readonly string[]).includes(snap.sampler)) {
     const candidate = snap.sampler as GeracaoSampler;
-    const supported = formBaseModel === "flux-2-klein-4b"
+    const supported = isFlux2Klein(formBaseModel)
       ? (FLUX_SAMPLERS as readonly string[]).includes(candidate)
       : true;
     if (supported) {
@@ -515,7 +521,9 @@ export function geracaoFormFromGeneration(gen: Generation): GeracaoFormFromGener
     baseModel: formBaseModel,
     customModelId,
     textEncoderModelId,
-    distilled: typeof distilledRaw === "boolean" ? distilledRaw : defaults.distilled,
+    distilled: isFlux2Klein9b(formBaseModel)
+      ? false
+      : typeof distilledRaw === "boolean" ? distilledRaw : defaults.distilled,
     loras: snap.loras,
     prompt: snap.prompt.slice(0, 4000),
     negativePrompt: negativePrompt.slice(0, 4000),

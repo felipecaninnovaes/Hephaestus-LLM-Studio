@@ -1047,6 +1047,8 @@ export interface paths {
          * Prévia e auditoria das legendas geradas pelo autolabel
          * @description Retorna a lista de imagens e legendas geradas pelo modelo VLM a partir do artefato
          *     `captions.jsonl`, enriquecida com presigned URLs e legendas atuais para curadoria humana.
+         *     Aceita jobs `done` e também `failed`/`cancelled` (legendas parciais preservadas pelo
+         *     orchestrator); sem artefato `captions` ⇒ 404. Demais status ⇒ 409 `job_not_done`.
          */
         get: operations["getAutolabelPreview"];
         put?: never;
@@ -1071,8 +1073,8 @@ export interface paths {
         put?: never;
         /**
          * Aplica legendas do autolabel ao dataset
-         * @description Ingest do artefato `captions.jsonl` de um job autolabel `done` no dataset
-         *     associado (ADR-0016 D1). Merge dirigido por origem: `overwrite=false` (default)
+         * @description Ingest do artefato `captions.jsonl` de um job autolabel `done` (ou `failed`/`cancelled`,
+         *     aplicando as legendas parciais preservadas) no dataset associado (ADR-0016 D1). Merge dirigido por origem: `overwrite=false` (default)
          *     preserva manuais e importadas e só atualiza imagens sem legenda ou com `origin='autolabel'`;
          *     `overwrite=true` sobrescreve inclusive anotações de origem manual e import.
          */
@@ -1696,8 +1698,10 @@ export interface paths {
          *     DefaultBodyLimit 8 GiB+8 MiB envelope (ADR-0023 D4); magic bytes obrigatórios;
          *     md5 hex computado; PUT S3; compensação delete se INSERT no manager falhar.
          *     Para `.safetensors` (diffusion): header JSON inspecionado para classificar
-         *     kind (lora/checkpoint/text_encoder) e arch (flux-2-klein-4b/sdxl/sd15;
-         *     text_encoder só admite flux-2-klein-4b).
+         *     kind (lora/checkpoint/text_encoder) e arch (flux-2-klein-4b/flux-2-klein-9b/sdxl/sd15;
+         *     text_encoder só admite flux-2-klein-4b). 4B vs 9B: `__metadata__.base_model`
+         *     e, sem metadata, shapes do transformer Flux.2 (hidden 3072 ⇒ 4B, 4096 ⇒ 9B);
+         *     indeterminável ⇒ 4B, exceto se o hint `arch` pedir `flux-2-klein-9b`.
          *     Erros: 400 `invalid_request` (engine/ext/magic/name/kind/arch conflito),
          *     413 `invalid_request` (envelope), 503 `queue_unavailable` (manager),
          *     503 `storage_unavailable` (S3).
@@ -2124,19 +2128,19 @@ export interface components {
              */
             datasetId: string;
             /**
-             * @description Modelo de difusão base para treino do adaptador LoRA. XOR com customModelId.
+             * @description Modelo de difusão base para treino do adaptador LoRA. XOR com customModelId. `flux-2-klein-9b` = FLUX.2 Klein base 9B (VRAM mínima 12 GB com 2bit/4bit, 20 GB com 6bit/8bit, 28 GB sem quantização); o alias legado `flux` equivale a `flux-2-klein-4b`.
              * @default sdxl
              * @enum {string|null}
              */
-            baseModel: "sdxl" | "flux" | "sd15" | "flux-2-klein-4b" | "qwen-image-2.1" | null;
+            baseModel: "sdxl" | "flux" | "sd15" | "flux-2-klein-4b" | "flux-2-klein-9b" | "qwen-image-2.1" | null;
             /**
              * Format: uuid
-             * @description UUID de checkpoint customizado (tabela `models`, kind=checkpoint) como base do treino. XOR com baseModel; inexistente ou kind≠checkpoint ⇒ 400/404.
+             * @description UUID de checkpoint customizado (tabela `models`, kind=checkpoint) como base do treino. XOR com baseModel; inexistente ou kind≠checkpoint ⇒ 400/404; checkpoint com arch flux-2-klein-9b ⇒ 400 `unsupported_architecture` (checkpoint custom 9B não suportado).
              */
             customModelId?: string | null;
             /**
              * Format: uuid
-             * @description UUID de modelo text encoder (tabela `models`, kind=text_encoder) para substituir o encoder padrão no treino. Só tem efeito com arch flux-2-klein-4b; outro arch ⇒ 400. Inexistente ou kind≠text_encoder ⇒ 404/400.
+             * @description UUID de modelo text encoder (tabela `models`, kind=text_encoder) para substituir o encoder padrão no treino. Só tem efeito com arch flux-2-klein-4b; outro arch (incluindo flux-2-klein-9b) ⇒ 400. Inexistente ou kind≠text_encoder ⇒ 404/400.
              */
             textEncoderModelId?: string | null;
             /** @description Palavra ou token de ativação (ex: 'ohwx subject'). */
@@ -2266,11 +2270,11 @@ export interface components {
          */
         DiffusionGenerateJobRequest: {
             /**
-             * @description Modelo base para geração Text-to-Image. XOR com customModelId.
+             * @description Modelo base para geração Text-to-Image. XOR com customModelId. `flux-2-klein-9b` = FLUX.2 Klein base 9B (VRAM mínima 12 GB com 2bit/4bit, 20 GB com 6bit/8bit, 28 GB sem quantização); o alias legado `flux` equivale a `flux-2-klein-4b`.
              * @default flux-2-klein-4b
              * @enum {string}
              */
-            baseModel: "sdxl" | "flux" | "sd15" | "flux-2-klein-4b" | "qwen-image-2.1";
+            baseModel: "sdxl" | "flux" | "sd15" | "flux-2-klein-4b" | "flux-2-klein-9b" | "qwen-image-2.1";
             /** @description Prompt textual descritivo para geração da imagem. */
             prompt: string;
             /** @description Prompt negativo para exclusão de características (aplicável a SDXL e SD 1.5). */
@@ -2304,7 +2308,7 @@ export interface components {
              */
             quantization: "none" | "2bit" | "4bit" | "6bit" | "8bit" | "4bit-nf4" | "8bit-bnb";
             /**
-             * @description Amostrador do scheduler de difusão (motor Flux.2). A base flux-2-klein-4b aceita apenas default, euler e heun; demais valores nessa base ⇒ 400.
+             * @description Amostrador do scheduler de difusão (motor Flux.2). As bases Flux.2 (flux-2-klein-4b e flux-2-klein-9b, e o alias flux) aceitam apenas default, euler e heun; demais valores nessas bases ⇒ 400.
              * @default default
              * @enum {string}
              */
@@ -2312,7 +2316,7 @@ export interface components {
             /** @description Upscale pós-geração (RRDBNet x4) ({model: 4x | ultrasharp | siax, scale: 2 ou 4}; model ausente = 4x). Null ou ausente = sem upscale. Opcional. */
             upscale?: components["schemas"]["DiffusionUpscale"] | null;
             /**
-             * @description Variante destilada em passos (ex: FLUX.2 Klein 4B Schnell / 4-8 passos com CFG 1.0).
+             * @description Variante destilada em passos (ex: FLUX.2 Klein 4B Schnell / 4-8 passos com CFG 1.0). Não existe para flux-2-klein-9b: distilled=true com essa base ⇒ 400 `invalid_request`.
              * @default false
              */
             distilled: boolean;
@@ -2333,16 +2337,16 @@ export interface components {
              * @default 1
              */
             batchSize: number;
-            /** @description Lista de adaptadores LoRA (máx. 4, aplicados em ordem). */
+            /** @description Lista de adaptadores LoRA (máx. 4, aplicados em ordem). LoRA com arch não nulo diferente do arch efetivo da geração (baseModel ou arch do customModelId) ⇒ 400 `invalid_request` nomeando o modelo; arch nulo (legado) passa. */
             loras?: components["schemas"]["LoraRef"][];
             /**
              * Format: uuid
-             * @description UUID de checkpoint customizado (tabela `models`, kind=checkpoint). XOR com baseModel.
+             * @description UUID de checkpoint customizado (tabela `models`, kind=checkpoint). XOR com baseModel. Checkpoint com arch flux-2-klein-9b ⇒ 400 `unsupported_architecture` (checkpoint custom 9B não suportado).
              */
             customModelId?: string | null;
             /**
              * Format: uuid
-             * @description UUID de modelo text encoder (tabela `models`, kind=text_encoder) para substituir o encoder padrão na geração. Só tem efeito com arch flux-2-klein-4b; outro arch ⇒ 400. Inexistente ou kind≠text_encoder ⇒ 404/400.
+             * @description UUID de modelo text encoder (tabela `models`, kind=text_encoder) para substituir o encoder padrão na geração. Só tem efeito com arch flux-2-klein-4b; outro arch (incluindo flux-2-klein-9b) ⇒ 400. Inexistente ou kind≠text_encoder ⇒ 404/400.
              */
             textEncoderModelId?: string | null;
             /**
@@ -3508,7 +3512,7 @@ export interface components {
              * @description Hint diffusion; sniff do servidor é autoritativo.
              * @enum {string}
              */
-            arch?: "flux-2-klein-4b" | "sdxl" | "sd15" | "qwen-image-2.1";
+            arch?: "flux-2-klein-4b" | "flux-2-klein-9b" | "sdxl" | "sd15" | "qwen-image-2.1";
             /**
              * Format: int64
              * @description Tamanho total do arquivo em bytes (≤ 8 GiB).
@@ -3604,7 +3608,7 @@ export interface components {
              * @description Arquitetura do modelo (ADR-0023 D4). Null para engines não-difusão.
              * @enum {string|null}
              */
-            arch?: "flux-2-klein-4b" | "sdxl" | "sd15" | "qwen-image-2.1" | null;
+            arch?: "flux-2-klein-4b" | "flux-2-klein-9b" | "sdxl" | "sd15" | "qwen-image-2.1" | null;
         };
         /** @description Uso de storage (ADR-0009 D3 / ADR-0012 D8). */
         StorageUsage: {
@@ -4286,7 +4290,10 @@ export interface operations {
     };
     exportDataset: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description `backup` (padrão/ausente) = comportamento acima, inalterado. `captions` = download-only (NÃO reimportável), só datasets de difusão (`category=difusao`): zip com APENAS `images/{filename}` e `images/{stem}.txt` por imagem ativa exportada (caption crua do banco, trim, sem trigger word; sem caption ⇒ `.txt` vazio). Sem manifest.json, labels/, captions.jsonl nem dataset.yaml. Stems colidentes (`a.png` + `a.jpg`): a 2ª imagem e seu txt passam a `{stem}_{ext}` (ex.: `images/a_jpg.jpg` + `images/a_jpg.txt`), preservando o pareamento. */
+                layout?: "backup" | "captions";
+            };
             header?: never;
             path: {
                 /** @description PK do dataset. Valor que não parseia como UUID responde 404 `not_found` (não 400, padrão D8 replicado). */
@@ -4296,10 +4303,10 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Zip do backup (`{slug}.zip`). */
+            /** @description Zip do backup (`{slug}.zip`) ou, com `layout=captions`, `{slug}-captions.zip`. */
             200: {
                 headers: {
-                    /** @description attachment; filename="{slug}.zip" (slug é kebab-case ASCII, seguro no header). */
+                    /** @description attachment; filename="{slug}.zip" (`{slug}-captions.zip` com layout=captions; slug é kebab-case ASCII, seguro no header). */
                     "Content-Disposition": string;
                     /** @description Tamanho do arquivo spoolado. */
                     "Content-Length": number;
@@ -4307,6 +4314,15 @@ export interface operations {
                 };
                 content: {
                     "application/zip": string;
+                };
+            };
+            /** @description `layout` desconhecido, ou `layout=captions` em dataset que não é de difusão (`code: invalid_request`), antes de qualquer download. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
                 };
             };
             /** @description Sem sessão válida (`code: unauthorized`). */
@@ -5878,7 +5894,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Amostras e legendas geradas retornadas com sucesso. */
+            /** @description Amostras e legendas geradas retornadas com sucesso (job `done`, `failed` ou `cancelled` com artefato `captions`). */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -5905,7 +5921,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Job não está `done` (`code: job_not_done`). */
+            /** @description Job não está em `done`, `failed` ou `cancelled` (`code: job_not_done`). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -5941,7 +5957,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Legendas aplicadas com sucesso. */
+            /** @description Legendas aplicadas com sucesso (job `done`, `failed` ou `cancelled` com artefato `captions`). */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -5977,7 +5993,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Job não está `done` (`code: job_not_done`) ou dataset não pronto (`code: dataset_not_ready`). */
+            /** @description Job não está em `done`, `failed` ou `cancelled` (`code: job_not_done`) ou dataset não pronto (`code: dataset_not_ready`). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -7316,7 +7332,7 @@ export interface operations {
                      * @description Hint: arquitetura do modelo diffusion. Sniff do servidor é autoritativo.
                      * @enum {string}
                      */
-                    arch?: "flux-2-klein-4b" | "sdxl" | "sd15" | "qwen-image-2.1";
+                    arch?: "flux-2-klein-4b" | "flux-2-klein-9b" | "sdxl" | "sd15" | "qwen-image-2.1";
                 };
             };
         };

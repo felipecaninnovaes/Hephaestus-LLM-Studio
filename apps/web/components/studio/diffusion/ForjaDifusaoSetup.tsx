@@ -23,6 +23,7 @@ import {
   listDatasets,
   trainDiffusionDisabledReason,
 } from "@/lib/datasets";
+import { isFlux2Klein4b, isFlux2Klein9b, normalizeDiffusionArch } from "@/lib/diffusionArch";
 import { formatBytes } from "@/lib/format";
 import { startDiffusionJob } from "@/lib/jobs";
 import { listModels } from "@/lib/models";
@@ -210,7 +211,7 @@ export function ForjaDifusaoSetup({
 				baseModel: preset.baseModel as DiffusionBaseModel,
 			}));
       setCustomModelId("");
-      if (preset.baseModel !== "flux") setTextEncoderModelId("");
+      if (!isFlux2Klein4b(preset.baseModel)) setTextEncoderModelId("");
     }
     if (preset.triggerWord !== undefined)
       setParams((p) => ({ ...p, triggerWord: preset.triggerWord ?? "" }));
@@ -354,7 +355,7 @@ export function ForjaDifusaoSetup({
           typeof parsed.model === "string" ? parsed.model : modelNode.base;
         const engineBaseModel =
           typeof rawArch === "string"
-            ? rawArch === "flux-2-klein-4b"
+            ? isFlux2Klein4b(rawArch)
               ? "flux"
               : rawArch
             : undefined;
@@ -694,10 +695,14 @@ export function ForjaDifusaoSetup({
     }));
   }, [diffusionModels]);
 
+  /* Checkpoint custom com arch 9B é rejeitado pelo BFF (unsupported_architecture) — não é oferecido como base. */
   const checkpointModels = useMemo(
     () =>
       diffusionModels.filter(
-        (m) => m.engine === "diffusion" && m.kind === "checkpoint",
+        (m) =>
+          m.engine === "diffusion" &&
+          m.kind === "checkpoint" &&
+          !isFlux2Klein9b(m.arch),
       ),
     [diffusionModels],
   );
@@ -714,17 +719,19 @@ export function ForjaDifusaoSetup({
     if (customModelId) {
 			return checkpointModels.find((m) => m.id === customModelId)?.arch ?? null;
     }
-    return params.baseModel === "flux" ? "flux-2-klein-4b" : params.baseModel;
+    return normalizeDiffusionArch(params.baseModel);
   }, [customModelId, checkpointModels, params.baseModel]);
-  const isTrainFlux2 = trainEffectiveArch === "flux-2-klein-4b";
+  /* Text encoder custom é regra exclusiva do 4B (9B usa o encoder oficial, descarregado no treino). */
+  const isTrainFlux2 = isFlux2Klein4b(trainEffectiveArch);
 
   /* VRAM estimada pelo arch EFETIVO (custom flux-2 custa como flux-2-klein-4b). */
   const estimatedVram = useMemo(
     () =>
       estimateDiffusionVramGb(
-        trainEffectiveArch === "flux-2-klein-4b"
+        isFlux2Klein4b(trainEffectiveArch)
           ? "flux"
-					: trainEffectiveArch === "sdxl" ||
+					: trainEffectiveArch === "flux-2-klein-9b" ||
+							trainEffectiveArch === "sdxl" ||
 							trainEffectiveArch === "sd15" ||
 							trainEffectiveArch === "qwen-image-2.1"
             ? trainEffectiveArch
@@ -761,6 +768,11 @@ export function ForjaDifusaoSetup({
         value: "preset:flux",
         label: "FLUX.2 Klein 4B (oficial)",
         description: "LoRA rápido em GPUs 10–12 GB",
+      },
+      {
+        value: "preset:flux-2-klein-9b",
+        label: "FLUX.2 Klein 9B (base)",
+        description: "9B · QLoRA 4-bit em GPUs ≥ 12 GB · não comercial",
       },
       {
         value: "preset:sd15",
@@ -952,7 +964,7 @@ export function ForjaDifusaoSetup({
             Forja de Difusão · Treinamento LoRA
           </h2>
           <p className="font-mono text-2xs text-zinc-400">
-            Ajuste fino de modelos de difusão (FLUX.2 Klein 4B, SDXL e SD 1.5)
+            Ajuste fino de modelos de difusão (FLUX.2 Klein 4B/9B, SDXL e SD 1.5)
             com pesos Low-Rank Adaptation.
           </p>
         </div>
@@ -1087,17 +1099,16 @@ export function ForjaDifusaoSetup({
               } else {
                 setParams((p) => ({ ...p, baseModel: base }));
               }
-              if (base !== "flux") setTextEncoderModelId("");
+              if (!isFlux2Klein4b(base)) setTextEncoderModelId("");
             } else {
               setCustomModelId(val);
               const hit = checkpointModels.find((m) => m.id === val);
               if (hit?.arch) {
-                const mapped =
-                  hit.arch === "flux-2-klein-4b"
-                    ? "flux"
-                    : (hit.arch as DiffusionBaseModel);
+                const mapped = isFlux2Klein4b(hit.arch)
+                  ? "flux"
+                  : (hit.arch as DiffusionBaseModel);
                 setParams((p) => ({ ...p, baseModel: mapped }));
-                if (mapped !== "flux") setTextEncoderModelId("");
+                if (!isFlux2Klein4b(mapped)) setTextEncoderModelId("");
               }
             }
           }}
@@ -1109,11 +1120,11 @@ export function ForjaDifusaoSetup({
         </p>
       </div>
 
-      {/* Text encoder (somente flux-2-klein-4b) */}
+      {/* Text encoder (somente flux-2-klein-4b; 9B usa o encoder oficial) */}
       <Select
         id="setup-diffusion-text-encoder"
         label="Text encoder"
-        hint="Somente arquitetura FLUX.2. Selecione o encoder padrão BFL ou um text_encoder custom da aba Modelos & Pesos."
+        hint="Somente FLUX.2 Klein 4B (o 9B usa o encoder oficial). Selecione o encoder padrão BFL ou um text_encoder custom da aba Modelos & Pesos."
         options={trainEncoderOptions}
         value={textEncoderModelId}
         onChange={setTextEncoderModelId}

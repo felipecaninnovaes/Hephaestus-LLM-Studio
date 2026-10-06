@@ -33,6 +33,11 @@ export const BASE_MODEL_OPTIONS: SelectOption<string>[] = [
     description: "4B Params · Flow Matching · Ultrarrápido",
   },
   {
+    value: "flux-2-klein-9b",
+    label: "FLUX.2 Klein 9B (base)",
+    description: "9B Params · Base · não comercial",
+  },
+  {
     value: "sdxl",
     label: "SDXL 1.0",
     description: "Dual CLIP · Resolução Nativa 1024x1024",

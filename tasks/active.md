@@ -1,10 +1,30 @@
-## ▶ Em andamento — Prompt do AutoLabel: limite 8000 → 15000 caracteres
+## Fechado — Export de dataset de difusão com legendas .txt (só download, sem reimport)
+- **Pedido do usuário (2026-10-05):** botão separado para baixar dataset de difusão como `images/{arquivo}` + `images/{stem}.txt`; legenda crua (sem trigger word); imagem sem legenda ⇒ `.txt` vazio; zip não reimportável.
+- **Contrato:** `POST /api/datasets/{id}/export?layout=captions` (ausente/`backup` = comportamento atual). `captions`: sem `manifest.json`/`labels/`/`captions.jsonl`; colisão de stem ⇒ imagem e txt renomeados juntos para `{stem}_{ext}` (`_2`… se ocupado); `Content-Disposition` `{slug}-captions.zip`; dataset não-difusão ou layout desconhecido ⇒ 400 `invalid_request`.
+- **Branches/clones:** `feat/api-export-captions-txt` (`/tmp/heph-export-captions-api`), `feat/web-export-captions-txt` (`/tmp/heph-export-captions-web`), de `develop` `51bf8ca`. Merges `350e073` (api), `48503bf` (web); docs `3a1d420` (local, sem push).
+- [x] `@backend` `d7e3ac0`: `ExportQuery`, cauda do handler extraída para `stream_zip`, openapi + tabela de status do router; 541 testes lib (4 novos).
+- [x] `@frontend` `ef60379`: `exportDataset(id, slug, layout)`, helper `isDiffusionDataset` (3 sites), item "Exportar com legendas (.txt)" só em difusão; tsc limpo, 147 testes; screenshots com API mock.
+- [x] `@reviewer` APROVA (NITs: `invalid_request` sem mensagem contextual na web — inalcançável pela UI; sem teste direto de `isDiffusionDataset`).
+- [x] Smoke real (orchestrator): binário do clone + Postgres efêmero + storage mock. Export captions 200 `smoke-captions-captions.zip` com 3 pares webp/txt (legenda com trim e unicode, txt vazio sem legenda); backup inalterado (`manifest.json`, `captions.jsonl`, `images`); `layout=zip`/`Captions`/dataset YOLO ⇒ 400; reimport do zip ⇒ 400 `import_invalid`. Uploads viram `{sha}.webp`, então colisão de stem só ocorre via import.
+- [x] `@docs`: REPO_MAP. Deploy do `principal` no dev (`@infra`): imagem `9d47c3861b91`, rollback `infra-principal:pre-export-captions` (`da5777e03f95`), health 200, `-captions.zip` presente no binário novo e ausente no antigo.
+
+## Fechado — AutoLabel com raciocínio grava o pensamento como legenda
+- **Relato do usuário (2026-10-05):** com reasoning ligado, a legenda sai só com o pensamento (sem a resposta final), aparentemente por limite baixo.
+- **Causa raiz (orchestrator):** `engines/trainer-yolo/src/trainer_yolo/autolabel_pkg/vision_api.py:109` fixava `max_tokens: 1500`; tokens de raciocínio contam nesse teto → `finish_reason=length` com `content` vazio, e `:158-159` caía para `reasoning_content` e o gravava como legenda. Timeout de 90 s curto para raciocínio longo. UI: toggle ligado ⇒ não envia `reasoningEffort`; desligado ⇒ `"none"` (`AutoLabelModal.tsx:370-372`).
+- **Branch:** `fix/autolabel-reasoning-budget` (de `develop` `cf1f7d5`); merge `51bf8ca` em `develop`/`origin`.
+- [x] `@engines` `ad51a14`: sem teto por padrão (`AUTOLABEL_MAX_TOKENS` opcional), `AUTOLABEL_REQUEST_TIMEOUT` (default 300 s), `<think>` removido (sem fechamento ⇒ descartado), campos de raciocínio nunca viram legenda, resposta vazia ou `finish_reason=length` ⇒ `RuntimeError` explícito (job falha). 116 testes (5 novos).
+- [x] `@reviewer` APROVA (NIT: só cobre a tag `<think>`, não variantes como `<thought>`). `@docs` `d078da3`: `docs/engines/trainer-yolo.md`.
+- [x] Deploy no nó docker-04 (`dockeruser@10.15.50.114`, `@infra`): nó em `51bf8ca`, `hephaestus/trainer-yolo:gpu` `63d6893b1e07`, rollback `:pre-reasoning-budget` (`9fa0cc725d52`); conferido no arquivo da imagem (`AUTOLABEL_MAX_TOKENS` 3×, `reasoning_content` 0×). O build também reconstruiu `engine-base-gpu:0.1.0` (`b677f3f1a9f2` → `5bdaf2d1fd0b`); `trainer-difusao:gpu` segue na base antiga. orchestrator-gpu não reiniciado.
+- **Limite:** sem prova com modelo de raciocínio real (só servidor HTTP mock nos testes). `.omp/AGENTS.md` §5 ainda cita o nó antigo `10.15.1.2`.
+
+## Fechado — Prompt do AutoLabel: limite 8000 → 15000 caracteres
 - **Pedido do usuário (2026-10-05):** aumentar o limite do prompt/instrução do autolabel (NÃO a legenda) de 8000 para 15000.
-- **Branch:** `feat/autolabel-prompt-15000` (de `develop` `423a91e`), clone `/home/felipecn/DEV/heph-clones/autolabel-prompt`.
-- **Escopo:** `services/api-principal/src/jobs/models.rs:653-654`, `openapi.yaml:3609` (`AutolabelJobRequest.prompt.maxLength`), `apps/web/types/api-generated.ts` (codegen), `AutoLabelModal.tsx:930`. Limite da legenda (8000, migration/CHECK) fora de escopo.
-- [ ] `@backend`: validação + contrato + teste de fronteira 15000/15001.
-- [ ] `@frontend`: codegen + contador.
-- [ ] `@reviewer`.
+- **Branch:** `feat/autolabel-prompt-15000` (de `develop` `423a91e`), clone `/home/felipecn/DEV/heph-clones/autolabel-prompt`; merge `cf1f7d5` em `develop` (local, sem push).
+- **Escopo:** `services/api-principal/src/jobs/models.rs` (`AUTOLABEL_PROMPT_MAX_CHARS`), `openapi.yaml` (`AutolabelJobRequest.prompt.maxLength`), `AutoLabelModal.tsx`. Limite da legenda (8000, migration/CHECK) fora de escopo. Nenhum outro guarda no manager/orchestrator/engines.
+- [x] `@backend` `bf37c65`: const + mensagem formatada + teste de fronteira 15000/15001 (multibyte, trim). 537 testes lib. Incidente: 1ª edição caiu no checkout principal por caminho relativo; o agente reverteu só os 2 arquivos.
+- [x] `@frontend` `55c94f0`: contador `/15000` (vermelho acima do teto) + `maxLength` no input; codegen sem diff (openapi-typescript não emite maxLength). tsc limpo, 147 testes.
+- [x] `@reviewer` APROVA sem achados. Drift apontado só no ADR-0019:45 (histórico, intocado por convenção).
+- [x] Deploy do `principal` no dev (`@infra`, após o 400 reportado pelo usuário com o BFF antigo de 2026-10-03): imagem `da5777e03f95` de `cf1f7d5`, rollback `infra-principal:pre-prompt-15000` (`846c513eebb0`), health 200. Prova: literal `prompt must not exceed 8000` presente no binário antigo e ausente no novo (POST real exige sessão; não testado end-to-end pelo orchestrator).
 
 ## ▶ Onda de otimizações (scouts 2026-10-05) — código integrado; falta só o nó GPU
 - **Pedido do usuário:** executar Grupos 1+2 do relatório de otimização; NÃO mexer no nó remoto (job `e8a9a944` rodando). Grupo 3 descartado (baixo ganho).

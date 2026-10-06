@@ -31,6 +31,10 @@ from trainer_yolo.autolabel_pkg.vision_api import (
 from trainer_yolo.config import load_and_validate_autolabel_config
 from trainer_yolo.dataset import _discover_dataset_images
 
+# Concorrência padrão do caminho OpenAI: 1 (servidores llama.cpp com speculative
+# decoding retornam HTTP 500 sob requisições concorrentes). Override: AUTOLABEL_CONCURRENCY.
+DEFAULT_AUTOLABEL_CONCURRENCY = 1
+
 
 def _autolabel_pipeline(cfg: dict, output_dir: Path) -> None:
     """Executa o pipeline do AutoLabel v2 (Florence-2, Qwen2-VL, OpenAI, Mock)."""
@@ -75,11 +79,11 @@ def _autolabel_pipeline(cfg: dict, output_dir: Path) -> None:
     skipped_count = 0
 
     if model == "openai":
-        raw_concurrency = os.environ.get("AUTOLABEL_CONCURRENCY", "4")
+        raw_concurrency = os.environ.get("AUTOLABEL_CONCURRENCY", str(DEFAULT_AUTOLABEL_CONCURRENCY))
         try:
             concurrency = max(1, int(raw_concurrency))
         except ValueError:
-            concurrency = 4
+            concurrency = DEFAULT_AUTOLABEL_CONCURRENCY
 
         is_official = "api.openai.com" in api_base
         if is_official and not (api_key and api_key.strip()):

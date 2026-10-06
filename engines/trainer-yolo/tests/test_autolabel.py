@@ -625,11 +625,14 @@ def test_autolabel_telemetry_eta_and_step_time(tmp_path: Path, monkeypatch: pyte
     assert labeling_events[2]["etaSeconds"] == 0
 
 
-def test_autolabel_retains_progress_on_midway_die(tmp_path: Path):
+def test_autolabel_retains_progress_on_midway_die(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Verifica que quando o autolabel falha no meio, o último progresso real
     fica registrado na telemetria antes da finalização."""
     import http.server
     import threading
+    import types
+
+    from trainer_yolo.autolabel_pkg import vision_api
 
     request_count = 0
 
@@ -677,20 +680,23 @@ def test_autolabel_retains_progress_on_midway_die(tmp_path: Path):
                 "openai_model": "gpt-4o-mini",
             },
         }
+        monkeypatch.setenv("AUTOLABEL_CONCURRENCY", "1")
+        monkeypatch.setenv("AUTOLABEL_MAX_CONSECUTIVE_FAILURES", "2")
+        monkeypatch.setattr(vision_api, "time", types.SimpleNamespace(sleep=lambda s: None))
         with pytest.raises(SystemExit):
             _mock_autolabel(cfg, out)
 
         telem_file = out / "telemetry.jsonl"
         assert telem_file.is_file()
         telem_lines = [json.loads(line) for line in telem_file.read_text(encoding="utf-8").strip().splitlines()]
-        # Evento 0: preparing
-        # Evento 1: labeling img_01 (step=1) antes de falhar na img_02
-        assert len(telem_lines) == 2
+        # preparing, img_01 ok (step 1), img_02 e img_03 puladas (steps 2 e 3) → breaker.
+        assert len(telem_lines) == 4
         assert telem_lines[0]["phase"] == "preparing"
         assert telem_lines[1]["phase"] == "labeling"
         assert telem_lines[1]["step"] == 1
         assert telem_lines[1]["totalSteps"] == 3
         assert "Anotando imagem 1/3: img_01.jpg" in telem_lines[1]["phaseMessage"]
+        assert "Pulando imagem 2/3: img_02.jpg" in telem_lines[2]["phaseMessage"]
     finally:
         server.shutdown()
         server.server_close()
@@ -727,8 +733,8 @@ def test_autolabel_openai_fail_fast_out_of_order(tmp_path: Path):
                 res = {"choices": [{"message": {"role": "assistant", "content": "Legenda 1"}}]}
                 self.wfile.write(json.dumps(res).encode("utf-8"))
             else:
-                # Imagem 2 falha de imediato com 400 Bad Request (sem retry no vision_api)
-                self.send_response(400)
+                # Imagem 2 falha de imediato com 401 (erro de configuração, sem retry nem skip)
+                self.send_response(401)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(json.dumps({"error": {"message": "Erro fatal imediato"}}).encode("utf-8"))
@@ -776,3 +782,164 @@ def test_autolabel_openai_fail_fast_out_of_order(tmp_path: Path):
             os.environ.pop("AUTOLABEL_CONCURRENCY", None)
         server.shutdown()
         server.server_close()
+
+
+# --- Skip de imagens com falha (AutoLabel OpenAI) ---------------------------
+
+
+def _start_skip_server(status_for):
+    """Servidor mock: `status_for(fname)` devolve o HTTP status (200 = caption OK).
+
+    A imagem é identificada pelos bytes (cada arquivo contém o próprio nome)."""
+    import base64
+    import http.server
+    import socketserver
+    import threading
+
+    requests_seen: list[str] = []
+
+    class ThreadedServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+        daemon_threads = True
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            url = payload["messages"][0]["content"][1]["image_url"]["url"]
+            raw = base64.b64decode(url.split(",", 1)[1]).decode("latin-1")
+            fname = raw.split("NAME:", 1)[1]
+            requests_seen.append(fname)
+            status = status_for(fname)
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            if status == 200:
+                body = {"choices": [{"message": {"role": "assistant", "content": f"cap {fname}"}}]}
+            else:
+                body = {"error": {"message": f"falha simulada {status}"}}
+            self.wfile.write(json.dumps(body).encode("utf-8"))
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadedServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, requests_seen
+
+
+def _run_skip_job(tmp_path: Path, monkeypatch, filenames, status_for, *, env=None):
+    import types
+
+    from trainer_yolo.autolabel_pkg import vision_api
+
+    # Sem esperar os backoffs reais (contagem de retries de produção intacta).
+    monkeypatch.setattr(vision_api, "time", types.SimpleNamespace(sleep=lambda s: None))
+    for key, value in (env or {}).items():
+        monkeypatch.setenv(key, value)
+
+    ds = _make_autolabel_dataset(tmp_path, filenames)
+    for fname in filenames:
+        (ds / "images" / fname).write_bytes(b"NAME:" + fname.encode("utf-8"))
+    server, seen = _start_skip_server(status_for)
+    out = tmp_path / "out"
+    cfg = {
+        "job_id": "job-skip",
+        "model": "openai",
+        "dataset_path": str(ds),
+        "output_path": str(out),
+        "seed": 42,
+        "autolabel": {
+            "prompt": "Teste",
+            "api_key": "token",
+            "api_base": f"http://127.0.0.1:{server.server_address[1]}/v1",
+            "openai_model": "gpt-4o",
+        },
+    }
+    try:
+        _mock_autolabel(cfg, out)
+    finally:
+        server.shutdown()
+        server.server_close()
+    return out, seen
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+
+
+def test_autolabel_openai_skips_failed_image_and_completes(tmp_path: Path, monkeypatch):
+    names = [f"img_{i:02d}.jpg" for i in range(1, 7)]
+    out, _ = _run_skip_job(
+        tmp_path,
+        monkeypatch,
+        names,
+        lambda fname: 500 if fname == "img_03.jpg" else 200,
+    )
+    captions = _read_jsonl(out / "captions.jsonl")
+    assert [c["filename"] for c in captions] == [n for n in names if n != "img_03.jpg"]
+    assert captions[0]["caption"] == "cap img_01.jpg"
+    failures = _read_jsonl(out / "autolabel_failures.jsonl")
+    assert [x["filename"] for x in failures] == ["img_03.jpg"]
+    assert "HTTP 500" in failures[0]["error"]
+    telem = _read_jsonl(out / "telemetry.jsonl")
+    assert telem[-1]["phase"] == "completed"
+    assert telem[-1]["phaseMessage"] == "AutoLabel concluído: 5/6 imagens anotadas; 1 puladas por erro."
+    labeling = [t for t in telem if t["phase"] == "labeling"]
+    assert [t["step"] for t in labeling] == [1, 2, 3, 4, 5, 6]
+
+
+def test_autolabel_openai_no_failures_file_when_all_succeed(tmp_path: Path, monkeypatch):
+    out, _ = _run_skip_job(tmp_path, monkeypatch, ["a.jpg", "b.jpg"], lambda fname: 200)
+    assert not (out / "autolabel_failures.jsonl").exists()
+    telem = _read_jsonl(out / "telemetry.jsonl")
+    assert telem[-1]["phaseMessage"] == "AutoLabel concluído: 2 imagens anotadas com sucesso."
+
+
+def test_autolabel_openai_http_401_aborts_job(tmp_path: Path, monkeypatch):
+    names = [f"img_{i:02d}.jpg" for i in range(1, 9)]
+    with pytest.raises(SystemExit) as exc_info:
+        _run_skip_job(
+            tmp_path, monkeypatch, names, lambda fname: 401, env={"AUTOLABEL_CONCURRENCY": "1"}
+        )
+    assert exc_info.value.code == 1
+    out = tmp_path / "out"
+    assert not (out / "autolabel_failures.jsonl").exists()
+    assert (out / "captions.jsonl").read_text(encoding="utf-8") == ""
+
+
+def test_autolabel_openai_all_images_failing_dies(tmp_path: Path, monkeypatch):
+    with pytest.raises(SystemExit) as exc_info:
+        _run_skip_job(
+            tmp_path,
+            monkeypatch,
+            ["a.jpg", "b.jpg", "c.jpg"],
+            lambda fname: 500,
+            env={"AUTOLABEL_CONCURRENCY": "1"},
+        )
+    assert exc_info.value.code == 1
+
+
+def test_autolabel_openai_consecutive_failure_breaker(tmp_path: Path, monkeypatch, capfd):
+    names = [f"img_{i:02d}.jpg" for i in range(1, 7)]
+
+    def status_for(fname: str) -> int:
+        return 200 if fname == "img_01.jpg" else 500
+
+    with pytest.raises(SystemExit):
+        _run_skip_job(
+            tmp_path,
+            monkeypatch,
+            names,
+            status_for,
+            env={"AUTOLABEL_CONCURRENCY": "1", "AUTOLABEL_MAX_CONSECUTIVE_FAILURES": "2"},
+        )
+    err = capfd.readouterr().err
+    assert "2 falhas consecutivas" in err
+    assert "HTTP 500" in err
+    out = tmp_path / "out"
+    telem = _read_jsonl(out / "telemetry.jsonl")
+    # preparing + img_01 (ok) + img_02 (pulada) + img_03 (pulada → breaker); img_04+ nunca rodam.
+    assert [t.get("step") for t in telem if t["phase"] == "labeling"] == [1, 2, 3]
+    assert [c["filename"] for c in _read_jsonl(out / "captions.jsonl")] == ["img_01.jpg"]
+
+

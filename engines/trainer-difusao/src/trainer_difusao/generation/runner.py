@@ -27,6 +27,7 @@ from trainer_difusao.generation.config import (
 )
 from trainer_difusao.generation.mock import _mock_generate
 from trainer_difusao.generation.progress import _pipe_call_kwargs_with_callback
+from trainer_difusao.klein import KLEIN_ARCHS, klein_9b_unsupported_option
 from trainer_difusao.generation.text_encoder import (
     _flux2_repo_id,
     _load_flux2_custom_transformer,
@@ -64,6 +65,14 @@ def _real_generate(
     arch = params.get("arch")
     text_encoder_path = params.get("text_encoder_path")
 
+    err_9b = klein_9b_unsupported_option(
+        base_model,
+        custom_checkpoint_path=custom_cp,
+        text_encoder_path=text_encoder_path,
+        distilled=distilled,
+    )
+    if err_9b:
+        _die(err_9b)
     if text_encoder_path and arch in ("sdxl", "sd15"):
         _die(
             f"text_encoder_path ({text_encoder_path}) não é suportado com "
@@ -105,7 +114,7 @@ def _real_generate(
     # Klein: transformer + text encoder quantizados pelos loaders do treino
     # (load_flux2_quantized_components, cache quantizado compartilhado), nunca
     # via quantization_config do pipeline (que era no-op).
-    klein_quant = base_model == "flux-2-klein-4b" and quant != "none"
+    klein_quant = base_model in KLEIN_ARCHS and quant != "none"
     quantization_config = None
     if not klein_quant and quant in ("4bit", "8bit") and device == "cuda":
         try:
@@ -187,10 +196,10 @@ def _real_generate(
             if pipe and device == "cuda" and not quantization_config:
                 pipe.to(device)
 
-        elif base_model == "flux-2-klein-4b":
+        elif base_model in KLEIN_ARCHS:
             from diffusers import Flux2KleinPipeline
 
-            model_repo = _flux2_repo_id(distilled=distilled)
+            model_repo = _flux2_repo_id(distilled=distilled, arch=base_model)
             pipe_dtype = torch.bfloat16 if device == "cuda" else torch.float32
             flux_kwargs: dict[str, Any] = {"torch_dtype": pipe_dtype}
             encoder_override = params.get("text_encoder_path")
@@ -242,7 +251,7 @@ def _real_generate(
                 )
             else:
                 print(
-                    f"[DIFFUSION-GEN] Carregando FLUX.2 Klein 4B "
+                    f"[DIFFUSION-GEN] Carregando FLUX.2 Klein {base_model.rsplit('-', 1)[-1].upper()} "
                     f"({'Destilado' if distilled else 'Base'}): {model_repo}",
                     flush=True,
                 )
@@ -312,7 +321,7 @@ def _real_generate(
     init_image = None
     call_pipe = pipe
     if is_img2img:
-        if base_model in ("flux-2-klein-4b", "qwen-image-2.1"):
+        if base_model in (*KLEIN_ARCHS, "qwen-image-2.1"):
             call_pipe = pipe
         elif base_model == "sdxl":
             from diffusers import StableDiffusionXLImg2ImgPipeline as _I2I
@@ -351,9 +360,9 @@ def _real_generate(
     sampler_name = params.get("sampler", "default")
     upscale_cfg = params.get("upscale")
     sched_arch = (
-        "flux" if base_model in ("flux-2-klein-4b", "qwen-image-2.1") else "sd"
+        "flux" if base_model in (*KLEIN_ARCHS, "qwen-image-2.1") else "sd"
     )
-    if base_model not in ("flux-2-klein-4b", "sdxl", "sd15", "qwen-image-2.1"):
+    if base_model not in (*KLEIN_ARCHS, "sdxl", "sd15", "qwen-image-2.1"):
         _die(f"Modelo não suportado para inferência: {base_model}")
     fresh_scheduler = None
     if sampler_name and sampler_name != "default":
@@ -405,7 +414,7 @@ def _real_generate(
             )
 
             sampler_cb_kwargs = _pipe_call_kwargs_with_callback(emitter, i, batch_size, steps)
-            if base_model == "flux-2-klein-4b":
+            if base_model in KLEIN_ARCHS:
                 flux_call_kwargs: dict[str, Any] = {
                     "prompt": prompt,
                     "generator": generator,

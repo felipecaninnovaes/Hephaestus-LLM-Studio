@@ -22,6 +22,13 @@ from trainer_difusao.common import (
     _validate_train_aux,
 )
 from trainer_difusao.common_pkg.latent_cache import batch_pixel_hw, batch_size_of, latents_from_batch
+from trainer_difusao.klein import (
+    KLEIN_4B,
+    KLEIN_9B,
+    canonical_klein_arch,
+    klein_9b_unsupported_option,
+    klein_repo_id,
+)
 from trainer_difusao.models.loop import LoraTrainConfig, ModelComponents, parse_lora_train_config
 from trainer_difusao.models.flux_pkg import (
     _custom_checkpoint_identity,
@@ -50,7 +57,7 @@ class FluxAdapter:
     """Adapter for FLUX.1 and FLUX.2-Klein training via TrainingLoopRunner."""
 
     arch_label = "FLUX"
-    metadata_base_model = "flux"  # will be "flux-2-klein-4b" or "flux-1" in checkpoint_metadata
+    metadata_base_model = "flux"  # will be "flux-2-klein-4b", "flux-2-klein-9b" or "flux-1" in checkpoint_metadata
 
     def parse_lora_train_config(self, cfg: dict[str, Any]) -> LoraTrainConfig:
         """Parse training config for Flux with Flux-specific validation and quantization handling.
@@ -71,19 +78,20 @@ class FluxAdapter:
         if hf_token:
             hf_token = hf_token.strip()
 
-        # Resolve model_id and is_flux2 to make conditional validations work
-        model_id = (
-            cfg.get("model_id")
-            or os.environ.get("FLUX_MODEL_ID")
-            or "black-forest-labs/FLUX.2-klein-base-4B"
-        )
-        is_flux2 = any(k in model_id.lower() for k in ["klein", "flux.2", "flux-2"])
+        # Arch do config decide a variante Klein (e o repo): 4B e 9B coexistem no nó.
+        raw_train_arch = str(cfg.get("model", "") or "").strip().lower()
+        klein_arch = canonical_klein_arch(raw_train_arch) or KLEIN_4B
+        is_klein9b = klein_arch == KLEIN_9B
+        model_id = cfg.get("model_id") or klein_repo_id(klein_arch)
+        is_flux2 = is_klein9b or any(k in model_id.lower() for k in ["klein", "flux.2", "flux-2"])
 
         # Validate custom_checkpoint_path (conditioned on raw_train_arch for clarity of error messages)
-        raw_train_arch = str(cfg.get("model", "") or "").strip().lower()
         raw_custom_cp = cfg.get("custom_checkpoint_path")
         custom_checkpoint_path: str | None = None
         if raw_custom_cp:
+            err_9b = klein_9b_unsupported_option(klein_arch, custom_checkpoint_path=raw_custom_cp)
+            if err_9b:
+                _die(err_9b)
             if not isinstance(raw_custom_cp, str) or not raw_custom_cp.strip():
                 _die("custom_checkpoint_path deve ser uma string não vazia.")
             custom_checkpoint_path = raw_custom_cp.strip()
@@ -95,10 +103,13 @@ class FluxAdapter:
                     "(sdxl/sd15 custom seguem pelos loaders de sdxl.py/sd15.py)."
                 )
 
-        # Validate text_encoder_path (only allowed for flux2)
+        # Validate text_encoder_path (only allowed for flux-2-klein-4b)
         raw_encoder_path = cfg.get("text_encoder_path")
         text_encoder_path: str | None = None
         if raw_encoder_path:
+            err_9b = klein_9b_unsupported_option(klein_arch, text_encoder_path=raw_encoder_path)
+            if err_9b:
+                _die(err_9b)
             if not isinstance(raw_encoder_path, str) or not raw_encoder_path.strip():
                 _die("text_encoder_path deve ser uma string não vazia.")
             text_encoder_path = raw_encoder_path.strip()
@@ -216,6 +227,11 @@ class FluxAdapter:
             extra={
                 "hf_token": hf_token,
                 "is_flux2": is_flux2,
+                "klein_arch": klein_arch,
+                # 9B: text encoder + transformer não cabem juntos em 12 GB (spike);
+                # o loop força cache de embeds + unload do encoder, ignorando
+                # ENABLE_TEXT_ENCODER_UNLOAD.
+                "force_text_encoder_unload": is_klein9b,
                 "model_id": model_id,
                 "quant_label": quant_label,
                 "quant_format": quant_format,
@@ -809,7 +825,7 @@ class FluxAdapter:
     def checkpoint_metadata(self, tcfg: LoraTrainConfig, *, epoch: int | None = None) -> dict[str, str]:
         """Return metadata for checkpoint (with epoch only if not None - same fix as Phase A)."""
         is_flux2 = tcfg.extra["is_flux2"]
-        base_model = "flux-2-klein-4b" if is_flux2 else "flux-1"
+        base_model = tcfg.extra["klein_arch"] if is_flux2 else "flux-1"
 
         metadata = {
             "format": "pt",

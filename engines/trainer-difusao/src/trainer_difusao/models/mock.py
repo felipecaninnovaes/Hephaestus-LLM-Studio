@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from trainer_difusao.common import (
+    _die,
     _canonical_model_name,
     _count_control_images,
     _emit_metric,
@@ -20,6 +21,7 @@ from trainer_difusao.common import (
     _synthetic_loss,
     _validate_train_aux,
 )
+from trainer_difusao.klein import klein_9b_unsupported_option
 from trainer_difusao.models.base import BaseModelTrainer
 
 
@@ -194,6 +196,11 @@ def _mock_train(cfg: dict[str, Any], output: Path) -> None:
     # sem fake de sucesso de load — o mock nunca carrega pesos reais).
     custom_cp = cfg.get("custom_checkpoint_path")
     enc_path = cfg.get("text_encoder_path")
+    err_9b = klein_9b_unsupported_option(
+        base_model, custom_checkpoint_path=custom_cp, text_encoder_path=enc_path
+    )
+    if err_9b:
+        _die(err_9b)
     if custom_cp:
         print(f"[MOCK] custom_checkpoint_path={custom_cp} (mock: no-op)", flush=True)
     if enc_path:

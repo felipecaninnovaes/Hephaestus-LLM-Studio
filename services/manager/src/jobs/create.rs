@@ -123,17 +123,26 @@ pub async fn create_job_with_context(
 
     // Resolução multi-LoRA + custom checkpoint + text encoder + init_image (ADR-0023, S4)
     if req.engine == "diffusion" && (req.mode == "generate" || req.mode == "train") {
-        if let Some(loras_arr) = params.get("loras").and_then(|v| v.as_array()) {
-            let resolved_loras = resolve_loras(pool, loras_arr).await?;
-            if let Ok(v) = serde_json::to_value(&resolved_loras) {
-                params["loras"] = v;
+        // Arch efetivo da geração: checkpoint custom, senão baseModel, senão
+        // req.model; irreconhecível ⇒ sem guarda de arch nas LoRAs.
+        let mut effective_arch = ["baseModel", "base_model"]
+            .iter()
+            .find_map(|k| params.get(*k).and_then(|v| v.as_str()))
+            .and_then(crate::constants::normalize_diffusion_arch)
+            .or_else(|| crate::constants::normalize_diffusion_arch(&req.model));
+
+        if let Some(custom_id_str) = params.get("customModelId").and_then(|v| v.as_str()) {
+            let (resolved, custom_arch) = resolve_custom_checkpoint(pool, custom_id_str).await?;
+            effective_arch = Some(custom_arch);
+            if let Ok(v) = serde_json::to_value(&resolved) {
+                params["custom_checkpoint"] = v;
             }
         }
 
-        if let Some(custom_id_str) = params.get("customModelId").and_then(|v| v.as_str()) {
-            let resolved = resolve_custom_checkpoint(pool, custom_id_str).await?;
-            if let Ok(v) = serde_json::to_value(&resolved) {
-                params["custom_checkpoint"] = v;
+        if let Some(loras_arr) = params.get("loras").and_then(|v| v.as_array()) {
+            let resolved_loras = resolve_loras(pool, loras_arr, effective_arch.as_deref()).await?;
+            if let Ok(v) = serde_json::to_value(&resolved_loras) {
+                params["loras"] = v;
             }
         }
 

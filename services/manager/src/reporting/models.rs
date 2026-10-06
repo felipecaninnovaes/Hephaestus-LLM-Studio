@@ -123,6 +123,7 @@ pub fn compute_model_name(
 
     let clean_model = match model.to_ascii_lowercase().as_str() {
         "flux" | "flux-2-klein-4b" => "flux2".to_string(),
+        "flux-2-klein-9b" | "flux2-klein-9b" => "flux2-9b".to_string(),
         "sdxl" => "sdxl".to_string(),
         "sd15" => "sd15".to_string(),
         "qwen" | "qwen-image" | "qwen-image-2.1" | "qwen2.1" | "qwen_image" | "qwen-image-2-1" => {

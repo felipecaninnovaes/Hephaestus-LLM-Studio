@@ -91,7 +91,11 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
         "/api/datasets/:id/search/by-image",
         &[200, 400, 401, 404, 409],
     ),
-    ("POST", "/api/datasets/:id/export", &[200, 401, 404, 503]),
+    (
+        "POST",
+        "/api/datasets/:id/export",
+        &[200, 400, 401, 404, 503],
+    ),
     (
         "POST",
         "/api/datasets/:id/package",

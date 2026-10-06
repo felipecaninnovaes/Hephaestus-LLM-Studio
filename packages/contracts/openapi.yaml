@@ -581,13 +581,27 @@ paths:
         com zip só-manifest (`counts.images=0`). O `manifest.json` é artefato
         de transporte snake_case (fora de `/api/*`, a fronteira HTTP não
         contamina o transporte).
+      parameters:
+        - name: layout
+          in: query
+          required: false
+          schema: { type: string, enum: [backup, captions], default: backup }
+          description: >
+            `backup` (padrão/ausente) = comportamento acima, inalterado.
+            `captions` = download-only (NÃO reimportável), só datasets de difusão
+            (`category=difusao`): zip com APENAS `images/{filename}` e
+            `images/{stem}.txt` por imagem ativa exportada (caption crua do banco,
+            trim, sem trigger word; sem caption ⇒ `.txt` vazio). Sem manifest.json,
+            labels/, captions.jsonl nem dataset.yaml. Stems colidentes (`a.png` +
+            `a.jpg`): a 2ª imagem e seu txt passam a `{stem}_{ext}` (ex.:
+            `images/a_jpg.jpg` + `images/a_jpg.txt`), preservando o pareamento.
       responses:
         "200":
-          description: Zip do backup (`{slug}.zip`).
+          description: Zip do backup (`{slug}.zip`) ou, com `layout=captions`, `{slug}-captions.zip`.
           headers:
             Content-Disposition:
               required: true
-              description: 'attachment; filename="{slug}.zip" (slug é kebab-case ASCII, seguro no header).'
+              description: 'attachment; filename="{slug}.zip" (`{slug}-captions.zip` com layout=captions; slug é kebab-case ASCII, seguro no header).'
               schema: { type: string }
             Content-Length:
               required: true
@@ -596,6 +610,11 @@ paths:
           content:
             application/zip:
               schema: { type: string, format: binary }
+        "400":
+          description: "`layout` desconhecido, ou `layout=captions` em dataset que não é de difusão (`code: invalid_request`), antes de qualquer download."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "401":
           description: "Sem sessão válida (`code: unauthorized`)."
           content:

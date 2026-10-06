@@ -923,6 +923,178 @@ async fn engine_autolabel_uses_autolabel_subcommand_and_captions_artifacts() {
     assert!(!filenames.contains(&"boxes.json"));
 }
 
+// -- Autolabel parcial: failed/cancelled preservam captions.jsonl --
+
+/// Executor que termina com `exit_code`; se `cancel_active` estiver setado,
+/// sinaliza o cancelamento do job enquanto "roda" o container.
+struct ExitCodeExecutor {
+    exit_code: i32,
+    cancel_active: Option<ActiveJobs>,
+}
+
+#[async_trait]
+impl TrainerExecutor for ExitCodeExecutor {
+    async fn run(
+        &self,
+        _image: &str,
+        container_name: &str,
+        _volumes: &[(String, String)],
+        _args: &[String],
+        _env: &[(String, String)],
+        _gpu_devices: Option<&str>,
+        _run_log_path: &std::path::Path,
+    ) -> (i32, String) {
+        if let Some(active) = &self.cancel_active {
+            for entry in active.iter() {
+                if entry.container_name == container_name {
+                    entry.cancel();
+                }
+            }
+        }
+        (self.exit_code, "boom".to_string())
+    }
+
+    async fn stop(&self, _container_name: &str) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+async fn run_autolabel_terminal(
+    job_id: &str,
+    captions: Option<&[u8]>,
+    exit_code: i32,
+    cancel: bool,
+) -> (Arc<FakeS3>, Arc<FakeReport>) {
+    let tmp = tempfile::tempdir().unwrap();
+    let s3 = Arc::new(FakeS3::new());
+    let zip_path = tmp.path().join("pkg.zip");
+    std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
+    let mut dispatch = make_dispatch_with_valid_md5(job_id, "autolabel", &zip_path);
+    dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+    let report = Arc::new(FakeReport::new());
+    let active_jobs = new_active_jobs();
+    let executor = Arc::new(ExitCodeExecutor {
+        exit_code,
+        cancel_active: cancel.then(|| active_jobs.clone()),
+    });
+    let mut files = HashMap::new();
+    if let Some(c) = captions {
+        files.insert("captions.jsonl".to_string(), c.to_vec());
+    }
+    create_fake_outputs(tmp.path(), job_id, &files);
+
+    run_job(
+        dispatch,
+        s3.clone(),
+        report.clone(),
+        executor,
+        active_jobs,
+        None,
+        false,
+        None,
+    )
+    .await;
+    (s3, report)
+}
+
+fn terminal_report(report: &FakeReport, status: &str) -> ReportBody {
+    report
+        .reports
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|r| r.status == status)
+        .cloned()
+        .unwrap_or_else(|| panic!("report {status} ausente"))
+}
+
+#[tokio::test]
+async fn autolabel_failed_with_captions_reports_captions_artifact() {
+    let line = br#"{"filename":"a.jpg","caption":"x"}"#;
+    let (s3, report) = run_autolabel_terminal("job-al-part-1", Some(line), 1, false).await;
+    let failed = terminal_report(&report, "failed");
+    let arts = failed.artifacts.expect("failed deve carregar captions");
+    let cap: Vec<_> = arts.iter().filter(|a| a.kind == "captions").collect();
+    assert_eq!(cap.len(), 1);
+    assert_eq!(cap[0].path, "captions.jsonl");
+    assert_eq!(cap[0].bytes, line.len() as i64);
+    assert!(!cap[0].md5.is_empty());
+    assert!(s3
+        .uploads
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|(k, _)| k.ends_with("artifacts/job-al-part-1/captions.jsonl")));
+}
+
+#[tokio::test]
+async fn autolabel_failed_with_empty_or_missing_captions_has_no_artifact() {
+    for (id, content) in [("job-al-part-2", Some(&b""[..])), ("job-al-part-3", None)] {
+        let (s3, report) = run_autolabel_terminal(id, content, 1, false).await;
+        let failed = terminal_report(&report, "failed");
+        assert!(
+            failed
+                .artifacts
+                .unwrap_or_default()
+                .iter()
+                .all(|a| a.kind != "captions"),
+            "{id}"
+        );
+        assert!(!s3
+            .uploads
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(k, _)| k.ends_with("captions.jsonl")));
+    }
+}
+
+#[tokio::test]
+async fn autolabel_cancelled_after_container_reports_captions_artifact() {
+    let line = br#"{"filename":"a.jpg","caption":"x"}"#;
+    let (_s3, report) = run_autolabel_terminal("job-al-part-4", Some(line), 137, true).await;
+    let cancelled = terminal_report(&report, "cancelled");
+    assert!(cancelled
+        .artifacts
+        .expect("cancelled deve carregar captions")
+        .iter()
+        .any(|a| a.kind == "captions"));
+}
+
+#[tokio::test]
+async fn non_autolabel_failed_does_not_upload_captions() {
+    let line = br#"{"filename":"a.jpg"}"#;
+    let tmp = tempfile::tempdir().unwrap();
+    let s3 = Arc::new(FakeS3::new());
+    let zip_path = tmp.path().join("pkg.zip");
+    std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
+    let mut dispatch = make_dispatch_with_valid_md5("job-yolo-part", "yolo", &zip_path);
+    dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+    let report = Arc::new(FakeReport::new());
+    let mut files = HashMap::new();
+    files.insert("captions.jsonl".to_string(), line.to_vec());
+    create_fake_outputs(tmp.path(), "job-yolo-part", &files);
+    run_job(
+        dispatch,
+        s3.clone(),
+        report.clone(),
+        Arc::new(ExitCodeExecutor {
+            exit_code: 1,
+            cancel_active: None,
+        }),
+        new_active_jobs(),
+        None,
+        false,
+        None,
+    )
+    .await;
+    assert!(terminal_report(&report, "failed")
+        .artifacts
+        .unwrap_or_default()
+        .iter()
+        .all(|a| a.kind != "captions"));
+}
+
 // -- A.3 test 3: engine desconhecido → falha limpa (via run_job que faz o report "failed") --
 
 #[tokio::test]

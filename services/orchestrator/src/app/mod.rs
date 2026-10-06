@@ -29,7 +29,7 @@ use crate::{tail_jsonl_lines, telemetry_report_for_line};
 
 use stages::collector::{
     collect_diffusion_artifacts, read_final_metrics, read_generation_meta_content,
-    stream_metrics_and_samples, upload_telemetry_snapshot,
+    stream_metrics_and_samples, upload_partial_captions, upload_telemetry_snapshot,
 };
 use stages::config::{extract_epochs, replace_config_placeholders};
 use stages::execute::resolve_subcommand_args;
@@ -147,6 +147,7 @@ pub async fn run_job_with_sampler(
 ) {
     let job_id = dispatch.job_id.clone();
     let report_for_error = Arc::clone(&report_client);
+    let s3_for_partial = Arc::clone(&s3);
     let result = run_job_inner_with_sampler(
         &dispatch,
         s3,
@@ -165,6 +166,22 @@ pub async fn run_job_with_sampler(
         let terminal_status = if is_cancelled { "cancelled" } else { "failed" };
         let terminal_phase = if is_cancelled { "cancelled" } else { "error" };
         let err_msg = err.to_string();
+        // Autolabel: preserva captions parciais quando o container rodou
+        // (DockerFailed, ou Cancelled com captions.jsonl já escrito).
+        let partial_artifacts = if dispatch.engine == "autolabel"
+            && matches!(
+                err,
+                PipelineError::Cancelled | PipelineError::DockerFailed { .. }
+            ) {
+            let outputs = std::path::Path::new(&dispatch.workdir)
+                .join("outputs")
+                .join(&job_id);
+            upload_partial_captions(&s3_for_partial, &job_id, &outputs)
+                .await
+                .map(|a| vec![a])
+        } else {
+            None
+        };
         if let Err(report_err) = report_for_error
             .report(
                 &job_id,
@@ -175,7 +192,7 @@ pub async fn run_job_with_sampler(
                     step: None,
                     metrics: None,
                     error: Some(err_msg.clone()),
-                    artifacts: None,
+                    artifacts: partial_artifacts,
                     meta_content: None,
                     phase: Some(terminal_phase.to_string()),
                     message: Some(if is_cancelled {

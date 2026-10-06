@@ -175,6 +175,42 @@ pub async fn upload_run_log_snapshot(
     }
 }
 
+/// Sobe o `captions.jsonl` parcial de um job autolabel que terminou
+/// `failed`/`cancelled` após o container rodar (o engine escreve uma linha
+/// flushada por imagem). Só sobe se o arquivo existir e não for vazio.
+/// Best-effort: falha loga warn e devolve `None` — o report terminal segue.
+pub async fn upload_partial_captions(
+    s3: &Arc<dyn S3Port>,
+    job_id: &str,
+    outputs: &Path,
+) -> Option<ArtifactReport> {
+    let path = outputs.join("captions.jsonl");
+    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    if size == 0 {
+        return None;
+    }
+    match upload_one(
+        s3,
+        job_id,
+        "captions.jsonl".to_string(),
+        &path,
+        "captions",
+        outputs,
+    )
+    .await
+    {
+        Ok(rep) => Some(rep),
+        Err(e) => {
+            tracing::warn!(
+                job_id = %job_id,
+                error = %e,
+                "falha best-effort no upload de captions parciais (autolabel)"
+            );
+            None
+        }
+    }
+}
+
 /// Coleta os artefatos de geração de difusão (`generated_*`, `thumb_*`,
 /// `generation_meta.json`, `generated.png` legado) com upload via
 /// `put_with_retry`.

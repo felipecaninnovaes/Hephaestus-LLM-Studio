@@ -607,6 +607,12 @@ pub async fn preview_autotracker_boxes(
 // GET /api/jobs/:id/autolabel/preview — prévia de legendas do autolabel
 // ---------------------------------------------------------------------------
 
+/// Autolabel é revisável em `done` e também em `failed`/`cancelled`
+/// (captions parciais preservadas); ausência do artefato cai em 404.
+fn autolabel_reviewable(status: &str) -> bool {
+    matches!(status, "done" | "failed" | "cancelled")
+}
+
 /// GET /api/jobs/:id/autolabel/preview — retorna prévia das legendas geradas para curadoria humana.
 ///
 /// Status: 200 | 401 | 404 `not_found` | 409 `job_not_done` | 503 `queue_unavailable` | 503 `storage_unavailable`.
@@ -633,8 +639,8 @@ pub async fn preview_autolabel_captions(
         return not_found();
     }
 
-    // 1b. Valida status == 'done'.
-    if job.status != "done" {
+    // 1b. Valida status: done, ou failed/cancelled (legendas parciais).
+    if !autolabel_reviewable(&job.status) {
         return job_not_done();
     }
 
@@ -822,8 +828,8 @@ pub async fn apply_autolabel_captions(
         return not_found();
     }
 
-    // 2b. Valida status == 'done'.
-    if job.status != "done" {
+    // 2b. Valida status: done, ou failed/cancelled (legendas parciais).
+    if !autolabel_reviewable(&job.status) {
         return job_not_done();
     }
 

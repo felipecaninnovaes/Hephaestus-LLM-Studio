@@ -1907,9 +1907,11 @@ paths:
       description: |
         Retorna a lista de imagens e legendas geradas pelo modelo VLM a partir do artefato
         `captions.jsonl`, enriquecida com presigned URLs e legendas atuais para curadoria humana.
+        Aceita jobs `done` e também `failed`/`cancelled` (legendas parciais preservadas pelo
+        orchestrator); sem artefato `captions` ⇒ 404. Demais status ⇒ 409 `job_not_done`.
       responses:
         "200":
-          description: Amostras e legendas geradas retornadas com sucesso.
+          description: Amostras e legendas geradas retornadas com sucesso (job `done`, `failed` ou `cancelled` com artefato `captions`).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/AutolabelPreviewResponse" }
@@ -1924,7 +1926,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "409":
-          description: "Job não está `done` (`code: job_not_done`)."
+          description: "Job não está em `done`, `failed` ou `cancelled` (`code: job_not_done`)."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1946,8 +1948,8 @@ paths:
       tags: [jobs]
       summary: Aplica legendas do autolabel ao dataset
       description: |
-        Ingest do artefato `captions.jsonl` de um job autolabel `done` no dataset
-        associado (ADR-0016 D1). Merge dirigido por origem: `overwrite=false` (default)
+        Ingest do artefato `captions.jsonl` de um job autolabel `done` (ou `failed`/`cancelled`,
+        aplicando as legendas parciais preservadas) no dataset associado (ADR-0016 D1). Merge dirigido por origem: `overwrite=false` (default)
         preserva manuais e importadas e só atualiza imagens sem legenda ou com `origin='autolabel'`;
         `overwrite=true` sobrescreve inclusive anotações de origem manual e import.
       requestBody:
@@ -1957,7 +1959,7 @@ paths:
             schema: { $ref: "#/components/schemas/AutolabelApplyRequest" }
       responses:
         "200":
-          description: Legendas aplicadas com sucesso.
+          description: Legendas aplicadas com sucesso (job `done`, `failed` ou `cancelled` com artefato `captions`).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/AutolabelApplyResponse" }
@@ -1977,7 +1979,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "409":
-          description: "Job não está `done` (`code: job_not_done`) ou dataset não pronto (`code: dataset_not_ready`)."
+          description: "Job não está em `done`, `failed` ou `cancelled` (`code: job_not_done`) ou dataset não pronto (`code: dataset_not_ready`)."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }

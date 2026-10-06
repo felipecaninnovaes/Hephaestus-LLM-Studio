@@ -212,6 +212,13 @@ pub async fn report_job(
         }
 
         "failed" => {
+            // Artefatos parciais (ex.: captions de autolabel) sobrevivem ao término
+            // anormal; persistidos ANTES do status/notify para que o cliente que reage
+            // à mudança de status já os encontre.
+            if let Some(artifacts) = &report.artifacts {
+                save_intermediate_artifacts(pool, id, artifacts).await?;
+            }
+
             let mut tx = pool
                 .begin()
                 .await
@@ -244,15 +251,17 @@ pub async fn report_job(
                 .await
                 .map_err(|e| ManagerError::Internal(format!("commit report failed tx: {e}")))?;
 
-            // Artefatos parciais (ex.: captions de autolabel) sobrevivem ao término anormal.
-            if let Some(artifacts) = &report.artifacts {
-                save_intermediate_artifacts(pool, id, artifacts).await?;
-            }
-
             Ok(())
         }
 
         "cancelled" => {
+            // Artefatos parciais (ex.: captions de autolabel) sobrevivem ao término
+            // anormal; persistidos ANTES do status/notify para que o cliente que reage
+            // à mudança de status já os encontre.
+            if let Some(artifacts) = &report.artifacts {
+                save_intermediate_artifacts(pool, id, artifacts).await?;
+            }
+
             let mut tx = pool
                 .begin()
                 .await
@@ -284,11 +293,6 @@ pub async fn report_job(
             tx.commit()
                 .await
                 .map_err(|e| ManagerError::Internal(format!("commit report cancelled tx: {e}")))?;
-
-            // Artefatos parciais (ex.: captions de autolabel) sobrevivem ao término anormal.
-            if let Some(artifacts) = &report.artifacts {
-                save_intermediate_artifacts(pool, id, artifacts).await?;
-            }
 
             Ok(())
         }

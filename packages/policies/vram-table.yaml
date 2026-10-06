@@ -9,13 +9,13 @@ entries:
   - { engine: diffusion, model: flux, mode: train, vram_min_gb: 8 }
   - { engine: diffusion, model: sdxl, mode: train, vram_min_gb: 8 }
   - { engine: diffusion, model: sd15, mode: train, vram_min_gb: 5 }
-  - { engine: diffusion, model: flux2-klein-9b-8bit, mode: infer, vram_min_gb: 16 }
-  - { engine: diffusion, model: flux2-klein-9b, mode: train, vram_min_gb: 28 }
+  - { engine: diffusion, model: flux-2-klein-9b, mode: train, vram_min_gb: 12, quantization: 4bit, note: "FLUX.2 Klein base 9B. Spike RTX 3060 12GB (2026-10-06): 4-bit, batch 1, 768/1024 px, rank 16/32 OK SOMENTE com text encoder unload; pico 11,86-11,90 GiB (precompute de embeds), loop 7,4-9,0 GiB; 2,0x o tempo/step do 4B. Flags default => OOM." }
   - { engine: diffusion, model: sdxl-1.0, mode: train, vram_min_gb: 20 }
   - { engine: diffusion, model: qwen-image-2.1, mode: train, vram_min_gb: 12, quantization: 4bit, note: "Qwen3-VL-8B text encoder 4-bit quantized, RTX 3060 12GB ceiling. Sweep real medido (2026-09-27): maior config combinada estavel = resolution=768, batch_size=1, rank=32, pico ~11.4GiB (11691MiB, 95% de uma RTX 3060 12GB); dataset sintetico/uniforme de 8 imagens, margem real com dataset de producao pode ser menor." }
   # ── Difusão generate (ADR-0023 D8) — valores espelhados do handler ──
   - { engine: diffusion, model: flux-2-klein-4b, mode: generate, vram_min_gb: 8 }
   - { engine: diffusion, model: flux2-klein-4b, mode: generate, vram_min_gb: 8 }
+  - { engine: diffusion, model: flux-2-klein-9b, mode: generate, vram_min_gb: 12, quantization: 4bit, note: "Spike RTX 3060 12GB (2026-10-06): geracao 4-bit real 1024px/28 steps, pico 11,1 GiB, 7,3 s/it." }
   - { engine: diffusion, model: sdxl, mode: generate, vram_min_gb: 8 }
   - { engine: diffusion, model: sd15, mode: generate, vram_min_gb: 6 }
   - { engine: diffusion, model: qwen-image-2.1, mode: generate, vram_min_gb: 8, note: "OBSOLETO/enganoso: daemon de geracao quente esta desabilitado nesta versao (generation/runner.py retorna _die() explicito, commit 19b6e78; ver tasks/backlog.md 'Daemon de geracao Qwen-Image-2.1 nativo'). Linha mantida como registro para quando a fatia futura implementar geracao." }

@@ -416,7 +416,11 @@ def _real_generate(
                 }
                 if is_img2img:
                     flux_call_kwargs["image"] = init_image
-                with torch.inference_mode():
+                # no_grad (não inference_mode): os hooks de cpu-offload movem os pesos
+                # DENTRO do contexto e, em inference_mode, os parâmetros LoRA viram
+                # "inference tensors" — o próximo set_adapters() do daemon quente
+                # (requires_grad) falharia ("Setting requires_grad=True on inference tensor").
+                with torch.no_grad():
                     try:
                         image = call_pipe(**flux_call_kwargs, **sampler_cb_kwargs).images[0]
                     except TypeError as exc:

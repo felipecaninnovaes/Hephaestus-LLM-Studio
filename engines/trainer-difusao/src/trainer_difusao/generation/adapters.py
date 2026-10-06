@@ -91,6 +91,18 @@ def count_injected_lora_modules(pipe: Any, adapter_name: str) -> int | None:
     return total
 
 
+def _is_model_cpu_offloaded(pipe: Any) -> bool:
+    """True se o pipeline usa `enable_model_cpu_offload` (hooks accelerate CpuOffload)."""
+    components = getattr(pipe, "components", None)
+    if not isinstance(components, dict):
+        return False
+    try:
+        from accelerate.hooks import CpuOffload
+    except ImportError:
+        return False
+    return any(isinstance(getattr(c, "_hf_hook", None), CpuOffload) for c in components.values())
+
+
 class DaemonLoraCache:
     """Gerencia adaptadores LoRA nomeados carregados no pipeline via LRU.
 
@@ -196,13 +208,16 @@ class DaemonLoraCache:
                     f"[DIFFUSION-GEN] Carregando LoRA {name}: {path} (scale={scale})",
                     flush=True,
                 )
+                load_arg = prepare_lora_for_load(path, base_model)
+                offloaded = _is_model_cpu_offloaded(pipe)
                 try:
-                    pipe.load_lora_weights(
-                        prepare_lora_for_load(path, base_model), adapter_name=name
-                    )
-                except LoraLoadError:
-                    raise
+                    pipe.load_lora_weights(load_arg, adapter_name=name)
                 except Exception as exc:
+                    # diffusers remove os hooks de offload antes de injetar e só os
+                    # recoloca no caminho de sucesso: sem isto o pipeline quente fica
+                    # sem offload (device errado) após uma LoRA inválida.
+                    if offloaded:
+                        pipe.enable_model_cpu_offload()
                     raise LoraLoadError(
                         f"Falha ao carregar LoRA {path}: {exc}"
                     ) from exc

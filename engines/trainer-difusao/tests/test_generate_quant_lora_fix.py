@@ -377,6 +377,46 @@ class TestApplyLorasRemapAndScales(unittest.TestCase):
         self.assertEqual(cache.key_to_name, {})
 
 
+class TestFailedLoadRestoresOffload(unittest.TestCase):
+    """diffusers remove os hooks de offload antes de injetar e não os recoloca se falhar."""
+
+    def _fail_pipe(self):
+        class Pipe(_FakeLoraPipe):
+            restored = 0
+
+            def load_lora_weights(self, src, adapter_name):
+                raise ValueError("size mismatch")
+
+            def enable_model_cpu_offload(self):
+                type(self).restored += 1
+
+        return Pipe()
+
+    def test_offload_reenabled_and_error_names_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            f = _write(Path(td) / "m.safetensors", ["transformer.x.lora_A.weight"])
+            pipe = self._fail_pipe()
+            with mock.patch(
+                "trainer_difusao.generation.adapters._is_model_cpu_offloaded",
+                return_value=True,
+            ), self.assertRaises(LoraLoadError) as cm:
+                DaemonLoraCache(capacity=2).apply_loras(
+                    pipe, [{"path": f, "scale": 1.0}], "flux-2-klein-4b"
+                )
+            self.assertIn(f, str(cm.exception))
+            self.assertEqual(type(pipe).restored, 1)
+
+    def test_no_reenable_without_offload(self):
+        with tempfile.TemporaryDirectory() as td:
+            f = _write(Path(td) / "m.safetensors", ["transformer.x.lora_A.weight"])
+            pipe = self._fail_pipe()
+            with self.assertRaises(LoraLoadError):
+                DaemonLoraCache(capacity=2).apply_loras(
+                    pipe, [{"path": f, "scale": 1.0}], "flux-2-klein-4b"
+                )
+            self.assertEqual(type(pipe).restored, 0)
+
+
 def _tiny_flux():
     from diffusers import Flux2Transformer2DModel
 

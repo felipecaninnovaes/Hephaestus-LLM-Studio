@@ -1,16 +1,39 @@
 //! Ciclo de vida do daemon de inferência (D1).
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use tokio::time::Instant;
 
 use super::client::HttpDaemonClient;
 use super::state::DaemonState;
+
+/// Teto da espera de readiness (`/health` ok) após subir o container: cobre
+/// imports Python/CUDA a frio (~10s medidos) com folga para nó lento.
+pub const DEFAULT_READY_TIMEOUT: Duration = Duration::from_secs(120);
+const READY_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Garante que o daemon está de pé e com a spec correta.
 /// Retorna a URL do daemon. Erro → job falha honesto.
 pub async fn ensure_daemon_ready(
     daemon_state: &DaemonState,
+    target_spec: &str,
+) -> Result<String, String> {
+    ensure_daemon_ready_with(
+        daemon_state,
+        target_spec,
+        DEFAULT_READY_TIMEOUT,
+        READY_POLL_INTERVAL,
+    )
+    .await
+}
+
+/// `ensure_daemon_ready` com timeout/intervalo de poll explícitos (testável).
+pub async fn ensure_daemon_ready_with(
+    daemon_state: &DaemonState,
     _target_spec: &str,
+    ready_timeout: Duration,
+    poll_interval: Duration,
 ) -> Result<String, String> {
     if !daemon_state.is_running() {
         // Sobe o daemon via launcher armazenado no state
@@ -24,8 +47,8 @@ pub async fn ensure_daemon_ready(
         .get_url()
         .ok_or_else(|| "daemon URL not set after start".to_string())?;
 
-    // Poll health com timeout (~60s, spec)
-    let deadline = Instant::now() + Duration::from_secs(60);
+    // Poll health até o daemon responder ok (container recém-subido recusa conexão).
+    let deadline = Instant::now() + ready_timeout;
     loop {
         // Clone do Arc antes de await — lock liberado imediatamente
         let client = daemon_state.client.read().unwrap().clone();
@@ -40,10 +63,13 @@ pub async fn ensure_daemon_ready(
             // Timeout — mata o daemon e retorna erro
             let _ = daemon_state.launcher.kill().await;
             daemon_state.set_running(false, None);
-            return Err("daemon health timeout after 60s".to_string());
+            return Err(format!(
+                "daemon health timeout after {}s",
+                ready_timeout.as_secs()
+            ));
         }
 
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(poll_interval).await;
     }
 
     // Atualiza spec carregada (D1: health consulted for loaded_spec)

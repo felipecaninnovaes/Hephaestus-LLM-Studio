@@ -126,9 +126,12 @@ async fn main() {
         let daemon_volumes: Vec<(String, String)> = vec![
             (
                 cfg.daemon.vol_datasets.clone(),
-                "/data/datasets".to_string(),
+                orchestrator::daemon::DAEMON_DATASETS_MOUNT.to_string(),
             ),
-            (cfg.daemon.vol_outputs.clone(), "/data/outputs".to_string()),
+            (
+                cfg.daemon.vol_outputs.clone(),
+                orchestrator::daemon::DAEMON_OUTPUTS_MOUNT.to_string(),
+            ),
         ];
 
         // Mesmas envs do one-shot: ENGINE_MOCK=0 quando GPU, HF cache paths, etc.
@@ -137,31 +140,31 @@ async fn main() {
             daemon_env.push(("ENGINE_MOCK".to_string(), "0".to_string()));
         }
         // Pilar B (no-gpu-reuso-dataset-embeds): mesmo contrato do one-shot,
-        // path namespaced ao mount do daemon (/data/outputs).
+        // path no mount do daemon (/outputs, igual ao one-shot).
         daemon_env.push((
             "TEXT_EMBEDS_CACHE_DIR".to_string(),
-            "/data/outputs/.text_embeds_cache".to_string(),
+            "/outputs/.text_embeds_cache".to_string(),
         ));
         // HF cache paths para diffusion (igual one-shot L1473-1493)
         daemon_env.push((
             "HF_HOME".to_string(),
-            "/data/outputs/.cache/huggingface".to_string(),
+            "/outputs/.cache/huggingface".to_string(),
         ));
         daemon_env.push((
             "HF_HUB_CACHE".to_string(),
-            "/data/outputs/.cache/huggingface/hub".to_string(),
+            "/outputs/.cache/huggingface/hub".to_string(),
         ));
         daemon_env.push((
             "TRANSFORMERS_CACHE".to_string(),
-            "/data/outputs/.cache/huggingface/hub".to_string(),
+            "/outputs/.cache/huggingface/hub".to_string(),
         ));
         daemon_env.push((
             "DIFFUSERS_CACHE".to_string(),
-            "/data/outputs/.cache/huggingface/hub".to_string(),
+            "/outputs/.cache/huggingface/hub".to_string(),
         ));
         daemon_env.push((
             "TORCH_HOME".to_string(),
-            "/data/outputs/.cache/torch".to_string(),
+            "/outputs/.cache/torch".to_string(),
         ));
         daemon_env.push(("HF_HUB_DISABLE_XET".to_string(), "1".to_string()));
         daemon_env.push(("HF_HUB_ENABLE_HF_TRANSFER".to_string(), "0".to_string()));

@@ -1,8 +1,8 @@
 # ADR-0026 — FLUX.2 Klein 9B (base) como arquitetura `flux-2-klein-9b`
 
-Data: 2026-10-06 · Status: ACEITA (usuário) · Fatias: backend `6e1715a`
-(OpenAPI 0.31.0, migration 0025), fix de geração `ea2ed14`, web `f13dfd1`,
-engine `feat/flux2-klein-9b-engine` (`0625d3c`)
+Data: 2026-10-06 · Status: ACEITA (usuário) · Fatias (merges em develop):
+backend `6e1715a` (OpenAPI 0.31.0, migration 0025), fix de geração `ea2ed14`,
+web `f13dfd1`, engine `2dddcb7`
 
 ## Contexto
 
@@ -63,3 +63,10 @@ do engine (ver PITFALLS, seção Engines).
   filtrado por arch.
 - Daemon de geração mantém um pipeline por vez; troca 9B↔4B recarrega
   (spec/cache key já carregam `base_model`).
+- O smoke E2E do 9B achou três bugs (ver PITFALLS § Orquestração):
+  `vram_min_gb` gravado com o pico (12) somava o headroom e deixava o job em
+  `waiting_vram` na RTX 3060 — corrigido para 10 (`33b2a5a`); o daemon
+  derrubava gerações longas por timeout total de 30 s no `POST /generate` e
+  montava `/data/{datasets,outputs}` em vez de `/outputs`/`/datasets`,
+  descartando LoRAs em silêncio (`d651432`, `a27125a`, `c423524`; merges
+  `6dde0b8`, `1cc9c99`).

@@ -20,7 +20,7 @@ Ao receber um job de treinamento, o orchestrator instancia as engines especializ
   - Os containers de treino são anexados explicitamente à rede Docker interna configurada por `ENGINE_NETWORK` (geralmente `${COMPOSE_PROJECT_NAME:-infra}_default`).
   - As engines comunicam-se com o endpoint S3 do SeaweedFS para download do dataset e upload dos checkpoints gerados sem expor nenhuma porta ao host.
 - **Isolamento de Volumes:**
-  - Monta diretórios dedicados de trabalho em `/data` (`/data/datasets`, `/data/models`, `/data/outputs`), permitindo reutilização de caches locais e persistência segura dos artefatos.
+  - O orchestrator enxerga os volumes de trabalho em `/data/datasets` e `/data/outputs` (mounts do compose; `ORCH_VOL_DATASETS`/`ORCH_VOL_OUTPUTS` = nome do volume Docker repassado ao `docker run`). Containers de engine — one-shot e daemon de difusão — recebem os mesmos volumes em `/datasets` e `/outputs` (`DAEMON_DATASETS_MOUNT`/`DAEMON_OUTPUTS_MOUNT` em `daemon/types.rs`), então todo path staged no `config.yaml` vale nos dois sem tradução.
 
 ## Varredura e Limpeza de Containers Órfãos (Sweep & Reaper)
 
@@ -75,3 +75,6 @@ Para possibilitar geração rápida e interativa de imagens via playground sem i
 - **Terminação Forçada com `kill_on_drop`:**
   - Todo comando assíncrono ou subprocesso Tokio spawnado pelo `orchestrator` (seja o client Docker CLI ou o daemon de difusão) é configurado com `cmd.kill_on_drop(true)`.
   - Se a task assíncrona for cancelada (por exemplo, timeout ou abort solicitado pelo usuário), a destruição do handle do processo (`Drop`) emite imediatamente um sinal de encerramento (`SIGKILL`), impedindo a existência de processos zumbis na GPU.
+- **Mounts do daemon:** idênticos aos do one-shot (`/datasets`, `/outputs`); `GenerateBody::for_job` envia `output_dir`/`telemetry_path` como `/outputs/<job>`. Mudança de mount só vale com o container `diffusion-daemon` recriado.
+- **Timeouts por chamada (`daemon/client.rs`, `daemon/lifecycle.rs`):** sem timeout global no client (só `connect_timeout` de 5 s); `POST /generate` usa `DEFAULT_GENERATE_TIMEOUT` (30 min — a resposta só chega no fim da geração, incluindo carga a frio); `/health` e `/shutdown` usam `SHORT_CALL_TIMEOUT` (30 s); a readiness após subir o container faz poll de `/health` até `DEFAULT_READY_TIMEOUT` (120 s). Estouro do `/generate` falha o job com "daemon generate timed out after Ns (daemon may still be running)".
+- **Input pedido inexistente:** LoRA, checkpoint custom, text encoder ou imagem init cujo path não existe no container faz o engine responder HTTP 500 `generation_failed` (`MissingInputError`) antes de carregar o pipeline; o orchestrator falha o job — nunca gera com o modelo base em silêncio.

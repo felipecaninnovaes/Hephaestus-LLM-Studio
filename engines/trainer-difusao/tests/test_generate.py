@@ -1147,11 +1147,16 @@ class TestImg2ImgValidation(_BaseGenerateTest):
                 self._cfg_with_init(init_image_path=str(init), init_strength=0.96)
             )
 
-    def test_nonexistent_path_fails(self):
-        with self.assertRaises(SystemExit):
-            load_and_validate_generate_config(
-                self._cfg_with_init(init_image_path="/nao/existe/init.png")
-            )
+    def test_nonexistent_path_fails_in_preflight(self):
+        """Existência do init_image é checada em check_requested_inputs (não na validação)."""
+        from trainer_difusao.generation.config import check_requested_inputs
+
+        params = load_and_validate_generate_config(
+            self._cfg_with_init(init_image_path="/nao/existe/init.png")
+        )
+        with self.assertRaises(MissingInputError) as ctx:
+            check_requested_inputs(params)
+        self.assertIn("/nao/existe/init.png", str(ctx.exception))
 
     def test_empty_path_fails(self):
         with self.assertRaises(SystemExit):

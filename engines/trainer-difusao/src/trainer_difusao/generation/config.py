@@ -205,8 +205,6 @@ def load_and_validate_generate_config(cfg: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(raw_init_path, str) or not raw_init_path.strip():
             _die("Campo 'init_image_path' deve ser uma string não vazia.")
         init_image_path = raw_init_path.strip()
-        if not os.path.isfile(init_image_path):
-            _die(f"init_image_path não encontrado: {init_image_path}")
         if raw_init_strength is None:
             init_strength = 0.6
         else:
@@ -297,11 +295,11 @@ def _resolve_loras_from_legacy(params: dict[str, Any]) -> list[dict[str, Any]]:
 def check_requested_inputs(params: dict[str, Any]) -> None:
     """Falha cedo (antes de carregar o pipeline) se algum input pedido não existe.
 
-    Cobre LoRAs/weights_path, custom_checkpoint_path e text_encoder_path.
-    (init_image_path já é validado em `load_and_validate_generate_config`.)
+    Cobre LoRAs/weights_path, custom_checkpoint_path, text_encoder_path e
+    init_image_path (a validação de formato fica em `load_and_validate_generate_config`).
     """
     _resolve_loras_from_legacy(params)
-    for key in ("custom_checkpoint_path", "text_encoder_path"):
+    for key in ("custom_checkpoint_path", "text_encoder_path", "init_image_path"):
         path = params.get(key)
         if path and not os.path.exists(path):
             raise MissingInputError(f"{key} não existe: {path} — requisição abortada")

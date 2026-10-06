@@ -697,6 +697,11 @@ class TestLoraFailureIsExplicit(_BaseServeTest):
         del body["config"]["generate"]["base_model"]
         self._assert_missing_input_500(body, missing)
 
+    def test_missing_init_image_returns_500_naming_path(self):
+        missing = "/datasets/init_ausente.png"
+        body = self._make_config(init_image_path=missing)
+        self._assert_missing_input_500(body, missing)
+
     def test_existing_lora_still_returns_200(self):
         lora = self.tmp_path / "ok.safetensors"
         lora.touch()

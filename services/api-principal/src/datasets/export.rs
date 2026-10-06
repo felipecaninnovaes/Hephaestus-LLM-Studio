@@ -14,16 +14,16 @@ use std::path::{Path, PathBuf};
 
 use axum::{
     body::Body,
-    extract::{Path as AxumPath, State},
+    extract::{Path as AxumPath, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
 use chrono::Utc;
 use uuid::Uuid;
 
-use super::models::parse_id;
+use super::models::{category_task_of, parse_id};
 use crate::{
-    error::{err, MSG_NOT_FOUND, MSG_STORAGE_UNAVAILABLE},
+    error::{err, MSG_INVALID_REQUEST, MSG_NOT_FOUND, MSG_STORAGE_UNAVAILABLE},
     state::AppState,
     storage::StorageError,
 };
@@ -405,15 +405,106 @@ pub fn content_disposition(slug: &str) -> String {
     format!("attachment; filename=\"{slug}.zip\"")
 }
 
+/// `Content-Disposition` do layout `captions` (`{slug}-captions.zip`).
+pub fn captions_content_disposition(slug: &str) -> String {
+    format!("attachment; filename=\"{slug}-captions.zip\"")
+}
+
+/// Query do export: `?layout=backup|captions` (ausente ⇒ backup).
+#[derive(serde::Deserialize)]
+pub struct ExportQuery {
+    pub layout: Option<String>,
+}
+
+/// `layout` desconhecido.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidLayout;
+
+/// Layout do zip exportado.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportLayout {
+    Backup,
+    Captions,
+}
+
+impl ExportLayout {
+    /// `None`/`backup` ⇒ Backup; `captions` ⇒ Captions; resto ⇒ `Err`.
+    pub fn parse(raw: Option<&str>) -> Result<Self, InvalidLayout> {
+        match raw {
+            None | Some("backup") => Ok(Self::Backup),
+            Some("captions") => Ok(Self::Captions),
+            Some(_) => Err(InvalidLayout),
+        }
+    }
+}
+
+/// Par imagem + `.txt` do layout `captions`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaptionPair {
+    pub image_arcname: String,
+    pub txt_arcname: String,
+    /// Caption crua (trim), vazia quando ausente.
+    pub text: String,
+}
+
+/// Pares `images/<nome>` + `images/<stem>.txt` (puro). Esquema de colisão
+/// (mesmo espírito de `label_arcname_for`): a primeira imagem com um stem o
+/// mantém; em colisão (`a.png` + `a.jpg`) a corrente recebe o stem
+/// `{stem}_{ext}` (e `_2`, `_3`… se ainda ocupado) e AMBOS os arcnames
+/// (imagem e txt) usam esse stem — o pareamento kohya por stem permanece
+/// inequívoco. Ordem de entrada ⇒ determinístico.
+pub fn build_caption_pairs(images: &[(String, Option<String>)]) -> Vec<CaptionPair> {
+    let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(images.len());
+    for (filename, caption) in images {
+        let stem = stem_of(filename);
+        let mut chosen = stem.to_string();
+        if !used.insert(chosen.clone()) {
+            let base = format!("{stem}_{}", ext_of(filename));
+            chosen = base.clone();
+            let mut n = 2;
+            while !used.insert(chosen.clone()) {
+                chosen = format!("{base}_{n}");
+                n += 1;
+            }
+            eprintln!(
+                "[export] captions de mesmo stem colidem; {filename} renomeado para stem {chosen}"
+            );
+        }
+        let image_name = if chosen == stem {
+            filename.clone()
+        } else {
+            match filename.rsplit_once('.') {
+                Some((s, ext)) if !s.is_empty() => format!("{chosen}.{ext}"),
+                _ => chosen.clone(),
+            }
+        };
+        out.push(CaptionPair {
+            image_arcname: format!("images/{image_name}"),
+            txt_arcname: format!("images/{chosen}.txt"),
+            text: caption.as_deref().unwrap_or("").trim().to_string(),
+        });
+    }
+    out
+}
+
 /// POST /api/datasets/:id/export — 200 zip | 404 `not_found` | 503
 /// `storage_unavailable`. 401 vem do gate, nunca daqui.
 pub async fn export_dataset(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
+    Query(q): Query<ExportQuery>,
 ) -> Response {
     let id = match parse_id(&id) {
         Some(v) => v,
         None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
+    };
+    let Ok(layout) = ExportLayout::parse(q.layout.as_deref()) else {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            MSG_INVALID_REQUEST,
+        );
     };
     // Dataset (slug/title/type/format p/ o manifest).
     let ds: Option<(String, String, String, String)> =
@@ -429,6 +520,17 @@ pub async fn export_dataset(
         Some(r) => r,
         None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
     };
+    if layout == ExportLayout::Captions {
+        // Antes de qualquer download: só diffusion tem caption-txt.
+        if category_task_of(&dataset_type).map(|(c, _)| c) != Ok("difusao") {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                MSG_INVALID_REQUEST,
+            );
+        }
+        return export_captions_layout(&state, id, &slug).await;
+    }
     // Classes ordenadas por idx (posição = class_idx do manifest).
     let class_rows: Vec<(Uuid, String, i32, String)> = match sqlx::query_as(
         "SELECT id, name, idx, color FROM classes WHERE dataset_id = $1 ORDER BY idx",
@@ -654,6 +756,16 @@ pub async fn export_dataset(
         });
     }
 
+    stream_zip(tmp, entries, &slug, content_disposition(&slug)).await
+}
+
+/// Fases B+C: zip sync em `spawn_blocking` e stream do arquivo spoolado.
+async fn stream_zip(
+    tmp: tempfile::TempDir,
+    entries: Vec<ZipEntry>,
+    slug: &str,
+    disposition: String,
+) -> Response {
     // Fase B: zip sync em spawn_blocking.
     let zip_path = tmp.path().join(format!("{slug}.zip"));
     let zip_path_blocking = zip_path.clone();
@@ -685,15 +797,94 @@ pub async fn export_dataset(
                 axum::http::header::CONTENT_TYPE,
                 "application/zip".to_string(),
             ),
-            (
-                axum::http::header::CONTENT_DISPOSITION,
-                content_disposition(&slug),
-            ),
+            (axum::http::header::CONTENT_DISPOSITION, disposition),
             (axum::http::header::CONTENT_LENGTH, len.to_string()),
         ],
         body,
     )
         .into_response()
+}
+
+/// Layout `captions` (download-only, NÃO reimportável): só `images/{img}` +
+/// `images/{stem}.txt`, sem manifest/labels/captions.jsonl/dataset.yaml.
+/// Não consulta classes nem boxes. Órfã (objeto ausente) ⇒ skip + eprintln.
+async fn export_captions_layout(state: &AppState, id: Uuid, slug: &str) -> Response {
+    let image_rows: Vec<(Uuid, String, String)> = match sqlx::query_as(
+        "SELECT id, filename, object_key FROM images WHERE dataset_id = $1 AND deleted_at IS NULL ORDER BY created_at, id",
+    )
+    .bind(id)
+    .fetch_all(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => return internal(),
+    };
+    let caption_rows: Vec<(Uuid, String)> = match sqlx::query_as(
+        "SELECT c.image_id, c.text FROM captions c JOIN images i ON i.id = c.image_id WHERE i.dataset_id = $1 AND i.deleted_at IS NULL",
+    )
+    .bind(id)
+    .fetch_all(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => return internal(),
+    };
+    let mut caption_by_image: HashMap<Uuid, String> = caption_rows.into_iter().collect();
+    let tmp = match tempfile::TempDir::new() {
+        Ok(d) => d,
+        Err(_) => return internal(),
+    };
+    let images_dir = tmp.path().join("images");
+    if tokio::fs::create_dir_all(&images_dir).await.is_err() {
+        return internal();
+    }
+    let mut exported: Vec<(String, Option<String>)> = Vec::new();
+    for (img_id, filename, object_key) in image_rows {
+        match state
+            .storage
+            .get_to_file(&object_key, &images_dir.join(&filename))
+            .await
+        {
+            Ok(()) => exported.push((filename, caption_by_image.remove(&img_id))),
+            Err(StorageError::NotFound) => {
+                eprintln!("aviso: export pulou imagem órfã {img_id} ({filename}) — objeto ausente");
+            }
+            Err(StorageError::Unavailable(_)) => {
+                return err(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "storage_unavailable",
+                    MSG_STORAGE_UNAVAILABLE,
+                );
+            }
+        }
+    }
+    let mut entries: Vec<ZipEntry> = Vec::with_capacity(exported.len() * 2);
+    let txt_dir = tmp.path().join("txt");
+    if tokio::fs::create_dir_all(&txt_dir).await.is_err() {
+        return internal();
+    }
+    for (n, (pair, (filename, _))) in build_caption_pairs(&exported)
+        .into_iter()
+        .zip(&exported)
+        .enumerate()
+    {
+        // Arquivo temporário por índice (arcname pode divergir do filename).
+        let txt_path = txt_dir.join(format!("{n}.txt"));
+        if tokio::fs::write(&txt_path, &pair.text).await.is_err() {
+            return internal();
+        }
+        entries.push(ZipEntry {
+            arcname: pair.image_arcname,
+            fs_path: images_dir.join(filename),
+            is_text: false,
+        });
+        entries.push(ZipEntry {
+            arcname: pair.txt_arcname,
+            fs_path: txt_path,
+            is_text: true,
+        });
+    }
+    stream_zip(tmp, entries, slug, captions_content_disposition(slug)).await
 }
 
 #[cfg(test)]
@@ -1147,8 +1338,82 @@ mod tests {
         let resp = export_dataset(
             axum::extract::State(state),
             axum::extract::Path("nao-e-uuid".to_string()),
+            axum::extract::Query(ExportQuery { layout: None }),
         )
         .await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn layout_parse_default_backup_captions_e_desconhecido() {
+        assert_eq!(ExportLayout::parse(None), Ok(ExportLayout::Backup));
+        assert_eq!(
+            ExportLayout::parse(Some("backup")),
+            Ok(ExportLayout::Backup)
+        );
+        assert_eq!(
+            ExportLayout::parse(Some("captions")),
+            Ok(ExportLayout::Captions)
+        );
+        assert_eq!(ExportLayout::parse(Some("Captions")), Err(InvalidLayout));
+        assert_eq!(ExportLayout::parse(Some("")), Err(InvalidLayout));
+        assert_eq!(ExportLayout::parse(Some("zip")), Err(InvalidLayout));
+    }
+
+    #[test]
+    fn captions_colisao_de_stem_renomeia_imagem_e_txt_juntos() {
+        let pairs = build_caption_pairs(&[
+            ("a.png".to_string(), Some("  um gato \n".to_string())),
+            ("a.jpg".to_string(), Some("um cachorro".to_string())),
+            ("b.png".to_string(), Some("b".to_string())),
+        ]);
+        assert_eq!(pairs[0].image_arcname, "images/a.png");
+        assert_eq!(pairs[0].txt_arcname, "images/a.txt");
+        assert_eq!(pairs[0].text, "um gato");
+        // Colisão: imagem E txt compartilham o stem desambiguado.
+        assert_eq!(pairs[1].image_arcname, "images/a_jpg.jpg");
+        assert_eq!(pairs[1].txt_arcname, "images/a_jpg.txt");
+        assert_eq!(pairs[1].text, "um cachorro");
+        assert_eq!(pairs[2].image_arcname, "images/b.png");
+        assert_eq!(pairs[2].txt_arcname, "images/b.txt");
+        // Todo arcname único e cada txt tem o mesmo stem da sua imagem.
+        let mut all: Vec<&str> = pairs
+            .iter()
+            .flat_map(|p| [p.image_arcname.as_str(), p.txt_arcname.as_str()])
+            .collect();
+        let n = all.len();
+        all.sort();
+        all.dedup();
+        assert_eq!(all.len(), n);
+        for p in &pairs {
+            assert_eq!(stem_of(&p.image_arcname), stem_of(&p.txt_arcname));
+        }
+    }
+
+    #[test]
+    fn captions_stem_desambiguado_que_colide_com_outro_arquivo_segue_unico() {
+        let pairs = build_caption_pairs(&[
+            ("a.png".to_string(), None),
+            ("a_jpg.png".to_string(), None),
+            ("a.jpg".to_string(), None),
+        ]);
+        let txts: std::collections::HashSet<&str> =
+            pairs.iter().map(|p| p.txt_arcname.as_str()).collect();
+        assert_eq!(txts.len(), 3);
+        for p in &pairs {
+            assert_eq!(stem_of(&p.image_arcname), stem_of(&p.txt_arcname));
+        }
+    }
+
+    #[test]
+    fn captions_sem_caption_gera_txt_vazio_e_nao_vaza_trigger() {
+        let pairs = build_caption_pairs(&[
+            ("x.jpg".to_string(), None),
+            ("y.jpg".to_string(), Some("   ".to_string())),
+        ]);
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0].txt_arcname, "images/x.txt");
+        assert_eq!(pairs[0].text, "");
+        assert_eq!(pairs[1].text, "");
     }
 }

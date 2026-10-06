@@ -13,11 +13,15 @@ function filenameFromDisposition(
 }
 
 /** Exporta o dataset como .zip: fetch binário raw (cookie) + download via <a>. */
+export type ExportLayout = "backup" | "captions";
+
 export async function exportDataset(
   id: string,
   slugFallback: string,
+  layout: ExportLayout = "backup",
 ): Promise<void> {
-  const res = await fetch(`/api/datasets/${id}/export`, {
+  const query = layout === "captions" ? "?layout=captions" : "";
+  const res = await fetch(`/api/datasets/${id}/export${query}`, {
     method: "POST",
     credentials: "same-origin",
   });
@@ -38,7 +42,7 @@ export async function exportDataset(
   const blob = await res.blob();
   const filename = filenameFromDisposition(
     res.headers.get("content-disposition"),
-    `${slugFallback}.zip`,
+    layout === "captions" ? `${slugFallback}-captions.zip` : `${slugFallback}.zip`,
   );
   const url = URL.createObjectURL(blob);
   try {

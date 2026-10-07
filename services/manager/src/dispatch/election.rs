@@ -269,10 +269,11 @@ mod tests {
         }]
     }
 
-    /// Regressão (job 644afe63): com a tabela real, Klein 9B (train e generate)
-    /// e 4B elegem uma GPU de 12288 MiB; `vram_min_gb` exclui o headroom.
+    /// Regressão (job 644afe63): com a tabela real, Klein 9B (train e generate),
+    /// 4B e Qwen-Image-2.1 (train) elegem uma GPU de 12288 MiB; `vram_min_gb`
+    /// exclui o headroom.
     #[test]
-    fn tabela_real_klein_elege_gpu_12gb() {
+    fn tabela_real_difusao_elege_gpu_12gb() {
         let vt = VramTable::parse(include_str!(
             "../../../../packages/policies/vram-table.yaml"
         ))
@@ -283,6 +284,7 @@ mod tests {
             ("flux-2-klein-9b", "generate"),
             ("flux-2-klein-4b", "train"),
             ("flux-2-klein-4b", "generate"),
+            ("qwen-image-2.1", "train"),
         ] {
             let required = vt.resolve_required_gb("diffusion", model, mode);
             assert!(required.is_some(), "{model}/{mode} sem linha na tabela");

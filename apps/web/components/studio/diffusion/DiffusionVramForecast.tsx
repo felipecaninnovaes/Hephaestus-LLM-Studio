@@ -6,15 +6,15 @@ import type { OomRisk } from "@/hooks/useVramEstimator";
 
 export interface DiffusionVramForecastProps {
   estimatedVram: number;
-  nodeVramTotalGb: number | null;
-  deviceLabel: string;
+  gpuVramTotalGb: number | null;
+  deviceLabel: string | null;
   oomRisk: OomRisk;
   onAutoFixSafeParams: () => void;
 }
 
 export function DiffusionVramForecast({
   estimatedVram,
-  nodeVramTotalGb,
+  gpuVramTotalGb,
   deviceLabel,
   oomRisk,
   onAutoFixSafeParams,
@@ -43,7 +43,7 @@ export function DiffusionVramForecast({
                 : "text-zinc-100"
           }`}
         >
-          ~{estimatedVram} GB {nodeVramTotalGb ? `/ ${nodeVramTotalGb} GB` : ""}
+          ~{estimatedVram} GB {gpuVramTotalGb ? `/ ${gpuVramTotalGb} GB` : ""}
         </span>
       </div>
 
@@ -51,20 +51,23 @@ export function DiffusionVramForecast({
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-800/80 border border-white/5">
         <div
           className={`h-full rounded-full transition-all duration-300 motion-reduce:transition-none ${
-            oomRisk === "danger"
-              ? "bg-rose-500"
-              : oomRisk === "warning"
-                ? "bg-amber-400"
-                : "bg-brand-500"
+            gpuVramTotalGb == null
+              ? "bg-zinc-600"
+              : oomRisk === "danger"
+                ? "bg-rose-500"
+                : oomRisk === "warning"
+                  ? "bg-amber-400"
+                  : "bg-brand-500"
           }`}
           style={{
-            width: `${Math.min(
-              100,
-              Math.max(
-                6,
-                Math.round((estimatedVram / (nodeVramTotalGb || 24)) * 100),
-              ),
-            )}%`,
+            width: `${
+              gpuVramTotalGb == null
+                ? 6
+                : Math.min(
+                    100,
+                    Math.max(6, Math.round((estimatedVram / gpuVramTotalGb) * 100)),
+                  )
+            }%`,
           }}
         />
       </div>
@@ -76,9 +79,9 @@ export function DiffusionVramForecast({
         </span>
         <span
           className="text-zinc-300 truncate max-w-[200px]"
-          title={deviceLabel}
+          title={deviceLabel ?? undefined}
         >
-          {deviceLabel}
+          {deviceLabel ?? "GPU não medida"}
         </span>
       </div>
 
@@ -106,8 +109,8 @@ export function DiffusionVramForecast({
               <p className="text-zinc-300 leading-snug">
                 {oomRisk === "danger"
                   ? `A configuração selecionada requer ~${estimatedVram} GB de VRAM${
-                      nodeVramTotalGb
-                        ? ` (capacidade do nó: ${nodeVramTotalGb} GB)`
+                      gpuVramTotalGb
+                        ? ` (capacidade da GPU alvo: ${gpuVramTotalGb} GB)`
                         : ""
                     }. O job provavelmente falhará por falta de memória.`
                   : `A estimativa de ~${estimatedVram} GB opera próxima ao limite máximo de alocação da GPU.`}

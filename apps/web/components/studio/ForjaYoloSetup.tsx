@@ -16,7 +16,6 @@ import {
 	type SelectRefHandle,
 } from "@/components/ui/Select";
 import { showToast } from "@/components/ui/Toast";
-import { useHardwareTelemetry } from "@/hooks/useHardwareTelemetry";
 import { useVramEstimator } from "@/hooks/useVramEstimator";
 import { ApiError } from "@/lib/api";
 import {
@@ -25,6 +24,7 @@ import {
 	trainDisabledReason,
 } from "@/lib/datasets";
 import { formatBytes } from "@/lib/format";
+import { resolveTargetGpu } from "@/lib/gpuCapacity";
 import { startYoloJob } from "@/lib/jobs";
 import { listModels } from "@/lib/models";
 import type { Orchestrator } from "@/lib/monitoring";
@@ -160,8 +160,6 @@ export default function ForjaYoloSetup({
     if (initialOutputName) setOutputName(initialOutputName);
   }, [initialDatasetId, initialParams, initialWeightsId, initialOutputName]);
 
-  // Telemetria de hardware e VRAM do nó
-  const { nodeVramTotalGb, deviceLabel } = useHardwareTelemetry();
   // Estimativa preditiva de VRAM em GB
   const estimatedVram = useMemo(
 		() =>
@@ -174,7 +172,18 @@ export default function ForjaYoloSetup({
     [params.model, params.batch, params.imgsz, params.optimizer],
   );
 
-  const { oomRisk } = useVramEstimator(estimatedVram, nodeVramTotalGb, 0.8);
+  // Risco de OOM contra a GPU em que o job de fato roda (não a soma da telemetria global)
+  const targetGpu = useMemo(
+    () =>
+      resolveTargetGpu(
+        orchestratorsList,
+        selectedOrchestratorId,
+        selectedGpuDevice,
+      ),
+    [orchestratorsList, selectedOrchestratorId, selectedGpuDevice],
+  );
+  const gpuVramTotalGb = targetGpu?.vramTotalGb ?? null;
+  const { oomRisk } = useVramEstimator(estimatedVram, gpuVramTotalGb, 0.8);
 
   const handleParamChange = <K extends keyof YoloHyperparametersValues>(
     key: K,
@@ -537,7 +546,7 @@ export default function ForjaYoloSetup({
             }`}
           >
 						~{estimatedVram} GB{" "}
-						{nodeVramTotalGb ? `/ ${nodeVramTotalGb} GB` : ""}
+						{gpuVramTotalGb ? `/ ${gpuVramTotalGb} GB` : ""}
           </span>
         </div>
 
@@ -545,20 +554,23 @@ export default function ForjaYoloSetup({
         <div className="h-1.5 w-full overflow-hidden rounded-full bg-black/40 border border-white/10">
           <div
             className={`h-full rounded-full transition-all duration-300 motion-reduce:transition-none ${
-              oomRisk === "danger"
-                ? "bg-rose-500"
-                : oomRisk === "warning"
-                  ? "bg-amber-400"
-                  : "bg-brand-500"
+              gpuVramTotalGb == null
+                ? "bg-zinc-600"
+                : oomRisk === "danger"
+                  ? "bg-rose-500"
+                  : oomRisk === "warning"
+                    ? "bg-amber-400"
+                    : "bg-brand-500"
             }`}
             style={{
-              width: `${Math.min(
-                100,
-								Math.max(
-									6,
-									Math.round((estimatedVram / (nodeVramTotalGb || 16)) * 100),
-								),
-              )}%`,
+              width: `${
+                gpuVramTotalGb == null
+                  ? 6
+                  : Math.min(
+                      100,
+                      Math.max(6, Math.round((estimatedVram / gpuVramTotalGb) * 100)),
+                    )
+              }%`,
             }}
           />
         </div>
@@ -568,9 +580,9 @@ export default function ForjaYoloSetup({
           <span>Dispositivo:</span>
 					<span
 						className="text-zinc-300 truncate max-w-[180px]"
-						title={deviceLabel}
+						title={targetGpu?.label}
 					>
-            {deviceLabel}
+            {targetGpu?.label ?? "GPU não medida"}
           </span>
         </div>
 
@@ -598,8 +610,8 @@ export default function ForjaYoloSetup({
                 <p className="text-zinc-300 leading-snug">
                   {oomRisk === "danger"
                     ? `A combinação selecionada exige ~${estimatedVram} GB de VRAM${
-												nodeVramTotalGb
-													? ` (limite do nó: ${nodeVramTotalGb} GB)`
+												gpuVramTotalGb
+													? ` (capacidade da GPU alvo: ${gpuVramTotalGb} GB)`
 													: ""
                       }. O treinamento local falhará por falta de memória na GPU.`
                     : `A estimativa de ~${estimatedVram} GB opera próxima ao limite seguro de alocação da GPU.`}

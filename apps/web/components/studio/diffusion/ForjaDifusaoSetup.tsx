@@ -15,7 +15,6 @@ import {
 	type SelectRefHandle,
 } from "@/components/ui/Select";
 import { showToast } from "@/components/ui/Toast";
-import { useHardwareTelemetry } from "@/hooks/useHardwareTelemetry";
 import { useVramEstimator } from "@/hooks/useVramEstimator";
 import { ApiError } from "@/lib/api";
 import {
@@ -25,6 +24,7 @@ import {
 } from "@/lib/datasets";
 import { isFlux2Klein4b, isFlux2Klein9b, normalizeDiffusionArch } from "@/lib/diffusionArch";
 import { formatBytes } from "@/lib/format";
+import { resolveTargetGpu } from "@/lib/gpuCapacity";
 import { startDiffusionJob } from "@/lib/jobs";
 import { listModels } from "@/lib/models";
 import type { Orchestrator } from "@/lib/monitoring";
@@ -194,9 +194,6 @@ export function ForjaDifusaoSetup({
     }
     if (propEpochOffset > 0) setEpochOffset(propEpochOffset);
   }, [initialPreset, initialDatasetId, resumeCheckpoint, propEpochOffset]);
-
-  // Telemetria de hardware e VRAM do nó
-  const { nodeVramTotalGb, deviceLabel } = useHardwareTelemetry();
 
   function applyPreset(
     preset: Partial<DiffusionPreset> & {
@@ -755,7 +752,20 @@ export function ForjaDifusaoSetup({
     ],
   );
 
-  const { oomRisk } = useVramEstimator(estimatedVram, nodeVramTotalGb);
+  // Risco de OOM contra a GPU em que o job de fato roda (não a soma da telemetria global)
+  const targetGpu = useMemo(
+    () =>
+      resolveTargetGpu(
+        orchestratorsList,
+        selectedOrchestratorId,
+        selectedGpuDevice,
+      ),
+    [orchestratorsList, selectedOrchestratorId, selectedGpuDevice],
+  );
+  const { oomRisk } = useVramEstimator(
+    estimatedVram,
+    targetGpu?.vramTotalGb ?? null,
+  );
 
   const trainBaseOptions = useMemo<SelectOption<string>[]>(() => {
     const opts: SelectOption<string>[] = [
@@ -1231,8 +1241,8 @@ export function ForjaDifusaoSetup({
       {/* Previsão de VRAM & Alertas Preventivos de CUDA OOM */}
       <DiffusionVramForecast
         estimatedVram={estimatedVram}
-        nodeVramTotalGb={nodeVramTotalGb}
-        deviceLabel={deviceLabel}
+        gpuVramTotalGb={targetGpu?.vramTotalGb ?? null}
+        deviceLabel={targetGpu?.label ?? null}
         oomRisk={oomRisk}
         onAutoFixSafeParams={handleAutoFixSafeParams}
       />

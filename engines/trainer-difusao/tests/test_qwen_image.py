@@ -362,5 +362,123 @@ class TestQwenImageResumeEpochNumbering(unittest.TestCase):
         )
 
 
+@unittest.skipIf(not HAS_TORCH, "torch not available")
+class TestQwenSampleUsesCachedEmbeds(unittest.TestCase):
+    """Regressão OOM: o text encoder precisa ser descarregado de verdade após o precompute,
+    então a amostra consome o embed cacheado e nunca chama ``encode``."""
+
+    @staticmethod
+    def _fakes():
+        import types
+
+        class FakeVae:
+            config = types.SimpleNamespace(latents_mean=[0.0] * 4, latents_std=[1.0] * 4)
+
+            def to(self, *_a, **_k):
+                return self
+
+            def eval(self):
+                return self
+
+            def decode(self, latents):
+                b, _, _, h, w = latents.shape
+                return types.SimpleNamespace(sample=torch.zeros(b, 3, 1, h * 16, w * 16))
+
+        class FakeTransformer:
+            config = types.SimpleNamespace(in_channels=4)
+
+            def eval(self):
+                return self
+
+        return FakeTransformer(), FakeVae()
+
+    def _payload(self):
+        return {
+            "embeds": torch.zeros(5, 8),
+            "mask": torch.ones(5),
+            "slot_mask": torch.zeros(5, dtype=torch.bool),
+        }
+
+    def test_sample_signature_has_no_prompt_encoder(self):
+        import inspect
+
+        from trainer_difusao.models.qwen_image import _qwen_sample_native
+
+        params = inspect.signature(_qwen_sample_native).parameters
+        self.assertNotIn("prompt_encoder", params)
+        self.assertIn("prompt_payload", params)
+
+    def test_sample_runs_from_cached_payload(self):
+        from trainer_difusao.models import qwen_image
+
+        transformer, vae = self._fakes()
+        seen = {}
+
+        def fake_run_transformer(_tr, latents, _t, prompt_embeds, prompt_mask, slot_mask, **_kw):
+            seen["embeds_shape"] = tuple(prompt_embeds.shape)
+            return torch.zeros_like(latents)
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            qwen_image, "run_transformer", fake_run_transformer
+        ):
+            out = Path(tmp) / "sample.png"
+            image = qwen_image._qwen_sample_native(
+                transformer,
+                vae,
+                self._payload(),
+                height=32,
+                width=32,
+                num_inference_steps=2,
+                seed=1,
+                device="cpu",
+                dtype=torch.float32,
+                output_path=out,
+            )
+            self.assertIsNotNone(image)
+            self.assertTrue(out.exists())
+        self.assertEqual(seen["embeds_shape"], (1, 5, 8))
+
+    def test_release_prompt_encoder_drops_text_encoder_reference(self):
+        import gc
+        import weakref
+
+        from trainer_difusao.models.qwen_image import _release_prompt_encoder
+
+        class FakeTextEncoder:
+            pass
+
+        class FakePromptEncoder:
+            def __init__(self, te):
+                self.text_encoder = te
+
+            def encode(self, *_a, **_k):  # pragma: no cover - não deve ser chamado
+                raise AssertionError("encode chamado após o unload")
+
+        text_encoder = FakeTextEncoder()
+        prompt_encoder = FakePromptEncoder(text_encoder)
+        ref = weakref.ref(text_encoder)
+
+        _release_prompt_encoder(prompt_encoder)
+        self.assertIsNone(prompt_encoder.text_encoder)
+        text_encoder = None  # a variável local do chamador também é solta
+        gc.collect()
+        self.assertIsNone(ref())
+
+    def test_real_train_precomputes_sample_prompt_before_unload(self):
+        """Ordem no treino real: precompute (inclui prompt de amostra) -> unload -> baseline."""
+        import inspect
+
+        from trainer_difusao.models import qwen_image
+
+        src = inspect.getsource(qwen_image._real_train_qwen_image)
+        precompute = src.index("prompt_encoder.encode([prompt])")
+        unload = src.index("_release_prompt_encoder(prompt_encoder)")
+        baseline = src.index('"baseline.png"')
+        self.assertLess(precompute, unload)
+        self.assertLess(unload, baseline)
+        self.assertIn("prompts_to_encode", src)
+        self.assertNotIn("_unload_text_pipeline", src)
+
+
 if __name__ == "__main__":
     unittest.main()

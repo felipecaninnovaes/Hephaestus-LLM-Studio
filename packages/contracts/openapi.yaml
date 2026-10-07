@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hephaestus Studio API
-  version: 0.31.0
+  version: 0.31.1
   summary: Contrato público do backend principal (api-principal :8080)
   description: |
     Fatia 2 (auth single-user) + Fatia 3a (datasets núcleo) + `/health`.
@@ -3741,7 +3741,7 @@ components:
           description: "Identificador opcional da GPU (UUID ou índice). Exige orchestratorId. Opcional; ausente ou null = Automático."
         samplePrompt:
           type: [string, "null"]
-          maxLength: 500
+          maxLength: 4000
           description: "Prompt de teste para geração de amostras de validação durante o treino. Opcional."
         sampleInterval:
           type: integer

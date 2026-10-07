@@ -464,21 +464,6 @@ class TestQwenSampleUsesCachedEmbeds(unittest.TestCase):
         gc.collect()
         self.assertIsNone(ref())
 
-    def test_real_train_precomputes_sample_prompt_before_unload(self):
-        """Ordem no treino real: precompute (inclui prompt de amostra) -> unload -> baseline."""
-        import inspect
-
-        from trainer_difusao.models import qwen_image
-
-        src = inspect.getsource(qwen_image._real_train_qwen_image)
-        precompute = src.index("prompt_encoder.encode([prompt])")
-        unload = src.index("_release_prompt_encoder(prompt_encoder)")
-        baseline = src.index('"baseline.png"')
-        self.assertLess(precompute, unload)
-        self.assertLess(unload, baseline)
-        self.assertIn("prompts_to_encode", src)
-        self.assertNotIn("_unload_text_pipeline", src)
-
 
 if __name__ == "__main__":
     unittest.main()

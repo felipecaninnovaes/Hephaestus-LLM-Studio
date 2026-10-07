@@ -71,27 +71,32 @@ BASE_REPO = "Qwen/Qwen-Image-2.1"
 TILE_DECODE_ABOVE_PIXELS = 1024 * 1024
 
 
-def _unload_text_pipeline(pipe: Any | None, text_enc: Any | None = None) -> None:
-    """Descarrega text pipeline e encoder da memória de forma uniforme."""
-    if pipe is not None:
-        for attr in ("text_encoder", "tokenizer", "processor"):
-            try:
-                setattr(pipe, attr, None)
-            except Exception:
-                pass
-        try:
-            del pipe
-        except Exception:
-            pass
-    if text_enc is not None:
-        del text_enc
+def _log_vram(tag: str) -> None:
+    """Loga VRAM livre/total (driver) e alocada/reservada (torch) em GiB; no-op sem CUDA."""
+    if not torch.cuda.is_available():
+        return
+    free, total = torch.cuda.mem_get_info()
+    gib = 1024**3
+    print(
+        f"[VRAM] {tag}: usada={(total - free) / gib:.2f} GiB livre={free / gib:.2f} GiB "
+        f"total={total / gib:.2f} GiB torch_alloc={torch.cuda.memory_allocated() / gib:.2f} GiB "
+        f"torch_reserved={torch.cuda.memory_reserved() / gib:.2f} GiB "
+        f"torch_peak_alloc={torch.cuda.max_memory_allocated() / gib:.2f} GiB",
+        flush=True,
+    )
+
+
+def _release_prompt_encoder(prompt_encoder: Any) -> None:
+    """Solta a referência do prompt_encoder ao text encoder (PITFALLS: `del` em parâmetro
+    local é no-op; a memória só é liberada quando TODAS as referências somem). O chamador
+    deve zerar também a sua variável local e chamar `cleanup_cuda()`."""
+    prompt_encoder.text_encoder = None
 
 
 def _qwen_sample_native(
     transformer: Any,
     vae: Any,
-    prompt_encoder: Any,
-    prompt: str,
+    prompt_payload: dict[str, Any],
     height: int,
     width: int,
     num_inference_steps: int,
@@ -101,21 +106,25 @@ def _qwen_sample_native(
     output_path: Path | None = None,
 ) -> Any:
     """Procedural Qwen-Image-2.1 sampling using flow matching without OOP pipeline interface.
-    
-    Returns a PIL Image or None if output_path is None.
+
+    ``prompt_payload`` é o embed pré-computado (``embeds``/``mask``/``slot_mask``, o mesmo
+    payload do ``TextEmbedsCache``): o text encoder não participa da amostra.
+    Returns a PIL Image or None if sampling failed.
     """
     import numpy as np
     from diffusers import FlowMatchEulerDiscreteScheduler
     from PIL import Image
-    
+
     try:
         import torch
-        
-        # Encode prompt
+
         with torch.no_grad():
-            embeds_list, masks_list, slot_masks_list = prompt_encoder.encode([prompt])
             prompt_embeds, prompt_mask, slot_mask = pad_prompt_batch(
-                embeds_list, masks_list, slot_masks_list, device, dtype
+                [prompt_payload["embeds"]],
+                [prompt_payload["mask"]],
+                [prompt_payload["slot_mask"]],
+                device,
+                dtype,
             )
         
         # Setup scheduler with flow matching
@@ -199,7 +208,7 @@ def _qwen_sample_native(
             latents_5d = latents_denorm.unsqueeze(2)  # (B, 64, H', W') -> (B, 64, 1, H', W')
             
             # Enable tiling for large images
-            if height > 1024 or width > 1024:
+            if height * width >= TILE_DECODE_ABOVE_PIXELS:
                 vae.enable_tiling()
             
             # Decode
@@ -594,6 +603,12 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         },
     )
     unique_prompts = list({cap for _, cap in dataset.samples})
+    sampling_enabled = bool(sample_prompt) and sample_interval > 0
+    # O prompt de amostra entra no mesmo cache dos prompts do dataset: assim baseline e
+    # amostras por época usam o embed cacheado e o encoder pode ser descarregado de verdade.
+    prompts_to_encode = unique_prompts + (
+        [sample_prompt] if sampling_enabled and sample_prompt not in unique_prompts else []
+    )
 
     _emit_metric(
         metrics_path,
@@ -606,9 +621,42 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         message=f"Pré-computando {len(unique_prompts)} embeddings de texto...",
     )
 
-    
-    # Generate baseline sample after models are loaded
-    if sample_prompt and sample_interval > 0:
+    # Pre-compute all prompts (dataset + prompt de amostra) com VRAM limpa
+    _log_vram("antes do precompute de embeds")
+    cached_count = 0
+    for i, prompt in enumerate(prompts_to_encode):
+        if text_cache.get(prompt) is not None:
+            cached_count += 1
+            continue
+        try:
+            # Encode prompt without reference images (T2I only)
+            embeds_list, masks_list, slot_masks_list = prompt_encoder.encode([prompt])
+            # Store all three components as a dict payload
+            payload = {
+                "embeds": embeds_list[0],
+                "mask": masks_list[0],
+                "slot_mask": slot_masks_list[0],
+            }
+            text_cache.put(prompt, payload)
+        except Exception as e:
+            print(f"[WARN] Erro ao pré-computar prompt '{prompt}': {e}", flush=True)
+            continue
+        if (i + 1) % 10 == 0:
+            cleanup_cuda()
+
+    sample_payload = text_cache.get(sample_prompt) if sampling_enabled else None
+    if sampling_enabled and sample_payload is None:
+        print("[WARN] Embed do prompt de amostra indisponível; amostras desativadas.", flush=True)
+
+    # Unload real do text encoder: a partir daqui nada mais codifica texto.
+    _log_vram("antes do unload do text encoder")
+    _release_prompt_encoder(prompt_encoder)
+    text_encoder = None
+    cleanup_cuda()
+    _log_vram("depois do unload do text encoder")
+
+    # Amostra baseline (sem LoRA treinado) com o embed cacheado, sem encoder
+    if sample_payload is not None:
         _emit_metric(
             metrics_path,
             epoch=epoch_offset,
@@ -623,8 +671,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             _qwen_sample_native(
                 transformer,
                 vae,
-                prompt_encoder,
-                prompt=sample_prompt,
+                sample_payload,
                 height=resolution,
                 width=resolution,
                 num_inference_steps=20,
@@ -645,32 +692,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             )
         except Exception as e:
             print(f"[WARN] Erro ao gerar amostra baseline: {e}", flush=True)
-
-    
-    # Pre-compute all unique prompts (with proper VRAM cleanup)
-    cached_count = 0
-    for i, prompt in enumerate(unique_prompts):
-        if text_cache.get(prompt) is not None:
-            cached_count += 1
-            continue
-        try:
-            # Encode prompt without reference images (T2I only)
-            embeds_list, masks_list, slot_masks_list = prompt_encoder.encode([prompt])
-            # Store all three components as a dict payload
-            payload = {
-                "embeds": embeds_list[0],
-                "mask": masks_list[0],
-                "slot_mask": slot_masks_list[0],
-            }
-            text_cache.put(prompt, payload)
-        except Exception as e:
-            print(f"[WARN] Erro ao pré-computar prompt '{prompt}': {e}", flush=True)
-            continue
-        if (i + 1) % 10 == 0:
-            cleanup_cuda()
-
-    cleanup_cuda()
-    _unload_text_pipeline(None, text_encoder)
+        _log_vram("depois da amostra baseline")
 
     # Cache de latents: codifica cada imagem UMA vez (distribuição do VAE) e tira o VAE da GPU
     latents_cached = False
@@ -965,14 +987,14 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                 message=f"Epoch {epoch} completo, loss médio={(f'{avg_epoch_loss:.4f}' if math.isfinite(avg_epoch_loss) else 'null')}",
             )
             # Sample during training (reduced resolution)
-            if sample_prompt and sample_interval > 0 and local_epoch_idx % sample_interval == 0:
+            if sample_payload is not None and sample_interval > 0 and local_epoch_idx % sample_interval == 0:
                 try:
                     sample_res = min(resolution, 512)
+                    _log_vram(f"antes da amostra epoch {epoch}")
                     _qwen_sample_native(
                         transformer,
                         vae,
-                        prompt_encoder,
-                        prompt=sample_prompt,
+                        sample_payload,
                         height=sample_res,
                         width=sample_res,
                         num_inference_steps=20,
@@ -981,6 +1003,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                         dtype=torch_dtype,
                         output_path=output_path / f"epoch{epoch}.png",
                     )
+                    _log_vram(f"depois da amostra epoch {epoch}")
                 except Exception as e:
                     print(f"[WARN] Erro ao gerar amostra epoch {epoch}: {e}", flush=True)
                 if latents_cached:

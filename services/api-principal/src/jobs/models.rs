@@ -642,6 +642,9 @@ fn default_autolabel_model() -> String {
 /// Teto (em chars, após trim) do prompt/instrução VLM do autolabel.
 pub const AUTOLABEL_PROMPT_MAX_CHARS: usize = 15_000;
 
+/// Teto (em chars) do `samplePrompt` do treino de difusão; igual ao prompt de geração.
+pub const SAMPLE_PROMPT_MAX_CHARS: usize = 4000;
+
 pub fn validate_autolabel_request(
     mut req: AutolabelJobRequest,
 ) -> Result<AutolabelJobRequest, String> {
@@ -1077,8 +1080,10 @@ pub fn validate_diffusion_request(
         }
     }
     if let Some(ref sp) = req.sample_prompt {
-        if sp.chars().count() > 500 {
-            return Err("samplePrompt must not exceed 500 characters".to_string());
+        if sp.chars().count() > SAMPLE_PROMPT_MAX_CHARS {
+            return Err(format!(
+                "samplePrompt must not exceed {SAMPLE_PROMPT_MAX_CHARS} characters"
+            ));
         }
     }
     if !(0..=100).contains(&req.sample_interval) {
@@ -3179,6 +3184,25 @@ mod tests {
         assert!(
             validate_autolabel_request(build("é".repeat(AUTOLABEL_PROMPT_MAX_CHARS + 1))).is_err()
         );
+    }
+
+    #[test]
+    fn diffusion_sample_prompt_limit_4000_chars() {
+        let build = |sp: String| -> DiffusionJobRequest {
+            serde_json::from_value(serde_json::json!({
+                "datasetId": "550e8400-e29b-41d4-a716-446655440001",
+                "samplePrompt": sp,
+            }))
+            .unwrap()
+        };
+        // Prompt típico longo (1200 chars) ⇒ aceito.
+        assert!(validate_diffusion_request(build("a".repeat(1200))).is_ok());
+        // Exatamente o teto, em chars multibyte ⇒ aceito.
+        assert!(validate_diffusion_request(build("é".repeat(SAMPLE_PROMPT_MAX_CHARS))).is_ok());
+        // Teto + 1 ⇒ rejeitado com mensagem exata.
+        let err =
+            validate_diffusion_request(build("é".repeat(SAMPLE_PROMPT_MAX_CHARS + 1))).unwrap_err();
+        assert_eq!(err, "samplePrompt must not exceed 4000 characters");
     }
 
     #[test]

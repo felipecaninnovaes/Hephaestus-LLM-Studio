@@ -208,7 +208,7 @@ def _qwen_sample_native(
             latents_5d = latents_denorm.unsqueeze(2)  # (B, 64, H', W') -> (B, 64, 1, H', W')
             
             # Enable tiling for large images
-            if height > 1024 or width > 1024:
+            if height * width >= TILE_DECODE_ABOVE_PIXELS:
                 vae.enable_tiling()
             
             # Decode

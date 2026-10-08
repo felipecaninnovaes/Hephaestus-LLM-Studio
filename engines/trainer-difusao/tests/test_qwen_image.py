@@ -576,5 +576,78 @@ class TestQwenGradAccumAndScheduler(unittest.TestCase):
         cs.assert_called_once_with(fake_opt, "cosine_with_restarts", 21, 7, last_step=6)
 
 
+@unittest.skipIf(not HAS_TORCH, "torch not available")
+class TestQwenEpochCheckpoint(unittest.TestCase):
+    """Checkpoint é por ÉPOCA (após flush de GA), não por batch; prune mantém 2."""
+
+    def _simulate(self, tmp, *, n_batches, epochs, interval, ga, epoch_offset=0):
+        from trainer_difusao.models import qwen_image
+
+        module, optimizer, steps, acc = TestQwenGradAccumAndScheduler._toy(ga)
+        ckpt_dir = Path(tmp) / "checkpoints"
+        saves = []
+
+        def fake_save(model, d, base, epoch, metadata, optimizer=None):
+            d.mkdir(parents=True, exist_ok=True)
+            f = d / f"{base}_epoch_{epoch:03d}.safetensors"
+            torch.save({"w": model.weight.detach().clone()}, f)
+            (d / f"{base}_epoch_{epoch:03d}_optimizer.pt").write_bytes(b"o")
+            saves.append((epoch, metadata["epoch"], len(steps), model.weight.detach().clone()))
+            return f
+
+        with mock.patch.object(qwen_image, "save_adapter_checkpoint", fake_save):
+            for local_idx, epoch in qwen_image._resume_epoch_range(epoch_offset, epochs):
+                acc.reset()
+                for i in range(n_batches):
+                    loss = module(torch.full((1, 2), 0.1 * (i + 1))).sum()
+                    acc.backward(loss)
+                    acc.step_if_due(i == n_batches - 1)
+                acc.flush()
+                qwen_image._maybe_save_epoch_checkpoint(
+                    module, optimizer, ckpt_dir, "adapter",
+                    epoch=epoch, local_epoch_idx=local_idx, epochs=epochs,
+                    checkpoint_interval=interval, global_step=len(steps),
+                )
+        return saves, ckpt_dir, module, steps
+
+    def test_saves_only_on_interval_and_last_epoch_once_each(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            saves, _d, _m, _s = self._simulate(tmp, n_batches=5, epochs=5, interval=2, ga=2)
+        self.assertEqual([s[0] for s in saves], [2, 4, 5])
+
+    def test_interval_larger_than_epochs_saves_only_last(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            saves, _d, _m, _s = self._simulate(tmp, n_batches=4, epochs=3, interval=10, ga=1)
+        self.assertEqual([s[0] for s in saves], [3])
+
+    def test_no_per_batch_save_and_weights_are_end_of_epoch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            saves, d, module, steps = self._simulate(tmp, n_batches=7, epochs=1, interval=1, ga=3)
+            self.assertEqual(len(saves), 1)
+            epoch, _meta, steps_at_save, weights = saves[0]
+            self.assertEqual(steps_at_save, len(steps))  # após o último passo (incl. resto)
+            self.assertEqual(len(steps), 3)  # ceil(7/3)
+            self.assertTrue(torch.equal(weights, module.weight.detach()))
+            saved = torch.load(d / "adapter_epoch_001.safetensors")["w"]
+            self.assertTrue(torch.equal(saved, module.weight.detach()))
+
+    def test_resume_offset_uses_local_index_and_absolute_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            saves, d, _m, _s = self._simulate(
+                tmp, n_batches=2, epochs=4, interval=2, ga=1, epoch_offset=10
+            )
+            self.assertEqual([s[0] for s in saves], [12, 14])
+            self.assertEqual([s[1] for s in saves], ["12", "14"])
+            self.assertTrue((d / "adapter_epoch_014.safetensors").exists())
+
+    def test_prune_keeps_last_two(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _saves, d, _m, _s = self._simulate(tmp, n_batches=2, epochs=4, interval=1, ga=1)
+            names = sorted(p.name for p in d.glob("*.safetensors"))
+            self.assertEqual(names, ["adapter_epoch_003.safetensors", "adapter_epoch_004.safetensors"])
+            self.assertFalse((d / "adapter_epoch_001_optimizer.pt").exists())
+
+
+
 if __name__ == "__main__":
     unittest.main()

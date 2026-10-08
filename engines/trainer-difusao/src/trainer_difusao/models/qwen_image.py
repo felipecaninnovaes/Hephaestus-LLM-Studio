@@ -45,6 +45,7 @@ from trainer_difusao.common_pkg.latent_cache import (
 )
 from trainer_difusao.dataset import DiffusionDataset, build_dataloader
 from trainer_difusao.models.base import BaseModelTrainer
+from trainer_difusao.optimizers import _create_lr_scheduler, _create_optimizer
 from trainer_difusao.models.mock import _mock_train
 from trainer_difusao.common_pkg.diagnostics import (
     DiagnosticsTracker,
@@ -296,6 +297,94 @@ def _resume_epoch_range(epoch_offset: int, epochs: int) -> list[tuple[int, int]]
     )
 
 
+def _current_lr(lr_scheduler: Any, optimizer: Any, default: float) -> float:
+    """LR efetivo atual: o do scheduler; sem scheduler, o do param_group; senão `default`."""
+    if lr_scheduler is not None:
+        return float(lr_scheduler.get_last_lr()[0])
+    groups = getattr(optimizer, "param_groups", None)
+    if groups:
+        return float(groups[0].get("lr", default))
+    return default
+
+
+class _GradAccumulator:
+    """Acumulação de gradiente: loss/GA por micro-batch e passo de otimizador
+    a cada `grad_accum` micro-batches ou no fim da época (regra do loop compartilhado)."""
+
+    def __init__(self, module: Any, optimizer: Any, lr_scheduler: Any, grad_accum: int) -> None:
+        self.module = module
+        self.optimizer = optimizer
+        self.lr_scheduler = lr_scheduler
+        self.grad_accum = max(1, grad_accum)
+        self.pending = 0
+
+    def reset(self) -> None:
+        self.pending = 0
+
+    def backward(self, loss: Any) -> float:
+        """Retropropaga loss/GA; devolve a loss original (não escalada) como float."""
+        (loss / self.grad_accum).backward()
+        self.pending += 1
+        return float(loss.item())
+
+    def step_if_due(self, is_last_batch: bool) -> float | None:
+        """Dá o passo se o limite de GA ou o fim da época foi atingido; devolve grad_norm ou None."""
+        if self.pending % self.grad_accum == 0 or is_last_batch:
+            return self.flush()
+        return None
+
+    def flush(self) -> float | None:
+        """Dá o passo com o gradiente acumulado, se houver; devolve o grad_norm (pré-clip)."""
+        if self.pending == 0:
+            return None
+        grad_norm_raw = torch.nn.utils.clip_grad_norm_(self.module.parameters(), 1.0)
+        if hasattr(grad_norm_raw, "item"):
+            grad_norm = float(grad_norm_raw.item())
+        elif grad_norm_raw is not None:
+            grad_norm = float(grad_norm_raw)
+        else:
+            grad_norm = compute_grad_norm_l2(self.module.parameters())
+        self.optimizer.step()
+        if self.lr_scheduler is not None:
+            self.lr_scheduler.step()
+        self.optimizer.zero_grad()
+        self.pending = 0
+        return grad_norm
+
+
+def _setup_optimization(
+    module: Any,
+    *,
+    optimizer_name: str,
+    learning_rate: float,
+    optimizer_state_path: str | None,
+    lr_scheduler_name: str,
+    lr_warmup_steps: int,
+    steps_per_epoch: int,
+    epochs: int,
+    epoch_offset: int,
+    grad_accum: int,
+) -> tuple[Any, Any, _GradAccumulator]:
+    """Otimizador (`lora.optimizer`), scheduler e acumulador, como no loop compartilhado.
+
+    O LR da requisição prevalece sobre o do optimizer state restaurado. O horizonte
+    da curva é (epoch_offset + epochs) épocas; em resume o scheduler é posicionado
+    nos passos das épocas já concluídas.
+    """
+    optimizer = _create_optimizer(module, optimizer_name, learning_rate)
+    if optimizer_state_path:
+        _load_optimizer_state(optimizer, optimizer_state_path)
+        _override_optimizer_lr(optimizer, learning_rate)
+    lr_scheduler = _create_lr_scheduler(
+        optimizer,
+        lr_scheduler_name,
+        max(1, steps_per_epoch * (epoch_offset + epochs)),
+        lr_warmup_steps,
+        last_step=steps_per_epoch * epoch_offset,
+    )
+    return optimizer, lr_scheduler, _GradAccumulator(module, optimizer, lr_scheduler, grad_accum)
+
+
 def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
     """Pipeline real de treino LoRA para Qwen-Image-2.1 na GPU (nativo)."""
     # Elimina OOM por fragmentação de heap CUDA
@@ -310,7 +399,6 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
 
     try:
         from peft import get_peft_model
-        from bitsandbytes.optim import AdamW8bit
     except ImportError as exc:
         _die(f"Dependência ausente para treino real de Qwen-Image-2.1: {exc}")
 
@@ -336,6 +424,9 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
     weights_path = cfg.get("weights_path")
     optimizer_state_path = cfg.get("optimizer_state_path")
     grad_accum = max(1, int(lora_cfg.get("gradient_accumulation_steps", 1)))
+    optimizer_name = str(lora_cfg.get("optimizer", "adamw8bit"))
+    lr_scheduler_name = str(lora_cfg.get("lr_scheduler", "cosine"))
+    lr_warmup_steps = int(lora_cfg.get("lr_warmup_steps", 0))
     batch_size = max(1, int(lora_cfg.get("batch_size", 1)))
     resolution = int(cfg.get("resolution") or lora_cfg.get("resolution") or 768)
 
@@ -372,7 +463,6 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         enable_bucket=bool(cfg.get("enable_bucket", True)),
     )
     dataloader = build_dataloader(dataset, batch_size=batch_size, seed=seed)
-    total_steps = max(1, math.ceil(len(dataloader) * epochs / grad_accum))
 
     _emit_metric(
         metrics_path,
@@ -748,22 +838,22 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         _die(f"Erro ao configurar LoRA: {e}")
     if weights_path:
         _load_lora_weights(model_with_lora, weights_path)
-    # 5. Setup optimizer
-    optimizer = AdamW8bit(
-        model_with_lora.parameters(),
-        lr=learning_rate,
-        betas=(0.9, 0.999),
-    )
-    if optimizer_state_path:
-        _load_optimizer_state(optimizer, optimizer_state_path)
-        # O LR da nova requisição (learning_rate) sempre prevalece sobre o
-        # persistido no optimizer state restaurado.
-        _override_optimizer_lr(optimizer, learning_rate)
-
-    # 6. Training loop
+    # 5-6. Otimizador + LR scheduler (mesmo contrato do loop compartilhado) e treino
     num_train_samples = len(dataset)
     steps_per_epoch = max(1, math.ceil(len(dataloader) / grad_accum))
     total_progress_steps = steps_per_epoch * epochs
+    optimizer, lr_scheduler, accumulator = _setup_optimization(
+        model_with_lora,
+        optimizer_name=optimizer_name,
+        learning_rate=learning_rate,
+        optimizer_state_path=optimizer_state_path,
+        lr_scheduler_name=lr_scheduler_name,
+        lr_warmup_steps=lr_warmup_steps,
+        steps_per_epoch=steps_per_epoch,
+        epochs=epochs,
+        epoch_offset=epoch_offset,
+        grad_accum=grad_accum,
+    )
 
     _emit_metric(
         metrics_path,
@@ -780,7 +870,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
 
     start_time = time.time()
     global_step = 0
-    running_loss = 0.0
+    pending_losses: list[float] = []
     diag_tracker = DiagnosticsTracker(lora_interval_steps=max(1, total_progress_steps // max(1, epochs)))
     last_grad_norm: float = 0.0
     _emit_metric(
@@ -803,6 +893,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         for local_epoch_idx, epoch in _resume_epoch_range(epoch_offset, epochs):
             epoch_loss = 0.0
             num_batches = 0
+            accumulator.reset()
 
             for batch_idx, batch in enumerate(dataloader):
                 # Prepare batch
@@ -888,57 +979,54 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                     # Compute loss using unpacked target (run_transformer returns unpacked)
                     loss = F.mse_loss(noise_pred.float(), target.float())
 
-                    # Backward pass
-                    optimizer.zero_grad()
-                    loss.backward()
-                    grad_norm_raw = torch.nn.utils.clip_grad_norm_(model_with_lora.parameters(), 1.0)
-                    if hasattr(grad_norm_raw, "item"):
-                        last_grad_norm = float(grad_norm_raw.item())
-                    elif grad_norm_raw is not None:
-                        last_grad_norm = float(grad_norm_raw)
-                    else:
-                        last_grad_norm = compute_grad_norm_l2(model_with_lora.parameters())
-                    cur_loss_item = float(loss.item())
-                    diag_tracker.observe_step(cur_loss_item, last_grad_norm)
-                    optimizer.step()
+                    # Backward com acumulação: loss/GA; o passo de otimizador (clip,
+                    # optimizer.step, scheduler.step, zero_grad) ocorre a cada GA
+                    # micro-batches ou no fim da época (mesma regra do loop compartilhado).
+                    cur_loss_item = accumulator.backward(loss)
+                    is_last_batch = batch_idx == len(dataloader) - 1
+                    stepped_grad_norm = accumulator.step_if_due(is_last_batch)
+                    diag_tracker.observe_step(cur_loss_item, stepped_grad_norm)
 
-                    running_loss += cur_loss_item
+                    pending_losses.append(cur_loss_item)
                     epoch_loss += cur_loss_item
                     num_batches += 1
-                    global_step += 1
-                    # Metrics
-                    if global_step % 10 == 0:
-                        avg_loss = running_loss / 10
-                        elapsed = time.time() - start_time
-                        time_per_step = elapsed / global_step
-                        remaining_steps = total_progress_steps - global_step
-                        eta_seconds = time_per_step * remaining_steps
+                    if stepped_grad_norm is not None:
+                        last_grad_norm = stepped_grad_norm
+                        global_step += 1
+                        # Metrics: a cada 5 passos de otimizador ou no último da época
+                        if global_step % 5 == 0 or is_last_batch:
+                            avg_loss = sum(pending_losses) / len(pending_losses)
+                            pending_losses.clear()
+                            effective_lr = _current_lr(lr_scheduler, optimizer, learning_rate)
+                            elapsed = time.time() - start_time
+                            time_per_step = elapsed / global_step
+                            remaining_steps = max(0, total_progress_steps - global_step)
+                            eta_seconds = time_per_step * remaining_steps
 
-                        progress = min(0.99, 0.45 + (global_step / total_progress_steps) * 0.50)
-                        vram_used = vram_allocated_gb()
-                        diag_payload = diag_tracker.build_diagnostics(
-                            grad_norm_l2=last_grad_norm,
-                            optimizer=optimizer,
-                            default_lr=learning_rate,
-                            model=model_with_lora,
-                            step=global_step,
-                        )
-                        _emit_metric(
-                            metrics_path,
-                            epoch=epoch,
-                            step=global_step,
-                            loss=avg_loss,
-                            lr=learning_rate,
-                            grad_norm=last_grad_norm,
-                            diagnostics=diag_payload,
-                            progress=progress,
-                            phase="training",
-                            message=f"Epoch {epoch}/{epoch_offset + epochs}, step {global_step}, loss={(f'{avg_loss:.4f}' if math.isfinite(avg_loss) else 'null')}",
-                            eta_s=int(eta_seconds) if eta_seconds is not None else None,
-                            step_time_s=time_per_step,
-                            vram_reserved_gb=vram_used,
-                        )
-                        running_loss = 0.0
+                            progress = min(0.99, 0.45 + (global_step / total_progress_steps) * 0.50)
+                            vram_used = vram_allocated_gb()
+                            diag_payload = diag_tracker.build_diagnostics(
+                                grad_norm_l2=last_grad_norm,
+                                optimizer=optimizer,
+                                default_lr=effective_lr,
+                                model=model_with_lora,
+                                step=global_step,
+                            )
+                            _emit_metric(
+                                metrics_path,
+                                epoch=epoch,
+                                step=global_step,
+                                loss=avg_loss,
+                                lr=effective_lr,
+                                grad_norm=last_grad_norm,
+                                diagnostics=diag_payload,
+                                progress=progress,
+                                phase="training",
+                                message=f"Epoch {epoch}/{epoch_offset + epochs}, step {global_step}/{total_progress_steps}, loss={(f'{avg_loss:.4f}' if math.isfinite(avg_loss) else 'null')}",
+                                eta_s=int(eta_seconds),
+                                step_time_s=time_per_step,
+                                vram_reserved_gb=vram_used,
+                            )
 
                 # Cleanup
                 torch.cuda.empty_cache()
@@ -964,12 +1052,18 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                     except Exception as e:
                         print(f"[WARN] Erro ao salvar checkpoint: {e}", flush=True)
 
+            # Resto de acumulação (ex.: último batch pulado por falta de cache) vira passo.
+            flushed_grad_norm = accumulator.flush()
+            if flushed_grad_norm is not None:
+                last_grad_norm = flushed_grad_norm
+                global_step += 1
+
             # End of epoch
             avg_epoch_loss = epoch_loss / max(1, num_batches)
             epoch_diag = diag_tracker.build_diagnostics(
                 grad_norm_l2=last_grad_norm,
                 optimizer=optimizer,
-                default_lr=learning_rate,
+                default_lr=_current_lr(lr_scheduler, optimizer, learning_rate),
                 model=model_with_lora,
                 step=global_step,
                 force_lora=True,
@@ -979,7 +1073,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                 epoch=epoch,
                 step=global_step,
                 loss=avg_epoch_loss,
-                lr=learning_rate,
+                lr=_current_lr(lr_scheduler, optimizer, learning_rate),
                 grad_norm=last_grad_norm,
                 diagnostics=epoch_diag,
                 progress=0.45 + local_epoch_idx / epochs * 0.50,
@@ -1024,7 +1118,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         epoch=epoch_offset + epochs,
         step=global_step,
         loss=0.0,
-        lr=learning_rate,
+        lr=_current_lr(lr_scheduler, optimizer, learning_rate),
         progress=0.95,
         phase="saving",
         message="Salvando adaptador final...",
@@ -1048,7 +1142,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         epoch=epoch_offset + epochs,
         step=global_step,
         loss=0.0,
-        lr=learning_rate,
+        lr=_current_lr(lr_scheduler, optimizer, learning_rate),
         progress=1.0,
         phase="completed",
         message=f"Treino concluído! Adaptador salvo em: {final_adapter_file}",

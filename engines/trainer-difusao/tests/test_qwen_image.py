@@ -465,5 +465,116 @@ class TestQwenSampleUsesCachedEmbeds(unittest.TestCase):
         self.assertIsNone(ref())
 
 
+@unittest.skipIf(not HAS_TORCH, "torch not available")
+class TestQwenGradAccumAndScheduler(unittest.TestCase):
+    """GA, scheduler e escolha de otimizador do loop Qwen seguem o loop compartilhado."""
+
+    @staticmethod
+    def _toy(grad_accum, lr=0.1):
+        from trainer_difusao.models.qwen_image import _GradAccumulator
+
+        module = torch.nn.Linear(2, 1, bias=False)
+        torch.nn.init.constant_(module.weight, 1.0)
+        optimizer = torch.optim.SGD(module.parameters(), lr=lr)
+        steps = []
+        orig_step = optimizer.step
+
+        def counting_step(*a, **k):
+            steps.append(module.weight.detach().clone())
+            return orig_step(*a, **k)
+
+        optimizer.step = counting_step
+        return module, optimizer, steps, _GradAccumulator(module, optimizer, None, grad_accum)
+
+    @staticmethod
+    def _run_epoch(acc, module, n_batches):
+        losses = []
+        for i in range(n_batches):
+            x = torch.full((1, 2), 0.1 * (i + 1))
+            loss = module(x).sum()
+            losses.append(acc.backward(loss))
+            acc.step_if_due(i == n_batches - 1)
+        return losses
+
+    def test_steps_per_epoch_is_ceil_n_over_ga(self):
+        for n_batches, ga, expected in [(8, 4, 2), (9, 4, 3), (3, 4, 1), (5, 1, 5), (7, 3, 3)]:
+            module, _opt, steps, acc = self._toy(ga)
+            for _epoch in range(2):
+                acc.reset()
+                self._run_epoch(acc, module, n_batches)
+            self.assertEqual(len(steps), 2 * expected, (n_batches, ga))
+
+    def test_gradient_is_accumulated_as_mean_over_micro_batches(self):
+        module, _optimizer, _steps, acc = self._toy(grad_accum=2, lr=1.0)
+        w0 = module.weight.detach().clone()
+        losses = self._run_epoch(acc, module, 2)
+        # d(sum(w*x))/dw = x; média de x=0.1 e x=0.2 -> 0.15 em cada peso (norma < 1, sem clip)
+        self.assertTrue(torch.allclose(module.weight.detach(), w0 - 0.15, atol=1e-6))
+        # loss reportada é a original (não dividida por GA)
+        self.assertAlmostEqual(losses[0], float(w0.sum() * 0.1), places=5)
+        # gradiente zerado após o passo
+        self.assertTrue(module.weight.grad is None or float(module.weight.grad.abs().sum()) == 0.0)
+
+    def test_remainder_flushed_at_end_of_epoch_without_leaking_into_next(self):
+        module, _opt, steps, acc = self._toy(grad_accum=4)
+        self._run_epoch(acc, module, 3)
+        self.assertEqual(len(steps), 1)
+        self.assertEqual(acc.pending, 0)
+        self.assertIsNone(acc.flush())
+
+    def test_cosine_warmup_scheduler_rises_then_decays(self):
+        from trainer_difusao.models.qwen_image import _current_lr, _setup_optimization
+
+        module = torch.nn.Linear(2, 1)
+        optimizer, scheduler, acc = _setup_optimization(
+            module,
+            optimizer_name="adamw",
+            learning_rate=1e-3,
+            optimizer_state_path=None,
+            lr_scheduler_name="cosine",
+            lr_warmup_steps=2,
+            steps_per_epoch=2,
+            epochs=2,
+            epoch_offset=0,
+            grad_accum=4,
+        )
+        self.assertIsNotNone(scheduler)
+        lrs = [_current_lr(scheduler, optimizer, 1e-3)]
+        for _ in range(4):
+            for _micro in range(4):
+                acc.backward(module(torch.ones(1, 2)).sum())
+            acc.flush()
+            lrs.append(_current_lr(scheduler, optimizer, 1e-3))
+        self.assertEqual(lrs[0], 0.0)
+        self.assertLess(lrs[0], lrs[1])
+        self.assertLess(lrs[1], lrs[2])  # sobe no warmup
+        self.assertAlmostEqual(lrs[2], 1e-3, places=9)  # pico ao fim do warmup
+        self.assertLess(lrs[3], lrs[2])  # cai (cosine)
+        self.assertLess(lrs[4], lrs[3])
+
+    def test_optimizer_scheduler_names_reach_factories(self):
+        from trainer_difusao.models import qwen_image
+
+        module = torch.nn.Linear(2, 1)
+        fake_opt = torch.optim.SGD(module.parameters(), lr=0.1)
+        with mock.patch.object(qwen_image, "_create_optimizer", return_value=fake_opt) as co, \
+                mock.patch.object(qwen_image, "_create_lr_scheduler", return_value=None) as cs:
+            qwen_image._setup_optimization(
+                module,
+                optimizer_name="paged_adamw32bit",
+                learning_rate=2e-4,
+                optimizer_state_path=None,
+                lr_scheduler_name="cosine_with_restarts",
+                lr_warmup_steps=7,
+                steps_per_epoch=3,
+                epochs=5,
+                epoch_offset=2,
+                grad_accum=4,
+            )
+        co.assert_called_once_with(module, "paged_adamw32bit", 2e-4)
+        # horizonte = steps_per_epoch * (offset + epochs); resume posiciona em steps_per_epoch * offset
+        cs.assert_called_once_with(fake_opt, "cosine_with_restarts", 21, 7, last_step=6)
+
+
 if __name__ == "__main__":
     unittest.main()

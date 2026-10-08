@@ -649,5 +649,91 @@ class TestQwenEpochCheckpoint(unittest.TestCase):
 
 
 
+class TestQwenImageQuantization(unittest.TestCase):
+    """`lora.quantization` governa o transformer; text encoder é sempre NF4."""
+
+    def test_4bit_is_nf4_with_double_quant(self):
+        from trainer_difusao.models import qwen_image
+
+        cfg = qwen_image._build_transformer_bnb_config("4bit", torch.bfloat16)
+        self.assertTrue(cfg.load_in_4bit)
+        self.assertEqual(cfg.bnb_4bit_quant_type, "nf4")
+        self.assertTrue(cfg.bnb_4bit_use_double_quant)
+        self.assertEqual(cfg.bnb_4bit_compute_dtype, torch.bfloat16)
+
+    def test_8bit_uses_load_in_8bit(self):
+        from trainer_difusao.models import qwen_image
+
+        cfg = qwen_image._build_transformer_bnb_config("8bit", torch.bfloat16)
+        self.assertTrue(cfg.load_in_8bit)
+        self.assertFalse(cfg.load_in_4bit)
+
+    def test_none_has_no_quantization_config(self):
+        from trainer_difusao.models import qwen_image
+
+        self.assertIsNone(qwen_image._build_transformer_bnb_config("none", torch.bfloat16))
+
+    def test_unsupported_levels_fail_explicitly(self):
+        from trainer_difusao.models import qwen_image
+
+        for level in ("2bit", "6bit"):
+            with self.assertRaises(SystemExit, msg=level):
+                qwen_image._resolve_transformer_quantization(level)
+            with self.assertRaises(SystemExit, msg=level):
+                qwen_image._build_transformer_bnb_config(level, torch.bfloat16)
+
+    def test_text_encoder_always_nf4(self):
+        from trainer_difusao.models import qwen_image
+
+        cfg = qwen_image._build_text_encoder_bnb_config(torch.bfloat16)
+        self.assertTrue(cfg.load_in_4bit)
+        self.assertEqual(cfg.bnb_4bit_quant_type, "nf4")
+        self.assertTrue(cfg.bnb_4bit_use_double_quant)
+
+    def test_cache_formats_are_distinct_and_legacy_fp4_rejected(self):
+        import json
+
+        from trainer_difusao.loaders.quant_cache import _is_cache_valid, resolve_quant_base_dir
+        from trainer_difusao.models import qwen_image
+
+        fmt = qwen_image._QWEN_QUANT_CACHE_FORMAT
+        self.assertEqual(set(fmt), {"4bit", "8bit"})
+        self.assertNotEqual(fmt["4bit"], "4bit")  # formato legado FP4
+        self.assertNotEqual(fmt["4bit"], fmt["8bit"])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertNotEqual(
+                resolve_quant_base_dir("m", "4bit", base_dir=root),
+                resolve_quant_base_dir("m", fmt["4bit"], base_dir=root),
+            )
+            legacy = root / "legacy"
+            (legacy / "transformer").mkdir(parents=True)
+            (legacy / "transformer" / "config.json").write_text("{}")
+            (legacy / "metadata.json").write_text(
+                json.dumps({"model_id": "m", "quant_format": "4bit", "custom_checkpoint": None})
+            )
+            tdir = legacy / "transformer"
+            self.assertTrue(_is_cache_valid(tdir, "m", "4bit"))
+            self.assertFalse(_is_cache_valid(tdir, "m", fmt["4bit"]))
+            self.assertFalse(_is_cache_valid(tdir, "m", fmt["8bit"]))
+
+    def test_epoch_checkpoint_metadata_records_quantization(self):
+        from trainer_difusao.models import qwen_image
+
+        captured = {}
+
+        def fake_save(model, d, name, epoch, metadata, optimizer=None):
+            captured.update(metadata)
+            return Path(d) / "x.safetensors"
+
+        with mock.patch.object(qwen_image, "save_adapter_checkpoint", fake_save), \
+                mock.patch.object(qwen_image, "_prune_checkpoints"):
+            qwen_image._maybe_save_epoch_checkpoint(
+                None, None, Path("."), "a", epoch=1, local_epoch_idx=1, epochs=1,
+                checkpoint_interval=1, global_step=1, quantization="8bit",
+            )
+        self.assertEqual(captured["quantization"], "8bit")
+
+
 if __name__ == "__main__":
     unittest.main()

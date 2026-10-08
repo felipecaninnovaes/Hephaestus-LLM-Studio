@@ -390,6 +390,17 @@ def _resume_epoch_range(epoch_offset: int, epochs: int) -> list[tuple[int, int]]
     )
 
 
+def _sample_output_path(output_path: Path, epoch: int) -> Path:
+    """Caminho da amostra `samples/sample_epoch_{epoch:03d}.png` (convenção do loop compartilhado).
+
+    `epoch` é a época absoluta; 0 é o baseline. Cria `samples/` se faltar. É o único
+    diretório que o orchestrator sobe/lista como amostras.
+    """
+    samples_dir = Path(output_path) / "samples"
+    samples_dir.mkdir(parents=True, exist_ok=True)
+    return samples_dir / f"sample_epoch_{epoch:03d}.png"
+
+
 def _current_lr(lr_scheduler: Any, optimizer: Any, default: float) -> float:
     """LR efetivo atual: o do scheduler; sem scheduler, o do param_group; senão `default`."""
     if lr_scheduler is not None:
@@ -858,7 +869,8 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
     _log_vram("depois do unload do text encoder")
 
     # Amostra baseline (sem LoRA treinado) com o embed cacheado, sem encoder
-    if sample_payload is not None:
+    # Mesma convenção do loop compartilhado: baseline só em treino novo (epoch_offset == 0).
+    if sample_payload is not None and epoch_offset == 0:
         _emit_metric(
             metrics_path,
             epoch=epoch_offset,
@@ -880,7 +892,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                 seed=sample_seed,
                 device=device,
                 dtype=torch_dtype,
-                output_path=output_path / "baseline.png",
+                output_path=_sample_output_path(output_path, 0),
             )
             _emit_metric(
                 metrics_path,
@@ -1202,7 +1214,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                         seed=sample_seed,
                         device=device,
                         dtype=torch_dtype,
-                        output_path=output_path / f"epoch{epoch}.png",
+                        output_path=_sample_output_path(output_path, epoch),
                     )
                     _log_vram(f"depois da amostra epoch {epoch}")
                 except Exception as e:

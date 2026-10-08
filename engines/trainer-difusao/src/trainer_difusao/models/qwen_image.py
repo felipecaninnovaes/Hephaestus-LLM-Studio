@@ -32,6 +32,7 @@ from trainer_difusao.common import (
     _resolve_output_name,
     _setup_cache_dir,
     _validate_train_aux,
+    _prune_checkpoints,
     save_adapter_checkpoint,
     save_final_adapter,
 )
@@ -281,6 +282,50 @@ def _qwen_normalized_latents(
     latents = (latents - mean) / std
     # Remove frame dimension for downstream processing
     return latents.squeeze(2)  # (B, 64, 1, H', W') -> (B, 64, H', W')
+
+
+def _maybe_save_epoch_checkpoint(
+    model: Any,
+    optimizer: Any,
+    checkpoints_dir: Any,
+    base_name: str,
+    *,
+    epoch: int,
+    local_epoch_idx: int,
+    epochs: int,
+    checkpoint_interval: int,
+    global_step: int,
+) -> bool:
+    """Salva checkpoint ao fim da época se `local_epoch_idx % checkpoint_interval == 0`
+    ou for a última época desta execução (mesma regra de `loop.py`), e poda para 2.
+
+    `local_epoch_idx` (1-based, relativo à execução) decide o intervalo; `epoch`
+    (absoluta) nomeia o arquivo e vai nos metadados. Retorna True se salvou."""
+    if local_epoch_idx % checkpoint_interval != 0 and local_epoch_idx != epochs:
+        return False
+    try:
+        metadata = {
+            "format": "pt",
+            "model_type": "lora",
+            "base_model": "qwen-image-2.1",
+            "epoch": str(epoch),
+            "step": str(global_step),
+        }
+        ckpt_path = save_adapter_checkpoint(
+            model,
+            checkpoints_dir,
+            base_name,
+            epoch,
+            metadata,
+            optimizer=optimizer,
+        )
+        print(f"[CHECKPOINT] Salvo em {ckpt_path}", flush=True)
+        _prune_checkpoints(checkpoints_dir, keep_last_n=2)
+        return True
+    except Exception as e:
+        print(f"[WARN] Erro ao salvar checkpoint: {e}", flush=True)
+        return False
+
 
 
 def _resume_epoch_range(epoch_offset: int, epochs: int) -> list[tuple[int, int]]:
@@ -1031,27 +1076,6 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                 # Cleanup
                 torch.cuda.empty_cache()
 
-                if batch_idx % checkpoint_interval == 0 and batch_idx > 0:
-                    try:
-                        metadata = {
-                            "format": "pt",
-                            "model_type": "lora",
-                            "base_model": "qwen-image-2.1",
-                            "epoch": str(epoch),
-                            "step": str(global_step),
-                        }
-                        ckpt_path = save_adapter_checkpoint(
-                            model_with_lora,
-                            checkpoints_dir,
-                            base_name,
-                            epoch,
-                            metadata,
-                            optimizer=optimizer,
-                        )
-                        print(f"[CHECKPOINT] Salvo em {ckpt_path}", flush=True)
-                    except Exception as e:
-                        print(f"[WARN] Erro ao salvar checkpoint: {e}", flush=True)
-
             # Resto de acumulação (ex.: último batch pulado por falta de cache) vira passo.
             flushed_grad_norm = accumulator.flush()
             if flushed_grad_norm is not None:
@@ -1080,6 +1104,21 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                 phase="epoch_complete",
                 message=f"Epoch {epoch} completo, loss médio={(f'{avg_epoch_loss:.4f}' if math.isfinite(avg_epoch_loss) else 'null')}",
             )
+
+            # Checkpoint uma vez por época (checkpoint_interval é em ÉPOCAS), após o flush
+            # de acumulação; mesma regra do loop compartilhado (índice local da execução).
+            _maybe_save_epoch_checkpoint(
+                model_with_lora,
+                optimizer,
+                checkpoints_dir,
+                base_name,
+                epoch=epoch,
+                local_epoch_idx=local_epoch_idx,
+                epochs=epochs,
+                checkpoint_interval=checkpoint_interval,
+                global_step=global_step,
+            )
+
             # Sample during training (reduced resolution)
             if sample_payload is not None and sample_interval > 0 and local_epoch_idx % sample_interval == 0:
                 try:

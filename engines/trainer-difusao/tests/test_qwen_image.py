@@ -649,6 +649,7 @@ class TestQwenEpochCheckpoint(unittest.TestCase):
 
 
 
+@unittest.skipIf(not HAS_TORCH, "torch not available")
 class TestQwenImageQuantization(unittest.TestCase):
     """`lora.quantization` governa o transformer; text encoder é sempre NF4."""
 

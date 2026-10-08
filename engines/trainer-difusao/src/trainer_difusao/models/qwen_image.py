@@ -401,6 +401,16 @@ def _sample_output_path(output_path: Path, epoch: int) -> Path:
     return samples_dir / f"sample_epoch_{epoch:03d}.png"
 
 
+def _baseline_sample_path(output_path: Path, epoch_offset: int) -> Path | None:
+    """Caminho do baseline (`sample_epoch_000.png`), ou None em resume (`epoch_offset > 0`).
+
+    Igual ao loop compartilhado: o baseline só existe em treino novo.
+    """
+    if epoch_offset != 0:
+        return None
+    return _sample_output_path(output_path, 0)
+
+
 def _current_lr(lr_scheduler: Any, optimizer: Any, default: float) -> float:
     """LR efetivo atual: o do scheduler; sem scheduler, o do param_group; senão `default`."""
     if lr_scheduler is not None:
@@ -870,7 +880,8 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
 
     # Amostra baseline (sem LoRA treinado) com o embed cacheado, sem encoder
     # Mesma convenção do loop compartilhado: baseline só em treino novo (epoch_offset == 0).
-    if sample_payload is not None and epoch_offset == 0:
+    baseline_sample_path = _baseline_sample_path(output_path, epoch_offset)
+    if sample_payload is not None and baseline_sample_path is not None:
         _emit_metric(
             metrics_path,
             epoch=epoch_offset,
@@ -892,7 +903,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                 seed=sample_seed,
                 device=device,
                 dtype=torch_dtype,
-                output_path=_sample_output_path(output_path, 0),
+                output_path=baseline_sample_path,
             )
             _emit_metric(
                 metrics_path,

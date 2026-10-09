@@ -36,6 +36,7 @@ import { friendlyJobError } from "@/types/studio";
 import { JOB_STATUS_CONFIG, JobArtifactsList } from "../JobCard";
 import { JobSamplesGallery } from "../JobSamplesGallery";
 import { showToast } from "@/components/ui/Toast";
+import { ActionCenterJobEta, isRunningTrainingJob } from "./ActionCenterJobEta";
 import { getJobServiceInfo } from "./jobServiceInfo";
 
 export interface ActionCenterJobItemProps {
@@ -204,6 +205,11 @@ export function ActionCenterJobItem({
               }
               showPercent
             />
+            {isRunningTrainingJob(job) && (
+              <div className="flex justify-end font-mono text-3xs empty:hidden">
+                <ActionCenterJobEta jobId={job.id} />
+              </div>
+            )}
             {job.phaseMessage && (
               <div className="flex items-center justify-between text-3xs text-zinc-400 font-mono">
                 <span className="truncate">{job.phaseMessage}</span>

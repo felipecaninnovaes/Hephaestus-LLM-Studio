@@ -262,6 +262,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => tracing::error!("recovery de preparações falhou: {e}"),
     }
 
+    // 8a. Exports ComfyUI órfãos (a task de envio morreu com o processo
+    //     anterior) viram `failed`. Best-effort: nunca derruba o boot.
+    match api_principal::integrations::comfyui::runner::fail_interrupted(&state.pool).await {
+        Ok(n) if n > 0 => tracing::warn!(n, "exports ComfyUI interrompidos marcados como failed"),
+        Ok(_) => {}
+        Err(e) => tracing::error!("recovery de exports ComfyUI falhou: {e}"),
+    }
+
     // 8b. Worker periódico de recovery de preparações órfãs em background (a cada 60s)
     let bg_state = state.clone();
     tokio::spawn(async move {

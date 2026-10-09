@@ -19,6 +19,7 @@ use serde_json::{json, Value};
 use tracing::Instrument;
 
 use super::{gate, handlers, AppState};
+use crate::integrations::comfyui::handlers as comfyui;
 use crate::{datasets, generations, jobs, monitoring, search};
 
 /// `(método, path, status_codes)` — espelho exato do contrato (sem `x-reserved`).
@@ -219,6 +220,39 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
     ("GET", "/api/generations/:id/thumb", &[200, 401, 404, 503]),
     ("POST", "/api/generations/delete", &[204, 400, 401, 503]),
     ("POST", "/api/generations/export", &[200, 400, 401, 503]),
+    // Integração ComfyUI (feat/comfyui-export).
+    ("GET", "/api/integrations/comfyui/targets", &[200, 401]),
+    (
+        "POST",
+        "/api/integrations/comfyui/targets",
+        &[201, 400, 401, 409],
+    ),
+    (
+        "PATCH",
+        "/api/integrations/comfyui/targets/:id",
+        &[200, 400, 401, 404, 409],
+    ),
+    (
+        "DELETE",
+        "/api/integrations/comfyui/targets/:id",
+        &[204, 401, 404],
+    ),
+    (
+        "POST",
+        "/api/integrations/comfyui/targets/:id/test",
+        &[200, 401, 404],
+    ),
+    (
+        "POST",
+        "/api/integrations/comfyui/targets/:id/exports",
+        &[202, 400, 401, 404, 422, 503],
+    ),
+    ("GET", "/api/integrations/comfyui/exports", &[200, 400, 401]),
+    (
+        "GET",
+        "/api/integrations/comfyui/exports/:id",
+        &[200, 401, 404],
+    ),
 ];
 
 /// Rotas públicas (sem gate): `/health` + `/ready` + `/api/auth/*`.
@@ -640,6 +674,31 @@ pub fn build(state: AppState) -> axum::Router {
         .route(
             "/api/generations/export",
             post(generations::handlers::export_generations),
+        )
+        // Integração ComfyUI (feat/comfyui-export).
+        .route(
+            "/api/integrations/comfyui/targets",
+            get(comfyui::list_targets).post(comfyui::create_target),
+        )
+        .route(
+            "/api/integrations/comfyui/targets/:id",
+            axum::routing::patch(comfyui::patch_target).delete(comfyui::delete_target),
+        )
+        .route(
+            "/api/integrations/comfyui/targets/:id/test",
+            post(comfyui::test_target),
+        )
+        .route(
+            "/api/integrations/comfyui/targets/:id/exports",
+            post(comfyui::create_export),
+        )
+        .route(
+            "/api/integrations/comfyui/exports",
+            get(comfyui::list_exports),
+        )
+        .route(
+            "/api/integrations/comfyui/exports/:id",
+            get(comfyui::get_export),
         )
         // route_layer DEPOIS dos .route(): aplicado a um router vazio o axum 0.7 panic
         // no boot (path_router.rs, `routes.is_empty()`). Só cobre as rotas deste

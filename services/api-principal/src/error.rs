@@ -59,3 +59,7 @@ pub const MSG_MODEL_DOWNLOAD_DISABLED: &str = "model download disabled";
 pub const MSG_JOB_NOT_TERMINAL: &str = "only terminal jobs (done|failed|cancelled) can be deleted";
 /// 415 de miniatura não decodificável.
 pub const MSG_THUMB_UNAVAILABLE: &str = "thumb unavailable";
+/// 409 de nome de destino ComfyUI já cadastrado (feat/comfyui-export).
+pub const MSG_TARGET_NAME_CONFLICT: &str = "comfyui target name already exists";
+/// 422 de origem que não é LoRA `.safetensors` exportável ao ComfyUI.
+pub const MSG_EXPORT_UNSUPPORTED: &str = "source is not an exportable lora safetensors";

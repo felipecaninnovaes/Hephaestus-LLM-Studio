@@ -7,6 +7,7 @@ pub mod auth;
 pub mod datasets;
 pub mod error;
 pub mod generations;
+pub mod integrations;
 pub mod jobs;
 pub mod models;
 pub mod monitoring;

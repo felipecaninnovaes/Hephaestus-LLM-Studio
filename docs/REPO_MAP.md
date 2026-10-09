@@ -17,6 +17,7 @@ responsabilidades sem abrir código; aprofunde com `graft ask --source`.
 [services/orchestrator :8082] — Docker API / subprocess; daemon difusão :8766 (cache VRAM quente); cache de dataset por `md5_zip` (`datasets/datasets-dedup/<md5_zip>/` + visão por job `datasets/datasets-cache/<job_id>/` via hardlink) e text-embeds compartilhado (`outputs/.text_embeds_cache/<namespace>/`), envs `DATASET_CACHE_MAX_GB`/`TEXT_EMBEDS_CACHE_MAX_GB`/`OUTPUT_PURGE_TTL_SECS`
         ↓
 [engines/*] trainer-yolo · trainer-difusao · trainer-clip (Python 3.11+, uv; dev com ENGINE_MOCK=1)
+[integrations/comfyui-hephaestus/] custom node ComfyUI (recebe LoRA do BFF; dono @engines)
 ```
 
 **Sem redes Docker customizadas** (`internal-net`/`frontend-net` não existem):
@@ -47,7 +48,7 @@ GPU real (VM dedicada `docker-04`, `10.15.50.114`, 60GB disco): `infra/compose.g
 
 ## 3. Posse de Dados (Postgres único, schema compartilhado)
 
-Migrations canônicas: `services/api-principal/migrations/0001..0025.sql`.
+Migrations canônicas: `services/api-principal/migrations/0001..0026.sql`.
 - **Domínio aplicação/dados (escrita: api-principal):** `users`, `auth_state`,
   `datasets`, `dataset_versions`, `job_prepares` (aceite assíncrono ADR-0025 —
   0015 tabela, 0016 índice único parcial `state='preparing'`), `images`,
@@ -55,7 +56,8 @@ Migrations canônicas: `services/api-principal/migrations/0001..0025.sql`.
   `models` (`kind` += `text_encoder` — 0018; arch `flux-2-klein-4b`|`flux-2-klein-9b`
   — 0025|`sdxl`|`sd15`|`qwen-image-2.1`),
   `generations`, `generation_inputs` (img2img — 0017 tabela efêmera
-  de inputs avulsos, sem GC; `used_at` marca consumo, linhas permanecem p/ auditoria).
+  de inputs avulsos, sem GC; `used_at` marca consumo, linhas permanecem p/ auditoria),
+  `comfy_targets` (destinos ComfyUI, token cifrado), `comfy_exports` (envios — 0026).
 - **Domínio execução (escrita: manager/orchestrator):** `jobs` (status inclui
   `preparing`/`dispatched` + `phase`/`message` — ADR-0024/ADR-0025;
   `metric_seq` — 0020; `started_at` — 0022; `gpu_device` TEXT = UUID efetivo
@@ -186,6 +188,11 @@ aceito em `/jobs/diffusion` e `/jobs/diffusion/generate` (só base;
 7680/12288); indeterminável ⇒ 4B com `variant_assumed` (hint 9B do cliente
 desempata; conflito com sniff confiante ⇒ 400).
 
+Integração ComfyUI (OpenAPI 0.32.0): `/api/integrations/comfyui/*` — CRUD de
+destinos + teste de conexão, envio de LoRA em background (upload em partes de
+32 MiB ao custom node `integrations/comfyui-hephaestus/`, conversão de chaves
+por arquitetura) e status do envio. Código: `services/api-principal/src/integrations/comfyui/`.
+
 ## 5. Módulos do Frontend (`apps/web/app/`)
 
 - `(studio)/dashboard` — visão geral, métricas de hardware, atalhos.
@@ -199,7 +206,8 @@ desempata; conflito com sniff confiante ⇒ 400).
   (img2img: dropzone + slider `initStrength` no `GenerationPanel`, ação
   "Usar como input" da galeria via localStorage `geracao:initSource`).
 - `(studio)/playground` — inferência interativa.
-- `(studio)/models` — upload/download de checkpoints (LoRA/pesos).
+- `(studio)/models` — upload/download de checkpoints (LoRA/pesos); botão "Enviar ao ComfyUI".
+- `(studio)/settings` — Integrações → ComfyUI (destinos e token).
 - `(studio)/environments` — nós executores, adoção e monitor de VRAM.
 - `login` — sessão single-user.
 

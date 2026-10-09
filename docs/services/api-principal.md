@@ -25,6 +25,7 @@ Os principais domínios atendidos pelo `api-principal` incluem:
 - `/api/jobs/*`: Submissão de treinamentos (YOLO e Difusão), cancelamento e telemetria.
 - `/api/search/*`: Busca semântica vetorial integrada a embeddings CLIP.
 - `/api/generations/*`: Histórico e galeria de imagens geradas por difusão.
+- `/api/integrations/comfyui/*`: Destinos ComfyUI (CRUD + teste de conexão) e envio de LoRA em background — upload em partes de 32 MiB ao custom node, conversão de chaves por arquitetura (strip prefixo PEFT, `.processor.` em SD15/SDXL, `.alpha` quando alpha≠rank); token do destino cifrado em AES-GCM com chave HKDF derivada do `jwt_secret`.
 
 ## Protocolo de Upload Chunked
 

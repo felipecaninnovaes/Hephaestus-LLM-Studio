@@ -37,6 +37,7 @@ aqui com a fonte. Trabalho futuro → `tasks/backlog.md`.
 - **Migration de backfill derruba o boot do api-principal** → `(item->>'epoch')::INTEGER` aborta com JSON `1.0` e `sqlx::migrate!` roda no boot → casts em backfill de JSONB sempre guardados (`jsonb_typeof` + `numeric`/`trunc`, fallback NULL). (migration 0021)
 - **Loki recebe logs de containers alheios ao stack (incl. env com `HF_TOKEN`)** → receiver `filelog` lê `/var/lib/docker/containers/*` do host inteiro → filtrar por label `com.docker.compose.project` (exige `labels:` no logging do compose). (fatia 2c, revisão de segurança)
 - **Gráfico de job de difusão mostra métricas YOLO zeradas e perde chaves novas (sem erro)** → struct de parse de métricas no orchestrator com campos `f64` + `#[serde(default)]` fabricava `0.0` para chaves de outra família de modelo e descartava as não declaradas → repassar as chaves numéricas do dict `metrics` como vieram; nunca `#[serde(default)]` em valor de métrica (ausente ≠ zero). (smoke GPU real; fix `0f1c90c`)
+- **Export ao ComfyUI falha `token_undecryptable` após trocar `AUTH_SECRET`/`jwt_secret`** → token do destino é AES-GCM com chave HKDF do `jwt_secret` → rotacionar o segredo exige recadastrar o token de cada destino. (feature comfy-export, migration 0026)
 
 ## Storage — S3/SeaweedFS
 
@@ -86,6 +87,7 @@ aqui com a fonte. Trabalho futuro → `tasks/backlog.md`.
 - **Geração com LoRA treinada "funciona" mas a LoRA nunca é aplicada (só um warning do diffusers "safe to ignore")** → `_save_lora_safetensors` grava as chaves sem prefixo de componente (`transformer_blocks.0…`) e o `load_lora_weights` filtra por `transformer.`/`unet.` → 0 chaves carregadas sem erro → remap do prefixo da arquitetura no load (`generation/adapters.py`) + 0 módulos injetados ⇒ falha explícita; prova de efeito de LoRA = diff de pixels vs geração sem LoRA, NUNCA md5 do PNG (metadata muda a cada run). (fix `ea2ed14`)
 - **`quantization` da geração Klein era no-op: 4B rodava bf16+offload (pico 8,9 GB vs 4,6 GB com 4-bit real) e o 9B dava OOM** → `from_pretrained` sem `quantization_config`; o campo do request chegava ao engine e nada o consumia → Klein quantiza via `load_flux2_quantized_components` (`generation/runner.py`); verificar quantização por log/assert nos módulos carregados, nunca pelo campo do request. (fix `ea2ed14`; ADR-0026)
 - **Treino Qwen-Image-2.1 completa "ok" mas ignora GA, scheduler/warmup e otimizador (job `d70fa652`: 630 passos p/ 126 amostras GA 4, progresso preso em 0.99, `lr` fixo 0.0002, sempre AdamW8bit)** → `models/qwen_image.py` tem loop próprio que divergiu do `models/loop.py` e não consumia esses campos, sem erro → loop próprio DEVE reusar `_create_optimizer`/`_create_lr_scheduler` e contar passos de otimizador; smoke confere nas métricas `step` final = epochs·ceil(N/GA) e `lr` variando. (fatia `fix/qwen-hyperparams`, merge `01005c9`)
+- **LoRA enviada ao ComfyUI carrega sem efeito ou com escala errada** → sem tensor `.alpha` o ComfyUI usa escala 1; LoRAs SD15/SDXL do estúdio só casam com `.processor.` no nome → alpha≠rank grava `.alpha`; conversão por arquitetura mantém `.processor.`. (spike v0.39.2)
 
 ## Frontend — apps/web
 

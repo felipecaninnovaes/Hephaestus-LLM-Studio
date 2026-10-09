@@ -140,7 +140,10 @@ branch `feat/integracao-web`.
 - **Nova rota `/api/version`** — `/health` já existe e é pública (D5).
 - **Backend novo para identidade** — `/api/auth/me` basta (D6).
 - **WebSocket, módulos Roadmap (difusao/openclip/playground/models-page/
-  environments-page/storage-page/events/settings), samples** — intactos.
+  environments-page/storage-page/events), samples** — intactos.
+  *(Atualização comfy-export, OpenAPI 0.32.0: `/settings` virou rota real —
+  Integrações → ComfyUI, destinos `/api/integrations/comfyui/*` — e
+  `/models` ganhou o botão "Enviar ao ComfyUI".)*
 
 **Descartado:** entregar "mais uma rota fake" (o problema é o mockup); fazer
 F6.2 junto com F6.1 (1 fatia = 1 boundary; backend primeiro — ordem do

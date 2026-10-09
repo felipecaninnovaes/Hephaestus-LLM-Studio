@@ -30,6 +30,7 @@ A execução de tarefas de longa duração (treinamento YOLO, treino de LoRA, ge
 O `ActionCenter` é a gaveta lateral (*Drawer*) global do estúdio:
 - **Ativação Desacoplada**: Aberto globalmente de qualquer página por atalhos ou disparo do evento customizado `hephaestus:open-action-center`.
 - **Monitoramento Ativo**: Acompanha a fila de jobs e jobs em execução em segundo plano sem exigir que o usuário permaneça na página `/jobs`.
+- **ETA de treino**: itens de treino em `running` mostram "≈ {etaFormatted} restantes" via `ActionCenterJobEta` (abre 1 SSE `/api/jobs/:id/events` por item em execução). `etaSeconds`/`etaFormatted`/`stepTimeSeconds`/`vramReservedGb` vêm do BFF (último ponto de métrica que os tem; `etaFormatted` derivado em Rust; ETA `null` fora de `running`). Em `/jobs`, o ETA do servidor tem prioridade, com fallback calculado no cliente (`lib/jobMetrics.ts`).
 - **Pontos de Decisão**: Dispara diálogos de revisão de dados gerados por autolabel (`AutolabelReviewModal`) e autotrack (`AutotrackerReviewModal`) antes de efetivar modificações no banco de dados.
 
 ---

@@ -7,6 +7,7 @@ import datetime
 import json
 import math
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,99 @@ def _format_eta(seconds: int | float | None) -> str:
     h = m // 60
     rem_m = m % 60
     return f"{h}h {rem_m}m" if rem_m > 0 else f"{h}h"
+
+class StepTimer:
+    """Tempo por passo de otimizador (EMA), imune a pausas longas (amostras/checkpoints)."""
+
+    def __init__(self, alpha: float = 0.3) -> None:
+        self._alpha = alpha
+        self._last = time.monotonic()
+        self.step_time_s: float | None = None
+
+    def pause_reset(self) -> None:
+        """Descarta o intervalo corrente (ex.: após amostra/checkpoint no meio do treino)."""
+        self._last = time.monotonic()
+
+    def tick(self) -> float:
+        now = time.monotonic()
+        dt = now - self._last
+        self._last = now
+        self.step_time_s = dt if self.step_time_s is None else (
+            self._alpha * dt + (1.0 - self._alpha) * self.step_time_s
+        )
+        return self.step_time_s
+
+
+def format_step_console_line(
+    *,
+    epoch: int,
+    total_epochs: int,
+    step: int,
+    total_steps: int,
+    loss: float | None,
+    step_time_s: float,
+    eta_s: int,
+    progress: float,
+    vram_gb: float | None,
+) -> str:
+    """Linha de console por passo, no formato do engine-kit (`[TELEMETRY] [FASE] (pct%) | VRAM ... ETA`)."""
+    vram_str = f" | VRAM: {vram_gb:.1f}GB" if vram_gb is not None else ""
+    loss_str = f"{loss:.4f}" if loss is not None and math.isfinite(loss) else "null"
+    return (
+        f"[TELEMETRY] [TRAINING] ({int(progress * 100)}%){vram_str} "
+        f"Época {epoch}/{total_epochs} · Step {step}/{total_steps} · Loss: {loss_str} · "
+        f"{step_time_s:.1f}s/step · ETA: {_format_eta(eta_s)}"
+    )
+
+
+def emit_training_step(
+    metrics_path: Path,
+    *,
+    epoch: int,
+    total_epochs: int,
+    step: int,
+    total_steps: int,
+    loss: float | None,
+    lr: float | None,
+    grad_norm: float | None,
+    diagnostics: dict[str, Any] | None,
+    progress: float,
+    timer: StepTimer,
+) -> None:
+    """Emite métrica de treino de UM passo de otimizador (metrics/telemetry.jsonl + linha de console)."""
+    step_time_s = timer.tick()
+    eta_s = int(step_time_s * max(0, total_steps - step))
+    vram_used = vram_allocated_gb()
+    line = format_step_console_line(
+        epoch=epoch,
+        total_epochs=total_epochs,
+        step=step,
+        total_steps=total_steps,
+        loss=loss,
+        step_time_s=step_time_s,
+        eta_s=eta_s,
+        progress=progress,
+        vram_gb=vram_used,
+    )
+    _emit_metric(
+        metrics_path,
+        epoch=epoch,
+        step=step,
+        loss=loss,
+        lr=lr,
+        grad_norm=grad_norm,
+        diagnostics=diagnostics,
+        progress=progress,
+        phase="training",
+        message=f"Época {epoch}/{total_epochs} · Step {step}/{total_steps} · Loss: {loss}",
+        total_steps=total_steps,
+        total_epochs=total_epochs,
+        eta_s=eta_s,
+        step_time_s=step_time_s,
+        vram_reserved_gb=vram_used,
+    )
+    print(line, flush=True)
+
 
 def _emit_metric(
     metrics_path: Path,

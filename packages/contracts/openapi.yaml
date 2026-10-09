@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hephaestus Studio API
-  version: 0.31.1
+  version: 0.32.0
   summary: Contrato público do backend principal (api-principal :8080)
   description: |
     Fatia 2 (auth single-user) + Fatia 3a (datasets núcleo) + `/health`.
@@ -41,6 +41,8 @@ tags:
     description: Jobs de treinamento e telemetria (BFF do manager, ADR-0007).
   - name: generations
     description: Galeria persistente de imagens geradas (ADR-0023 D5).
+  - name: integrations
+    description: Integrações externas (ComfyUI — destinos e envio de LoRA em partes).
 
 # Proteção padrão: rotas exigem o cookie de sessão.
 # Endpoints públicos declaram `security: []` explicitamente (inclusive /api/auth/me,
@@ -3315,6 +3317,279 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/integrations/comfyui/targets:
+    get:
+      operationId: listComfyTargets
+      tags: [integrations]
+      summary: Lista destinos ComfyUI cadastrados
+      responses:
+        "200":
+          description: Destinos (token nunca incluso; só `hasToken`).
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/ComfyTarget" } }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    post:
+      operationId: createComfyTarget
+      tags: [integrations]
+      summary: Cadastra um destino ComfyUI
+      description: |
+        `baseUrl` aceita só `http`/`https`, sem userinfo/query/fragmento; a barra final é removida.
+        O token é guardado cifrado (AES-256-GCM) e nunca volta em resposta.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, baseUrl, token]
+              additionalProperties: false
+              properties:
+                name: { type: string, minLength: 1, maxLength: 100 }
+                baseUrl: { type: string, maxLength: 2048 }
+                token: { type: string, minLength: 16, maxLength: 512 }
+      responses:
+        "201":
+          description: Destino criado.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ComfyTarget" }
+        "400":
+          description: "Corpo inválido ou `baseUrl` inválida (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "Nome já cadastrado (`code: comfy_target_name_taken`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/integrations/comfyui/targets/{id}:
+    patch:
+      operationId: updateComfyTarget
+      tags: [integrations]
+      summary: Edita um destino ComfyUI (campos ausentes são mantidos)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                name: { type: string, minLength: 1, maxLength: 100 }
+                baseUrl: { type: string, maxLength: 2048 }
+                token: { type: string, minLength: 16, maxLength: 512, description: "Só escrita; ausente mantém o token atual." }
+      responses:
+        "200":
+          description: Destino atualizado.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ComfyTarget" }
+        "400":
+          description: "Corpo inválido (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Destino não encontrado (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "Nome já cadastrado (`code: comfy_target_name_taken`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      operationId: deleteComfyTarget
+      tags: [integrations]
+      summary: Remove um destino (e seu histórico de envios)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: Removido.
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Destino não encontrado (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/integrations/comfyui/targets/{id}/test:
+    post:
+      operationId: testComfyTarget
+      tags: [integrations]
+      summary: Testa a conexão (GET /hephaestus/health, timeout 10 s)
+      description: |
+        Falha de conexão/autenticação NÃO é erro HTTP: responde 200 com
+        `lastCheckOk=false` e `lastCheckError`.
+        Token guardado que não decifra (segredo do servidor rotacionado) também cai aí.
+        Redirects (3xx) do destino não são seguidos e contam como falha.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: "Destino com o resultado do teste gravado."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ComfyTarget" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Destino não encontrado (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/integrations/comfyui/targets/{id}/exports:
+    post:
+      operationId: createComfyExport
+      tags: [integrations]
+      summary: Inicia o envio de um LoRA ao destino (assíncrono)
+      description: |
+        Corpo com EXATAMENTE uma forma: `{modelId}` OU `{jobId, artifactId}`; qualquer outra
+        combinação ⇒ 400. A origem tem de ser LoRA `.safetensors` (modelo `kind=lora` ou
+        artefato de job de difusão), senão 422. O envio roda em background; acompanhe por
+        `GET /exports/{id}`.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                modelId: { type: string, format: uuid }
+                jobId: { type: string, format: uuid }
+                artifactId: { type: string, format: uuid }
+                overwrite: { type: boolean, default: false }
+      responses:
+        "202":
+          description: "Envio aceito (`status: queued|uploading`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ComfyExport" }
+        "400":
+          description: "Corpo ambíguo ou inválido (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Destino, modelo, job ou artefato não encontrado (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          description: "Origem não é LoRA `.safetensors` exportável (`code: export_unsupported`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/integrations/comfyui/exports:
+    get:
+      operationId: listComfyExports
+      tags: [integrations]
+      summary: Envios recentes, mais novos primeiro
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        "200":
+          description: Envios recentes.
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/ComfyExport" } }
+        "400":
+          description: "`limit` fora de 1..100 (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/integrations/comfyui/exports/{id}:
+    get:
+      operationId: getComfyExport
+      tags: [integrations]
+      summary: Estado de um envio
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Envio.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ComfyExport" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Envio não encontrado (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+
 components:
   securitySchemes:
     sessionCookie:
@@ -3357,7 +3632,7 @@ components:
       properties:
         code:
           type: string
-          enum: [invalid_request, invalid_credentials, unauthorized, setup_required, not_found, slug_conflict, storage_unavailable, classes_in_use, index_not_ready, embedding_unavailable, import_invalid, engine_unsupported, queue_unavailable, dataset_not_ready, job_not_abortable, job_not_done, job_not_terminal, pairing_invalid, model_download_failed, model_download_disabled, invalid_gpu_device, gpu_device_requires_orchestrator, unknown_gpu_device, insufficient_gpu_vram, thumb_unavailable, internal]
+          enum: [invalid_request, invalid_credentials, unauthorized, setup_required, not_found, slug_conflict, storage_unavailable, classes_in_use, index_not_ready, embedding_unavailable, import_invalid, engine_unsupported, queue_unavailable, dataset_not_ready, job_not_abortable, job_not_done, job_not_terminal, pairing_invalid, model_download_failed, model_download_disabled, invalid_gpu_device, gpu_device_requires_orchestrator, unknown_gpu_device, insufficient_gpu_vram, thumb_unavailable, comfy_target_name_taken, export_unsupported, internal]
           description: "Código estável para máquina — a UI decide a mensagem por `code`, nunca por `message`; o cliente DEVE ter ramo default: o enum cresce por fatia (aditivo na 0.2.0: `not_found`, `slug_conflict`; na 0.3.0: `storage_unavailable`, ADR-0003 D10; na 0.3.0, fatia 3g.1: `classes_in_use`; na 0.5.0, fatia 3f.5: `index_not_ready`, `embedding_unavailable`, ADR-0004 D5; na 0.6.0, fatia 3e: `import_invalid`; na 0.7.0, fatia 4: `engine_unsupported`, `queue_unavailable`, `dataset_not_ready`, `job_not_abortable`; na 0.8.0, fatia 5: `job_not_done`; na 0.10.0, fatia H: `pairing_invalid`, ADR-0011 D5; na 0.11.0, fatia I: `model_download_failed`, `model_download_disabled`, ADR-0012 D4/E1)."
         message:
           type: string
@@ -5766,3 +6041,49 @@ components:
         measured:
           type: boolean
           description: "true quando 200 — bytes reais dos contadores."
+
+    ComfyTarget:
+      type: object
+      required: [id, name, baseUrl, hasToken, lastCheckAt, lastCheckOk, lastCheckError, createdAt, updatedAt]
+      additionalProperties: false
+      description: "Destino ComfyUI. O token NUNCA é devolvido."
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        baseUrl: { type: string, description: "http/https sem barra final." }
+        hasToken: { type: boolean }
+        lastCheckAt: { type: [string, "null"], format: date-time }
+        lastCheckOk: { type: [boolean, "null"] }
+        lastCheckError: { type: [string, "null"] }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    ComfyExport:
+      type: object
+      required: [id, targetId, targetName, filename, status, bytesTotal, bytesSent, error, errorCode, remotePath, createdAt, updatedAt]
+      additionalProperties: false
+      description: "Envio de um LoRA a um destino ComfyUI."
+      properties:
+        id: { type: string, format: uuid }
+        targetId: { type: string, format: uuid }
+        targetName: { type: string }
+        filename: { type: string, description: "Nome remoto (`[A-Za-z0-9._-]`, `.safetensors`)." }
+        status: { type: string, enum: [queued, uploading, done, failed] }
+        bytesTotal: { type: integer, format: int64, description: "Tamanho do arquivo enviado (após reescrita de header, se houve)." }
+        bytesSent: { type: integer, format: int64 }
+        error: { type: [string, "null"], description: "Mensagem PT-BR quando `failed`." }
+        errorCode:
+          type: [string, "null"]
+          description: |
+            Código estável quando `failed` (a UI decide por ele, nunca por `error`; cliente DEVE ter ramo default).
+            Do custom node: `file_exists`, `checksum_mismatch`, `size_mismatch`, `chunk_too_large`,
+            `upload_not_found`, `token_not_configured`, `unauthorized` (token recusado), `invalid_filename`,
+            `invalid_size`, `invalid_body`, `invalid_offset`, `size_exceeded`, `size_too_large` (> 4 GiB),
+            `insufficient_storage` (sem espaço em disco), `too_many_uploads` (limite de envios simultâneos).
+            Do BFF: `network` (sem conexão), `remote_error` (5xx/resposta inválida após retries),
+            `source_not_found` (objeto ausente/ilegível no storage), `source_invalid` (arquivo vazio,
+            safetensors inválido ou tamanho divergente do registrado), `interrupted` (reinício do servidor),
+            `token_undecryptable` (token guardado não decifra; edite o destino e informe o token de novo), `internal`.
+        remotePath: { type: [string, "null"] }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }

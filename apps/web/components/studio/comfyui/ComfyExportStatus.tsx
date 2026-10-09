@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { Button } from "@/components/ui/Button";
 import { ProgressBar } from "@/components/ui/ProgressBar";
 import type { ComfyExportState } from "@/hooks/useComfyExport";
@@ -64,6 +65,14 @@ export function ComfyExportStatus({
 					? "O arquivo já existe no ComfyUI."
 					: (state.error ?? "Falha no envio.")}
 			</p>
+			{e?.errorCode === "token_undecryptable" && (
+				<Link
+					href="/settings"
+					className="inline-block font-mono text-3xs text-brand-400 underline hover:text-brand-300"
+				>
+					Abrir Configurações
+				</Link>
+			)}
 			{state.canOverwrite && (
 				<Button type="button" variant="warning" size="sm" onClick={onOverwrite}>
 					Sobrescrever

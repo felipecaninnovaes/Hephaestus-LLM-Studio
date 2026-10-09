@@ -133,6 +133,8 @@ function baseUrlError(url: string): string | null {
 	return null;
 }
 
+export const MIN_TOKEN_LENGTH = 16;
+
 /** `hadToken`=true (edição) torna o token opcional ("deixe vazio para manter"). */
 export function validateTargetForm(
 	v: TargetFormValues,
@@ -142,7 +144,10 @@ export function validateTargetForm(
 	if (!v.name.trim()) errors.name = "Informe um nome.";
 	const urlErr = baseUrlError(normalizeBaseUrl(v.baseUrl));
 	if (urlErr) errors.baseUrl = urlErr;
-	if (!hadToken && !v.token.trim()) errors.token = "Informe o token.";
+	const token = v.token.trim();
+	if (!hadToken && !token) errors.token = "Informe o token.";
+	else if (token && token.length < MIN_TOKEN_LENGTH)
+		errors.token = `O token precisa ter pelo menos ${MIN_TOKEN_LENGTH} caracteres.`;
 	return errors;
 }
 
@@ -193,6 +198,12 @@ const EXPORT_ERROR_MESSAGES: Record<string, string> = {
 		"o arquivo de origem é inválido (vazio, safetensors corrompido ou tamanho divergente).",
 	interrupted: "envio interrompido por reinício do servidor.",
 	internal: "erro interno ao enviar.",
+	size_too_large: "o arquivo é grande demais para este destino.",
+	insufficient_storage: "o ComfyUI não tem espaço em disco suficiente.",
+	too_many_uploads:
+		"o ComfyUI está com envios demais em andamento; tente de novo em instantes.",
+	token_undecryptable:
+		"o token deste destino ficou ilegível (o segredo do servidor mudou). Edite o destino em Configurações e informe o token de novo.",
 };
 
 /** Mensagem PT-BR por `errorCode`; código desconhecido cai na mensagem do servidor. */

@@ -217,7 +217,7 @@ describe("formulário de destino", () => {
 		).toBeDefined();
 		expect(
 			validateTargetForm(
-				{ name: "a", baseUrl: "https://h/", token: "t" },
+				{ name: "a", baseUrl: "https://h/", token: "token-com-16-chars" },
 				false,
 			),
 		).toEqual({});
@@ -276,5 +276,27 @@ describe("comfyErrorMessage do POST", () => {
 		expect(comfyErrorMessage(422, "export_unsupported")).toContain(
 			"safetensors",
 		);
+	});
+});
+
+describe("token do destino", () => {
+	it("rejeita token com menos de 16 caracteres", () => {
+		const v = { name: "a", baseUrl: "http://h", token: "curto" };
+		expect(validateTargetForm(v, false).token).toContain("16");
+		expect(validateTargetForm(v, true).token).toContain("16");
+		expect(validateTargetForm({ ...v, token: "x".repeat(16) }, false)).toEqual(
+			{},
+		);
+	});
+});
+
+describe("novos códigos", () => {
+	it("token_undecryptable manda reeditar o destino", () => {
+		expect(
+			exportFailureMessage({ error: null, errorCode: "token_undecryptable" }),
+		).toContain("Edite o destino");
+		expect(
+			exportFailureMessage({ error: null, errorCode: "insufficient_storage" }),
+		).toContain("espaço");
 	});
 });

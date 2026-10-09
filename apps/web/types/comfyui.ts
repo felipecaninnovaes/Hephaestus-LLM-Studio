@@ -47,6 +47,10 @@ export type ComfyExportErrorCode =
 	| "source_invalid"
 	| "interrupted"
 	| "internal"
+	| "size_too_large"
+	| "insufficient_storage"
+	| "too_many_uploads"
+	| "token_undecryptable"
 	| (string & {});
 
 export interface ComfyExport {

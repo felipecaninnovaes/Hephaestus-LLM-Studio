@@ -24,7 +24,6 @@ from trainer_difusao.common import (
     TextEmbedsCache,
     _die,
     _emit_metric,
-    _format_eta,
     _load_lora_weights,
     _load_optimizer_state,
     _override_optimizer_lr,

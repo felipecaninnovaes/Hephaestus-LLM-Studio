@@ -109,6 +109,19 @@ pub fn remap_metrics(raw: &serde_json::Value) -> Vec<MetricsItem> {
                 .get("vramUsedGb")
                 .or_else(|| item.get("vram_used_gb"))
                 .and_then(|v| v.as_f64());
+            let vram_reserved_gb = item
+                .get("vramReservedGb")
+                .or_else(|| item.get("vram_reserved_gb"))
+                .and_then(|v| v.as_f64());
+            let step_time_seconds = item
+                .get("stepTimeSeconds")
+                .or_else(|| item.get("step_time_s"))
+                .and_then(|v| v.as_f64());
+            let eta_seconds = item
+                .get("etaSeconds")
+                .or_else(|| item.get("eta_s"))
+                .and_then(|v| v.as_f64())
+                .map(|v| v.round() as i64);
             Some(MetricsItem {
                 epoch,
                 box_loss,
@@ -123,6 +136,9 @@ pub fn remap_metrics(raw: &serde_json::Value) -> Vec<MetricsItem> {
                 phase,
                 message,
                 vram_used_gb,
+                vram_reserved_gb,
+                step_time_seconds,
+                eta_seconds,
             })
         })
         .collect()

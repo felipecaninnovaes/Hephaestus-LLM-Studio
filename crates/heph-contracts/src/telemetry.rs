@@ -90,6 +90,15 @@ pub struct MetricsItem {
     pub message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vram_used_gb: Option<f64>,
+    /// VRAM reservada do último passo (GB) — `vram_reserved_gb` no manager.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vram_reserved_gb: Option<f64>,
+    /// Tempo médio por passo (s) — `step_time_s` no manager.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step_time_seconds: Option<f64>,
+    /// ETA (s) emitido pelo engine neste passo — `eta_s` no manager.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eta_seconds: Option<i64>,
 }
 
 /// GET /internal/jobs/:id/metrics (manager) e GET /api/jobs/:id/metrics?afterSeq=
@@ -137,6 +146,9 @@ mod tests {
             phase: Some("train".into()),
             message: Some("epoch 1".into()),
             vram_used_gb: Some(4.2),
+            vram_reserved_gb: Some(5.0),
+            step_time_seconds: Some(1.5),
+            eta_seconds: Some(64),
         };
         let json = serde_json::to_string(&item).unwrap();
         assert!(json.contains("\"boxLoss\":0.1"));
@@ -145,6 +157,9 @@ mod tests {
         assert!(json.contains("\"map50\":0.8"));
         assert!(json.contains("\"map5095\":0.6"));
         assert!(json.contains("\"vramUsedGb\":4.2"));
+        assert!(json.contains("\"vramReservedGb\":5.0"));
+        assert!(json.contains("\"stepTimeSeconds\":1.5"));
+        assert!(json.contains("\"etaSeconds\":64"));
     }
 
     #[test]

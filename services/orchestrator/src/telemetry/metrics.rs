@@ -35,6 +35,17 @@ pub struct MetricsLine {
     pub message: Option<String>,
     #[serde(default)]
     pub vram_used_gb: Option<f64>,
+    /// VRAM reservada (cache do allocator) do último passo — `vramReservedGb`
+    /// (metrics.jsonl) / `vram_reserved_gb`.
+    #[serde(default)]
+    pub vram_reserved_gb: Option<f64>,
+    /// Tempo médio (EMA) por passo de otimizador — `step_time_s` (metrics.jsonl)
+    /// / `stepTimeSeconds` (telemetry.jsonl).
+    #[serde(default)]
+    pub step_time_s: Option<f64>,
+    /// ETA em segundos emitido pelo engine — `eta_s` / `etaSeconds`.
+    #[serde(default)]
+    pub eta_s: Option<i64>,
     #[serde(default)]
     pub nan_count: Option<i64>,
     #[serde(default)]
@@ -103,6 +114,15 @@ impl MetricsLine {
         }
         if let Some(vram) = self.vram_used_gb {
             obj["vram_used_gb"] = serde_json::json!(vram);
+        }
+        if let Some(v) = self.vram_reserved_gb {
+            obj["vram_reserved_gb"] = serde_json::json!(v);
+        }
+        if let Some(v) = self.step_time_s {
+            obj["step_time_s"] = serde_json::json!(v);
+        }
+        if let Some(v) = self.eta_s {
+            obj["eta_s"] = serde_json::json!(v);
         }
         if let Some(nan_count) = self.nan_count {
             obj["nan_count"] = serde_json::json!(nan_count);
@@ -183,6 +203,17 @@ pub fn parse_metrics_line(line: &str) -> Option<MetricsLine> {
         .get("vramUsedGb")
         .or_else(|| v.get("vram_used_gb"))
         .and_then(|x| x.as_f64());
+    // ETA/step-time/VRAM reservada: metrics.jsonl usa snake (`eta_s`,
+    // `step_time_s`) + `vramReservedGb`; telemetry.jsonl usa camel
+    // (`etaSeconds`, `stepTimeSeconds`, `vramReservedGb`). Aceita ambos.
+    let first_f64 = |keys: &[&str]| -> Option<f64> {
+        keys.iter()
+            .find_map(|k| v.get(*k).and_then(|x| x.as_f64()))
+            .filter(|x| x.is_finite())
+    };
+    let vram_reserved_gb = first_f64(&["vramReservedGb", "vram_reserved_gb"]);
+    let step_time_s = first_f64(&["stepTimeSeconds", "step_time_s"]);
+    let eta_s = first_f64(&["etaSeconds", "eta_s"]).map(|x| x.round() as i64);
     // Passthrough genérico: TODAS as chaves numéricas finitas do dict
     // `metrics` aninhado que não são campos YOLO/diffusion já conhecidos
     // (ex.: `grad_norm` do trainer-difusao, spec fatia 3b). Sem isso o
@@ -242,6 +273,9 @@ pub fn parse_metrics_line(line: &str) -> Option<MetricsLine> {
         phase,
         message,
         vram_used_gb,
+        vram_reserved_gb,
+        step_time_s,
+        eta_s,
         nan_count: diag_int("nanCount", "nan_count"),
         inf_count: diag_int("infCount", "inf_count"),
         extra,

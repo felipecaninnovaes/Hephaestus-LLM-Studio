@@ -5,7 +5,7 @@ import { showToast } from "@/components/ui/Toast";
 import { isApiError } from "@/lib/api";
 import {
 	comfyErrorMessage,
-	isFileExistsError,
+	isFileExistsFailure,
 	pollComfyExport,
 } from "@/lib/comfyExport";
 import { getComfyExport, startComfyExport } from "@/lib/comfyui";
@@ -93,7 +93,7 @@ export function useComfyExport(source: ComfyExportSource, label: string) {
 					showToast(`${label} enviado ao ComfyUI (${target.name}).`, "success");
 					return;
 				}
-				const exists = isFileExistsError(e.error);
+				const exists = isFileExistsFailure(e);
 				const msg = exists
 					? "o arquivo já existe no ComfyUI."
 					: (e.error ?? "falha desconhecida no envio.");
@@ -108,7 +108,7 @@ export function useComfyExport(source: ComfyExportSource, label: string) {
 			} catch (err) {
 				if (cancelled()) return;
 				if (isApiError(err)) {
-					fail(comfyErrorMessage(err.status, err.code), isFileExistsError(err));
+					fail(comfyErrorMessage(err.status, err.code), false);
 				} else {
 					fail("falha ao iniciar o envio.", false);
 				}

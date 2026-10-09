@@ -80,8 +80,8 @@ export function ComfyTargetForm({
 			}
 			onClose();
 		} catch (err) {
-			if (isApiError(err) && err.status === 409) {
-				setErrors({ name: comfyErrorMessage(409, err.code) });
+			if (isApiError(err) && err.code === "comfy_target_name_taken") {
+				setErrors({ name: comfyErrorMessage(err.status, err.code) });
 			} else if (isApiError(err)) {
 				setFormError(comfyErrorMessage(err.status, err.code));
 			} else {

@@ -3,10 +3,11 @@ import type { ComfyExport, ComfyTarget } from "@/types/comfyui";
 import {
 	buildTargetPatch,
 	chooseExportTarget,
+	comfyErrorMessage,
 	exportPercent,
 	isComfyExportableArtifact,
 	isComfyExportableModel,
-	isFileExistsError,
+	isFileExistsFailure,
 	normalizeBaseUrl,
 	pollComfyExport,
 	targetCheckState,
@@ -34,6 +35,7 @@ const exp = (over: Partial<ComfyExport>): ComfyExport => ({
 	bytesTotal: 100,
 	bytesSent: 0,
 	error: null,
+	errorCode: null,
 	remotePath: null,
 	createdAt: "",
 	updatedAt: "",
@@ -98,12 +100,35 @@ describe("exportPercent", () => {
 	});
 });
 
-describe("isFileExistsError", () => {
-	it("reconhece código do POST e texto da falha do export", () => {
-		expect(isFileExistsError({ code: "file_exists" })).toBe(true);
-		expect(isFileExistsError("file_exists: arquivo já existe")).toBe(true);
-		expect(isFileExistsError("Falha de rede")).toBe(false);
-		expect(isFileExistsError(null)).toBe(false);
+describe("isFileExistsFailure", () => {
+	it("só vale para export failed com errorCode file_exists", () => {
+		expect(
+			isFileExistsFailure({ status: "failed", errorCode: "file_exists" }),
+		).toBe(true);
+		expect(
+			isFileExistsFailure({ status: "failed", errorCode: "network" }),
+		).toBe(false);
+		expect(isFileExistsFailure({ status: "failed", errorCode: null })).toBe(
+			false,
+		);
+		expect(
+			isFileExistsFailure({ status: "uploading", errorCode: "file_exists" }),
+		).toBe(false);
+	});
+	it("não depende do texto da mensagem", () => {
+		const e = exp({
+			status: "failed",
+			error: "o arquivo já existe",
+			errorCode: "remote_error",
+		});
+		expect(isFileExistsFailure(e)).toBe(false);
+	});
+});
+
+describe("comfyErrorMessage", () => {
+	it("nome duplicado vem pelo code, não pelo status 409", () => {
+		expect(comfyErrorMessage(409, "comfy_target_name_taken")).toContain("nome");
+		expect(comfyErrorMessage(409, "outro")).not.toContain("nome");
 	});
 });
 
@@ -141,9 +166,14 @@ describe("pollComfyExport", () => {
 	});
 
 	it("failed é terminal e devolve o erro do export", async () => {
-		const out = await run([exp({ status: "failed", error: "file_exists" })])
-			.result;
-		expect(out.kind === "terminal" && out.export.error).toBe("file_exists");
+		const out = await run([
+			exp({
+				status: "failed",
+				error: "arquivo já existe",
+				errorCode: "file_exists",
+			}),
+		]).result;
+		expect(out.kind === "terminal" && out.export.errorCode).toBe("file_exists");
 	});
 
 	it("tolera erro transitório e retoma", async () => {

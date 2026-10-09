@@ -52,13 +52,11 @@ export function exportPercent(
 	return Math.min(100, Math.max(0, (e.bytesSent / e.bytesTotal) * 100));
 }
 
-/** `file_exists` do custom node chega ao BFF como falha do export (ou 409 no POST). */
-export function isFileExistsError(
-	err: { code?: string } | string | null | undefined,
+/** `file_exists` chega só como export `failed` com `errorCode` (o POST é sempre 202). */
+export function isFileExistsFailure(
+	e: Pick<ComfyExport, "status" | "errorCode">,
 ): boolean {
-	if (!err) return false;
-	if (typeof err === "string") return /file_exists|já existe/i.test(err);
-	return err.code === "file_exists";
+	return e.status === "failed" && e.errorCode === "file_exists";
 }
 
 /* ── Polling ───────────────────────────────────────────────────────── */
@@ -175,8 +173,8 @@ export function targetCheckState(
 /* ── Mensagens ─────────────────────────────────────────────────────── */
 
 export function comfyErrorMessage(status: number, code: string): string {
-	if (code === "file_exists") return "O arquivo já existe no ComfyUI.";
-	if (status === 409) return "Já existe um destino com esse nome.";
+	if (code === "comfy_target_name_taken")
+		return "Já existe um destino com esse nome.";
 	if (status === 422)
 		return "Só LoRAs de difusão em .safetensors podem ser enviados ao ComfyUI.";
 	if (status === 404) return "Destino ou item não encontrado.";

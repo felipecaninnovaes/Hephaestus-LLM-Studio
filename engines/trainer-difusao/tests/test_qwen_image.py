@@ -363,6 +363,46 @@ class TestQwenImageResumeEpochNumbering(unittest.TestCase):
 
 
 @unittest.skipIf(not HAS_TORCH, "torch not available")
+class TestQwenSamplesDir(unittest.TestCase):
+    """Amostras vão para `samples/sample_epoch_NNN.png` (única pasta que o orchestrator sobe)."""
+
+    def test_baseline_path_in_samples_dir_on_fresh_run(self):
+        import tempfile
+
+        from trainer_difusao.models.qwen_image import _baseline_sample_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            path = _baseline_sample_path(out, 0)
+            self.assertEqual(path, out / "samples" / "sample_epoch_000.png")
+            self.assertTrue(path.parent.is_dir())
+            self.assertEqual(list(out.glob("*.png")), [])
+
+    def test_no_baseline_on_resume(self):
+        import tempfile
+
+        from trainer_difusao.models.qwen_image import _baseline_sample_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(_baseline_sample_path(Path(tmp), 3))
+            self.assertFalse((Path(tmp) / "samples").exists())
+
+    def test_epoch_sample_uses_absolute_epoch_number(self):
+        import tempfile
+
+        from trainer_difusao.models.qwen_image import _resume_epoch_range, _sample_output_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            names = [
+                _sample_output_path(out, epoch).name
+                for _, epoch in _resume_epoch_range(epoch_offset=3, epochs=2)
+            ]
+            self.assertEqual(names, ["sample_epoch_004.png", "sample_epoch_005.png"])
+            self.assertEqual(_sample_output_path(out, 4).parent, out / "samples")
+
+
+@unittest.skipIf(not HAS_TORCH, "torch not available")
 class TestQwenSampleUsesCachedEmbeds(unittest.TestCase):
     """Regressão OOM: o text encoder precisa ser descarregado de verdade após o precompute,
     então a amostra consome o embed cacheado e nunca chama ``encode``."""

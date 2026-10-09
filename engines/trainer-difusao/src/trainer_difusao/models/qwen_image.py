@@ -24,7 +24,6 @@ from trainer_difusao.common import (
     TextEmbedsCache,
     _die,
     _emit_metric,
-    _format_eta,
     _load_lora_weights,
     _load_optimizer_state,
     _override_optimizer_lr,
@@ -48,6 +47,7 @@ from trainer_difusao.dataset import DiffusionDataset, build_dataloader
 from trainer_difusao.models.base import BaseModelTrainer
 from trainer_difusao.optimizers import _create_lr_scheduler, _create_optimizer
 from trainer_difusao.models.mock import _mock_train
+from trainer_difusao.common_pkg.metrics import StepTimer, emit_training_step
 from trainer_difusao.common_pkg.diagnostics import (
     DiagnosticsTracker,
     compute_grad_norm_l2,
@@ -388,6 +388,27 @@ def _resume_epoch_range(epoch_offset: int, epochs: int) -> list[tuple[int, int]]
     return list(
         enumerate(range(epoch_offset + 1, epoch_offset + epochs + 1), start=1)
     )
+
+
+def _sample_output_path(output_path: Path, epoch: int) -> Path:
+    """Caminho da amostra `samples/sample_epoch_{epoch:03d}.png` (convenção do loop compartilhado).
+
+    `epoch` é a época absoluta; 0 é o baseline. Cria `samples/` se faltar. É o único
+    diretório que o orchestrator sobe/lista como amostras.
+    """
+    samples_dir = Path(output_path) / "samples"
+    samples_dir.mkdir(parents=True, exist_ok=True)
+    return samples_dir / f"sample_epoch_{epoch:03d}.png"
+
+
+def _baseline_sample_path(output_path: Path, epoch_offset: int) -> Path | None:
+    """Caminho do baseline (`sample_epoch_000.png`), ou None em resume (`epoch_offset > 0`).
+
+    Igual ao loop compartilhado: o baseline só existe em treino novo.
+    """
+    if epoch_offset != 0:
+        return None
+    return _sample_output_path(output_path, 0)
 
 
 def _current_lr(lr_scheduler: Any, optimizer: Any, default: float) -> float:
@@ -858,7 +879,9 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
     _log_vram("depois do unload do text encoder")
 
     # Amostra baseline (sem LoRA treinado) com o embed cacheado, sem encoder
-    if sample_payload is not None:
+    # Mesma convenção do loop compartilhado: baseline só em treino novo (epoch_offset == 0).
+    baseline_sample_path = _baseline_sample_path(output_path, epoch_offset)
+    if sample_payload is not None and baseline_sample_path is not None:
         _emit_metric(
             metrics_path,
             epoch=epoch_offset,
@@ -880,7 +903,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                 seed=sample_seed,
                 device=device,
                 dtype=torch_dtype,
-                output_path=output_path / "baseline.png",
+                output_path=baseline_sample_path,
             )
             _emit_metric(
                 metrics_path,
@@ -980,7 +1003,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
 
     # Baseline sample will be generated after models are loaded
 
-    start_time = time.time()
+    step_timer = StepTimer()
     global_step = 0
     pending_losses: list[float] = []
     diag_tracker = DiagnosticsTracker(lora_interval_steps=max(1, total_progress_steps // max(1, epochs)))
@@ -999,6 +1022,31 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         ),
     )
 
+    def _emit_step(epoch: int, step: int, grad_norm: float) -> None:
+        """Um registro de treino por passo de otimizador (consome as perdas pendentes)."""
+        avg_loss = sum(pending_losses) / len(pending_losses) if pending_losses else 0.0
+        pending_losses.clear()
+        lr_now = _current_lr(lr_scheduler, optimizer, learning_rate)
+        emit_training_step(
+            metrics_path,
+            epoch=epoch,
+            total_epochs=epoch_offset + epochs,
+            step=step,
+            total_steps=total_progress_steps,
+            loss=avg_loss,
+            lr=lr_now,
+            grad_norm=grad_norm,
+            diagnostics=diag_tracker.build_diagnostics(
+                grad_norm_l2=grad_norm,
+                optimizer=optimizer,
+                default_lr=lr_now,
+                model=model_with_lora,
+                step=step,
+            ),
+            progress=min(0.99, 0.45 + (step / total_progress_steps) * 0.50),
+            timer=step_timer,
+        )
+
     try:
         # `epochs` épocas ADICIONAIS, numeradas de epoch_offset+1 até
         # epoch_offset+epochs (epoch_offset=0 reproduz a numeração original 1..epochs).
@@ -1006,6 +1054,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             epoch_loss = 0.0
             num_batches = 0
             accumulator.reset()
+            step_timer.pause_reset()  # exclui amostra/checkpoint da época anterior
 
             for batch_idx, batch in enumerate(dataloader):
                 # Prepare batch
@@ -1105,40 +1154,8 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                     if stepped_grad_norm is not None:
                         last_grad_norm = stepped_grad_norm
                         global_step += 1
-                        # Metrics: a cada 5 passos de otimizador ou no último da época
-                        if global_step % 5 == 0 or is_last_batch:
-                            avg_loss = sum(pending_losses) / len(pending_losses)
-                            pending_losses.clear()
-                            effective_lr = _current_lr(lr_scheduler, optimizer, learning_rate)
-                            elapsed = time.time() - start_time
-                            time_per_step = elapsed / global_step
-                            remaining_steps = max(0, total_progress_steps - global_step)
-                            eta_seconds = time_per_step * remaining_steps
-
-                            progress = min(0.99, 0.45 + (global_step / total_progress_steps) * 0.50)
-                            vram_used = vram_allocated_gb()
-                            diag_payload = diag_tracker.build_diagnostics(
-                                grad_norm_l2=last_grad_norm,
-                                optimizer=optimizer,
-                                default_lr=effective_lr,
-                                model=model_with_lora,
-                                step=global_step,
-                            )
-                            _emit_metric(
-                                metrics_path,
-                                epoch=epoch,
-                                step=global_step,
-                                loss=avg_loss,
-                                lr=effective_lr,
-                                grad_norm=last_grad_norm,
-                                diagnostics=diag_payload,
-                                progress=progress,
-                                phase="training",
-                                message=f"Epoch {epoch}/{epoch_offset + epochs}, step {global_step}/{total_progress_steps}, loss={(f'{avg_loss:.4f}' if math.isfinite(avg_loss) else 'null')}",
-                                eta_s=int(eta_seconds),
-                                step_time_s=time_per_step,
-                                vram_reserved_gb=vram_used,
-                            )
+                        # Métrica/telemetria/console a CADA passo de otimizador
+                        _emit_step(epoch, global_step, last_grad_norm)
 
                 # Cleanup
                 torch.cuda.empty_cache()
@@ -1148,6 +1165,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             if flushed_grad_norm is not None:
                 last_grad_norm = flushed_grad_norm
                 global_step += 1
+                _emit_step(epoch, global_step, last_grad_norm)
 
             # End of epoch
             avg_epoch_loss = epoch_loss / max(1, num_batches)
@@ -1202,7 +1220,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                         seed=sample_seed,
                         device=device,
                         dtype=torch_dtype,
-                        output_path=output_path / f"epoch{epoch}.png",
+                        output_path=_sample_output_path(output_path, epoch),
                     )
                     _log_vram(f"depois da amostra epoch {epoch}")
                 except Exception as e:

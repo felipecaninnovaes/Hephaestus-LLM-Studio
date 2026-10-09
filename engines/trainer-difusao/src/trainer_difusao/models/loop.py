@@ -28,6 +28,7 @@ from trainer_difusao.common import (
     save_final_adapter,
     _validate_train_aux,
 )
+from trainer_difusao.common_pkg.metrics import StepTimer, emit_training_step
 from trainer_difusao.common_pkg.diagnostics import (
     DiagnosticsTracker,
     compute_grad_norm_l2,
@@ -556,6 +557,7 @@ class TrainingLoopRunner:
         )
 
         global_step = 0
+        step_timer = StepTimer()
         safe_avg_loss = None
         diag_tracker = DiagnosticsTracker(lora_interval_steps=max(1, total_train_steps // max(1, tcfg.epochs)))
         last_grad_norm: float = 0.0
@@ -595,6 +597,7 @@ class TrainingLoopRunner:
         for epoch_idx in range(1, tcfg.epochs + 1):
             epoch = epoch_idx + tcfg.epoch_offset
             comp["trainable_module"].train()
+            step_timer.pause_reset()  # exclui amostra/checkpoint da época anterior
             epoch_loss = 0.0
             steps_in_epoch = 0
             unconsumed_losses: list[torch.Tensor] = []
@@ -639,39 +642,39 @@ class TrainingLoopRunner:
                     optimizer.zero_grad()
                     global_step += 1
 
-                    # Emite métricas a cada 5 passos de otimização ou fim de época
-                    if global_step % 5 == 0 or steps_in_epoch == len(dataloader):
-                        cur_loss_raw = _sync_unconsumed()
-                        safe_loss = (
-                            None
-                            if (math.isnan(cur_loss_raw) or math.isinf(cur_loss_raw))
-                            else round(cur_loss_raw, 4)
-                        )
-                        effective_lr = (
-                            lr_scheduler.get_last_lr()[0] if lr_scheduler else tcfg.learning_rate
-                        )
-                        current_progress = round(
-                            min(0.99, max(0.10, 0.10 + 0.89 * (global_step / max(1, total_train_steps)))), 4
-                        )
-                        diagnostics_payload = diag_tracker.build_diagnostics(
-                            grad_norm_l2=last_grad_norm,
-                            optimizer=optimizer,
-                            default_lr=effective_lr,
-                            model=comp.get("trainable_module"),
-                            step=global_step,
-                        )
-                        _emit_metric(
-                            metrics_path,
-                            epoch=epoch,
-                            step=global_step,
-                            loss=safe_loss,
-                            lr=effective_lr,
-                            grad_norm=last_grad_norm,
-                            diagnostics=diagnostics_payload,
-                            progress=current_progress,
-                            phase="training",
-                            message=f"Época {epoch}/{tcfg.epochs + tcfg.epoch_offset} · Step {global_step}/{total_train_steps} · Loss: {safe_loss}",
-                        )
+                    # Emite métricas/telemetria/console a CADA passo de otimizador
+                    cur_loss_raw = _sync_unconsumed()
+                    safe_loss = (
+                        None
+                        if (math.isnan(cur_loss_raw) or math.isinf(cur_loss_raw))
+                        else round(cur_loss_raw, 4)
+                    )
+                    effective_lr = (
+                        lr_scheduler.get_last_lr()[0] if lr_scheduler else tcfg.learning_rate
+                    )
+                    current_progress = round(
+                        min(0.99, max(0.10, 0.10 + 0.89 * (global_step / max(1, total_train_steps)))), 4
+                    )
+                    diagnostics_payload = diag_tracker.build_diagnostics(
+                        grad_norm_l2=last_grad_norm,
+                        optimizer=optimizer,
+                        default_lr=effective_lr,
+                        model=comp.get("trainable_module"),
+                        step=global_step,
+                    )
+                    emit_training_step(
+                        metrics_path,
+                        epoch=epoch,
+                        total_epochs=tcfg.epochs + tcfg.epoch_offset,
+                        step=global_step,
+                        total_steps=total_train_steps,
+                        loss=safe_loss,
+                        lr=effective_lr,
+                        grad_norm=last_grad_norm,
+                        diagnostics=diagnostics_payload,
+                        progress=current_progress,
+                        timer=step_timer,
+                    )
 
             # Garante que qualquer perda remanescente da época seja sincronizada para o epoch_loss
             _sync_unconsumed()

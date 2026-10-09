@@ -7,28 +7,107 @@ import datetime
 import json
 import math
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
-from engine_kit.telemetry import sanitize_finite_floats
+from engine_kit.telemetry import format_eta, sanitize_finite_floats
 from engine_kit.vram import vram_allocated_gb, vram_reserved_gb as _get_vram_reserved_gb
 
 from engine_kit.sensors import get_global_sensors, sanitize_system_metrics
 
-def _format_eta(seconds: int | float | None) -> str:
-    """Formata segundos em representação legível humana de ETA (ex.: '2h 15m', '45s')."""
-    if seconds is None or seconds < 0:
-        return "N/A"
-    sec = int(round(seconds))
-    if sec < 60:
-        return f"{sec}s"
-    m = sec // 60
-    s = sec % 60
-    if m < 60:
-        return f"{m}m {s}s" if s > 0 else f"{m}m"
-    h = m // 60
-    rem_m = m % 60
-    return f"{h}h {rem_m}m" if rem_m > 0 else f"{h}h"
+class StepTimer:
+    """Tempo por passo de otimizador (EMA), imune a pausas longas (amostras/checkpoints)."""
+
+    def __init__(self, alpha: float = 0.3) -> None:
+        self._alpha = alpha
+        self._last = time.monotonic()
+        self.step_time_s: float | None = None
+
+    def pause_reset(self) -> None:
+        """Descarta o intervalo corrente (ex.: após amostra/checkpoint no meio do treino)."""
+        self._last = time.monotonic()
+
+    def tick(self) -> float:
+        now = time.monotonic()
+        dt = now - self._last
+        self._last = now
+        self.step_time_s = dt if self.step_time_s is None else (
+            self._alpha * dt + (1.0 - self._alpha) * self.step_time_s
+        )
+        return self.step_time_s
+
+
+def format_step_console_line(
+    *,
+    epoch: int,
+    total_epochs: int,
+    step: int,
+    total_steps: int,
+    loss: float | None,
+    step_time_s: float,
+    eta_s: int,
+    progress: float,
+    vram_gb: float | None,
+) -> str:
+    """Linha de console por passo, no formato do engine-kit (`[TELEMETRY] [FASE] (pct%) | VRAM ... ETA`)."""
+    vram_str = f" | VRAM: {vram_gb:.1f}GB" if vram_gb is not None else ""
+    loss_str = f"{loss:.4f}" if loss is not None and math.isfinite(loss) else "null"
+    return (
+        f"[TELEMETRY] [TRAINING] ({int(progress * 100)}%){vram_str} "
+        f"Época {epoch}/{total_epochs} · Step {step}/{total_steps} · Loss: {loss_str} · "
+        f"{step_time_s:.1f}s/step · ETA: {format_eta(eta_s)}"
+    )
+
+
+def emit_training_step(
+    metrics_path: Path,
+    *,
+    epoch: int,
+    total_epochs: int,
+    step: int,
+    total_steps: int,
+    loss: float | None,
+    lr: float | None,
+    grad_norm: float | None,
+    diagnostics: dict[str, Any] | None,
+    progress: float,
+    timer: StepTimer,
+) -> None:
+    """Emite métrica de treino de UM passo de otimizador (metrics/telemetry.jsonl + linha de console)."""
+    step_time_s = timer.tick()
+    eta_s = int(step_time_s * max(0, total_steps - step))
+    vram_used = vram_allocated_gb()
+    line = format_step_console_line(
+        epoch=epoch,
+        total_epochs=total_epochs,
+        step=step,
+        total_steps=total_steps,
+        loss=loss,
+        step_time_s=step_time_s,
+        eta_s=eta_s,
+        progress=progress,
+        vram_gb=vram_used,
+    )
+    _emit_metric(
+        metrics_path,
+        epoch=epoch,
+        step=step,
+        loss=loss,
+        lr=lr,
+        grad_norm=grad_norm,
+        diagnostics=diagnostics,
+        progress=progress,
+        phase="training",
+        message=f"Época {epoch}/{total_epochs} · Step {step}/{total_steps} · Loss: {loss}",
+        total_steps=total_steps,
+        total_epochs=total_epochs,
+        eta_s=eta_s,
+        step_time_s=step_time_s,
+        vram_reserved_gb=_get_vram_reserved_gb(),
+    )
+    print(line, flush=True)
+
 
 def _emit_metric(
     metrics_path: Path,
@@ -79,7 +158,7 @@ def _emit_metric(
         if eta_formatted is not None:
             payload["eta_formatted"] = eta_formatted
         elif eta_s is not None:
-            payload["eta_formatted"] = _format_eta(eta_s)
+            payload["eta_formatted"] = format_eta(eta_s)
         if phase is not None:
             payload["phase"] = phase
         if message is not None:
@@ -138,7 +217,7 @@ def _emit_metric(
             if eta_formatted is not None:
                 t_payload["etaFormatted"] = str(eta_formatted)
             elif eta_s is not None:
-                t_payload["etaFormatted"] = _format_eta(eta_s)
+                t_payload["etaFormatted"] = format_eta(eta_s)
 
             m_dict: dict[str, Any] = {}
             if loss is not None:

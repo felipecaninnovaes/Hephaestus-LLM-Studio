@@ -387,8 +387,10 @@ async fn envio_ponta_a_ponta_reescreve_header_e_confere_sha() {
     assert_eq!(done["remotePath"], "/models/loras/hephaestus/x.safetensors");
     assert_eq!(done["bytesSent"], done["bytesTotal"]);
 
-    let f = fake.lock().unwrap();
-    let sent = f.committed.clone().expect("commit");
+    let (sent, puts) = {
+        let f = fake.lock().unwrap();
+        (f.committed.clone().expect("commit"), f.puts.clone())
+    };
     assert_eq!(done["bytesTotal"].as_i64().unwrap(), sent.len() as i64);
     let n = u64::from_le_bytes(sent[..8].try_into().unwrap()) as usize;
     let header: Value = serde_json::from_slice(&sent[8..8 + n]).unwrap();
@@ -400,10 +402,9 @@ async fn envio_ponta_a_ponta_reescreve_header_e_confere_sha() {
     assert_eq!(&sent[8 + n..8 + n + 128], &data[..], "tensores byte a byte");
     assert_eq!(&sent[8 + n + 128..], &8f32.to_le_bytes());
     assert!(
-        f.puts.iter().all(|(_, len)| *len <= 100),
+        puts.iter().all(|(_, len)| *len <= 100),
         "partes ≤ chunkSize do init"
     );
-    drop(f);
 
     let (_, list) = call(&app, "GET", &format!("{BASE}/exports?limit=5"), None).await;
     assert_eq!(list.as_array().unwrap().len(), 1);

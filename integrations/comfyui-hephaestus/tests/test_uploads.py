@@ -185,3 +185,65 @@ async def test_stale_uploads_removed_on_init(client, lora_dir):
     os.utime(old, (past, past))
     assert (await init(client)).status == 201
     assert not old.exists() and fresh.exists()
+
+
+async def test_stale_upload_entry_dropped_then_put_and_commit_404(client, lora_dir):
+    uid = (await (await init(client)).json())["uploadId"]
+    part = lora_dir / "hephaestus" / ".uploads" / f"{uid}.part"
+    past = time.time() - 2 * 3600
+    os.utime(part, (past, past))
+    assert (await init(client, filename="b.safetensors")).status == 201
+    assert not part.exists()
+    r = await client.put(f"/hephaestus/lora/uploads/{uid}?offset=0", data=b"x", headers=AUTH)
+    assert r.status == 404 and (await r.json())["error"] == "upload_not_found"
+    r = await client.post(f"/hephaestus/lora/uploads/{uid}/commit", json={"sha256": "0" * 64}, headers=AUTH)
+    assert r.status == 404
+    assert not part.exists()
+
+
+async def test_part_vanished_put_and_commit_404_not_500(client, lora_dir):
+    uid = (await (await init(client)).json())["uploadId"]
+    (lora_dir / "hephaestus" / ".uploads" / f"{uid}.part").unlink()
+    r = await client.put(f"/hephaestus/lora/uploads/{uid}?offset=0", data=b"x", headers=AUTH)
+    assert r.status == 404 and (await r.json())["error"] == "upload_not_found"
+    uid2 = (await (await init(client, filename="c.safetensors")).json())["uploadId"]
+    (lora_dir / "hephaestus" / ".uploads" / f"{uid2}.part").unlink()
+    r = await client.post(f"/hephaestus/lora/uploads/{uid2}/commit", json={"sha256": "0" * 64}, headers=AUTH)
+    assert r.status == 404
+
+
+async def test_append_never_recreates_removed_part(tmp_path):
+    part = tmp_path / "gone.part"
+    with pytest.raises(FileNotFoundError):
+        hr._append(part, b"x")
+    assert not part.exists()
+
+
+async def test_size_too_large_400(client):
+    r = await init(client, size=hr.MAX_UPLOAD_SIZE + 1)
+    assert r.status == 400 and (await r.json())["error"] == "size_too_large"
+    monkey_ok = await init(client, size=hr.MAX_UPLOAD_SIZE)
+    assert monkey_ok.status in (201, 507)
+
+
+async def test_insufficient_storage_507(client, lora_dir, monkeypatch):
+    class U:
+        free = hr.MIN_FREE_BYTES + 99
+
+    monkeypatch.setattr(hr.shutil, "disk_usage", lambda p: U)
+    r = await init(client, size=100)
+    assert r.status == 507 and (await r.json())["error"] == "insufficient_storage"
+    assert not list((lora_dir / "hephaestus" / ".uploads").glob("*.part"))
+    assert (await init(client, size=99)).status == 201
+
+
+async def test_too_many_active_uploads_429_and_slot_freed_by_abort(client):
+    uids = []
+    for i in range(hr.MAX_ACTIVE_UPLOADS):
+        r = await init(client, filename=f"f{i}.safetensors")
+        assert r.status == 201
+        uids.append((await r.json())["uploadId"])
+    r = await init(client, filename="extra.safetensors")
+    assert r.status == 429 and (await r.json())["error"] == "too_many_uploads"
+    await client.delete(f"/hephaestus/lora/uploads/{uids[0]}", headers=AUTH)
+    assert (await init(client, filename="extra.safetensors")).status == 201

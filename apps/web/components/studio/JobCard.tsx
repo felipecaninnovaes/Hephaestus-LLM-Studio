@@ -1,12 +1,15 @@
 "use client";
 
 import type React from "react";
+import type { ReactNode } from "react";
 import {
   IconDownload,
   IconRefresh,
   IconTarget,
   IconSparkles,
 } from "@/components/icons";
+import { ComfyExportControl } from "@/components/studio/comfyui";
+import { isComfyExportableArtifact } from "@/lib/comfyExport";
 import { formatBytes, formatDuration, formatRelativeTime } from "@/lib/format";
 import type { Job, JobArtifact, JobStatus } from "@/types/studio";
 
@@ -80,6 +83,8 @@ export const JOB_STATUS_CONFIG: Record<
 
 export interface JobArtifactsListProps {
   jobId: string;
+  /** Quando presente, artefatos .safetensors de LoRA ganham "Enviar ao ComfyUI". */
+  job?: Pick<Job, "kind" | "engine">;
   artifacts: JobArtifact[];
   onDownload: (jobId: string, art: JobArtifact) => void;
   onResume?: (jobId: string, art: JobArtifact) => void;
@@ -88,6 +93,7 @@ export interface JobArtifactsListProps {
 
 export function JobArtifactsList({
   jobId,
+  job,
   artifacts,
   onDownload,
   onResume,
@@ -101,43 +107,64 @@ export function JobArtifactsList({
         Artefatos Gerados ({artifacts.length})
       </div>
       <div className="space-y-1.5">
-        {artifacts.map((art) => (
-          <div
-            key={art.id}
-            className="flex items-center justify-between rounded-lg border border-white/10 bg-white/[0.03] backdrop-blur-sm px-3 py-1.5 text-2xs"
-          >
-            <span
-              className="truncate text-zinc-300 mr-2 font-mono text-2xs"
-              title={art.path}
+        {artifacts.map((art) => {
+          const canExport = job && isComfyExportableArtifact(job, art);
+          const row = (extra?: { button: ReactNode; status: ReactNode }) => (
+            <div
+              key={art.id}
+              className="rounded-lg border border-white/10 bg-white/[0.03] backdrop-blur-sm px-3 py-1.5 text-2xs"
             >
-              {art.path.split("/").pop()} ({formatBytes(art.bytes)})
-            </span>
-            <div className="flex items-center gap-2.5 shrink-0">
-              {onResume &&
-                (art.kind === "checkpoint" ||
-                  art.kind === "model" ||
-                  art.path.endsWith(".safetensors")) && (
+              <div className="flex items-center justify-between">
+                <span
+                  className="truncate text-zinc-300 mr-2 font-mono text-2xs"
+                  title={art.path}
+                >
+                  {art.path.split("/").pop()} ({formatBytes(art.bytes)})
+                </span>
+                <div className="flex items-center gap-2.5 shrink-0">
+                  {onResume &&
+                    (art.kind === "checkpoint" ||
+                      art.kind === "model" ||
+                      art.path.endsWith(".safetensors")) && (
+                      <button
+                        type="button"
+                        onClick={() => onResume(jobId, art)}
+                        className="inline-flex items-center gap-1 text-sky-400 hover:text-sky-300 font-mono text-2xs font-medium cursor-pointer"
+                        title="Retomar treino a partir deste checkpoint"
+                      >
+                        <IconSparkles className="size-3" />
+                        <span>Retomar</span>
+                      </button>
+                    )}
                   <button
                     type="button"
-                    onClick={() => onResume(jobId, art)}
-                    className="inline-flex items-center gap-1 text-sky-400 hover:text-sky-300 font-mono text-2xs font-medium cursor-pointer"
-                    title="Retomar treino a partir deste checkpoint"
+                    onClick={() => onDownload(jobId, art)}
+                    className="inline-flex items-center gap-1 text-brand-400 hover:text-brand-300 font-mono text-2xs font-medium cursor-pointer"
                   >
-                    <IconSparkles className="size-3" />
-                    <span>Retomar</span>
+                    <IconDownload className="size-3" />
+                    <span>Baixar</span>
                   </button>
-                )}
-              <button
-                type="button"
-                onClick={() => onDownload(jobId, art)}
-                className="inline-flex items-center gap-1 text-brand-400 hover:text-brand-300 font-mono text-2xs font-medium cursor-pointer"
-              >
-                <IconDownload className="size-3" />
-                <span>Baixar</span>
-              </button>
+                </div>
+              </div>
+              {extra && (
+                <div className="mt-1.5 flex flex-col items-start gap-1.5">
+                  {extra.button}
+                  {extra.status}
+                </div>
+              )}
             </div>
-          </div>
-        ))}
+          );
+          if (!canExport) return row();
+          return (
+            <ComfyExportControl
+              key={art.id}
+              source={{ jobId, artifactId: art.id }}
+              label={art.path.split("/").pop() ?? art.path}
+            >
+              {(parts) => row(parts)}
+            </ComfyExportControl>
+          );
+        })}
       </div>
     </div>
   );

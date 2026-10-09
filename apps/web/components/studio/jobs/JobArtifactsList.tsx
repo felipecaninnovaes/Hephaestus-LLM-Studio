@@ -1,7 +1,10 @@
 "use client";
 
+import type React from "react";
 import { IconDownload, IconSparkles } from "@/components/icons";
+import { ComfyExportControl } from "@/components/studio/comfyui";
 import { Button } from "@/components/ui/Button";
+import { isComfyExportableArtifact } from "@/lib/comfyExport";
 import { formatBytes } from "@/lib/format";
 import type { Job, JobArtifact } from "@/types/studio";
 
@@ -33,50 +36,71 @@ export function JobArtifactsList({
         Artefatos ({filtered.length})
       </h3>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-        {filtered.map((art) => (
-          <div
-            key={art.id}
-            id={`artifact-${art.id}`}
-            className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.02] p-3 backdrop-blur-sm transition-shadow"
-          >
-            <div className="min-w-0 mr-2">
-              <span
-                className="block text-xs font-semibold text-zinc-200 truncate"
-                title={art.path}
-              >
-                {art.path.split("/").pop()}
-              </span>
-              <span className="block font-mono text-2xs text-zinc-400">
-                {formatBytes(art.bytes)} · {art.kind}
-              </span>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              {(art.kind === "checkpoint" ||
-                art.kind === "model" ||
-                art.path.endsWith(".safetensors")) && (
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => onResume(job, art)}
-                  title="Retomar treino a partir deste checkpoint"
-                >
-                  <IconSparkles className="size-3.5 text-sky-400" />
-                  <span>Retomar</span>
-                </Button>
+        {filtered.map((art) => {
+          const canExport = isComfyExportableArtifact(job, art);
+          const card = (extra?: { button: React.ReactNode; status: React.ReactNode }) => (
+            <div
+              key={art.id}
+              id={`artifact-${art.id}`}
+              className="rounded-xl border border-white/10 bg-white/[0.02] p-3 backdrop-blur-sm transition-shadow"
+            >
+              <div className="flex items-center justify-between">
+                <div className="min-w-0 mr-2">
+                  <span
+                    className="block text-xs font-semibold text-zinc-200 truncate"
+                    title={art.path}
+                  >
+                    {art.path.split("/").pop()}
+                  </span>
+                  <span className="block font-mono text-2xs text-zinc-400">
+                    {formatBytes(art.bytes)} · {art.kind}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {(art.kind === "checkpoint" ||
+                    art.kind === "model" ||
+                    art.path.endsWith(".safetensors")) && (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => onResume(job, art)}
+                      title="Retomar treino a partir deste checkpoint"
+                    >
+                      <IconSparkles className="size-3.5 text-sky-400" />
+                      <span>Retomar</span>
+                    </Button>
+                  )}
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => onDownload(job.id, art)}
+                  >
+                    <IconDownload className="size-3.5" />
+                    <span>Baixar</span>
+                  </Button>
+                </div>
+              </div>
+              {extra && (
+                <div className="mt-2.5 flex flex-col items-start gap-2">
+                  {extra.button}
+                  {extra.status}
+                </div>
               )}
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                onClick={() => onDownload(job.id, art)}
-              >
-                <IconDownload className="size-3.5" />
-                <span>Baixar</span>
-              </Button>
             </div>
-          </div>
-        ))}
+          );
+          if (!canExport) return card();
+          return (
+            <ComfyExportControl
+              key={art.id}
+              source={{ jobId: job.id, artifactId: art.id }}
+              label={art.path.split("/").pop() ?? art.path}
+            >
+              {(parts) => card(parts)}
+            </ComfyExportControl>
+          );
+        })}
       </div>
     </div>
   );

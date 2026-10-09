@@ -426,6 +426,7 @@ export function ActionCenterJobItem({
           {artifacts && artifacts.length > 0 && (
             <JobArtifactsList
               jobId={job.id}
+              job={job}
               artifacts={artifacts.filter(
                 (art) =>
                   art.kind !== "sample" &&

@@ -4,6 +4,7 @@ export * from "./models";
 export * from "./jobs";
 export * from "./diffusion";
 export * from "./yolo";
+export * from "./comfyui";
 export * from "./telemetry";
 
 /* Tipos canônicos gerados automaticamente a partir de packages/contracts/openapi.yaml */

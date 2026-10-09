@@ -19,6 +19,7 @@ const SEGMENT_LABELS: Record<string, string> = {
   geracao: "Geração",
   environments: "Orquestradores",
   models: "Modelos",
+  settings: "Configurações",
 };
 
 function labelFor(segment: string): string {

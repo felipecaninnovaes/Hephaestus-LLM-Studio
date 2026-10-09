@@ -3,6 +3,8 @@
 import { IconDownload, IconPencil, IconTrash } from "@/components/icons";
 import { Button } from "@/components/ui/Button";
 import { GlassCard } from "@/components/ui/GlassCard";
+import { ComfyExportControl } from "@/components/studio/comfyui";
+import { isComfyExportableModel } from "@/lib/comfyExport";
 import { formatBytes, formatRelativeTime } from "@/lib/format";
 import {
   modelSourceLabel,
@@ -171,6 +173,17 @@ export function ModelCard({
           <IconTrash className="h-3.5 w-3.5" />
         </Button>
       </div>
+
+      {isComfyExportableModel(m) && (
+        <ComfyExportControl source={{ modelId: m.id }} label={m.name}>
+          {({ button, status }) => (
+            <div className="mt-2 flex flex-col gap-2 [&>*:first-child]:w-full">
+              {button}
+              {status}
+            </div>
+          )}
+        </ComfyExportControl>
+      )}
     </GlassCard>
   );
 }

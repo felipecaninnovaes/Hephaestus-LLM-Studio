@@ -15,6 +15,8 @@ const PART_TIMEOUT: Duration = Duration::from_secs(600);
 const COMMIT_TIMEOUT: Duration = Duration::from_secs(900);
 /// Teto de segurança para o `chunkSize` devolvido pelo destino (RAM do BFF).
 const MAX_CHUNK_SIZE: u64 = 64 * 1024 * 1024;
+/// Teto do corpo de resposta lido do destino (não confiável).
+const MAX_RESPONSE_BODY: usize = 64 * 1024;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum TransferError {
@@ -49,6 +51,7 @@ fn failed(code: &str, msg: impl Into<String>) -> TransferError {
 fn call_failure(e: CallError) -> TransferError {
     let code = match &e {
         CallError::Network => "network".to_string(),
+        CallError::Redirect => "remote_error".to_string(),
         CallError::Api { code, .. } if !code.is_empty() => code.clone(),
         CallError::Api { .. } => "remote_error".to_string(),
     };
@@ -58,6 +61,8 @@ fn call_failure(e: CallError) -> TransferError {
 #[derive(Debug)]
 enum CallError {
     Network,
+    /// 3xx: redirects não são seguidos (o token iria a outro host).
+    Redirect,
     Api {
         status: u16,
         code: String,
@@ -83,6 +88,9 @@ pub fn api_message(status: u16, code: &str) -> String {
             "o ComfyUI recusou a requisição de envio".into()
         }
         "file_exists" => "o arquivo já existe no ComfyUI (envie com sobrescrever)".into(),
+        "size_too_large" => "o arquivo passa do tamanho máximo aceito pelo ComfyUI (4 GiB)".into(),
+        "insufficient_storage" => "sem espaço em disco no ComfyUI".into(),
+        "too_many_uploads" => "o ComfyUI já tem 4 envios em andamento".into(),
         "upload_not_found" => "o ComfyUI perdeu o upload em andamento".into(),
         "chunk_too_large" => "o ComfyUI recusou a parte: maior que o permitido".into(),
         "size_exceeded" => "o envio passou do tamanho declarado".into(),
@@ -93,12 +101,37 @@ pub fn api_message(status: u16, code: &str) -> String {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Remote {
     client: Client,
     base_url: String,
     token: String,
     retry_delay: Duration,
+}
+
+impl std::fmt::Debug for Remote {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Remote")
+            .field("base_url", &self.base_url)
+            .field("token", &"<redacted>")
+            .finish_non_exhaustive()
+    }
+}
+
+/// Lê o corpo em stream; `None` se passar de `MAX_RESPONSE_BODY` ou falhar.
+async fn read_limited(mut resp: Response) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    while let Some(chunk) = resp.chunk().await.ok()? {
+        if out.len() + chunk.len() > MAX_RESPONSE_BODY {
+            return None;
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Some(out)
+}
+
+async fn read_json<T: serde::de::DeserializeOwned>(resp: Response) -> Option<T> {
+    serde_json::from_slice(&read_limited(resp).await?).ok()
 }
 
 #[derive(Debug, Deserialize)]
@@ -125,6 +158,7 @@ impl Remote {
     pub fn new(base_url: &str, token: &str) -> Self {
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .unwrap_or_default();
         Self {
@@ -165,8 +199,11 @@ impl Remote {
         if resp.status().is_success() {
             return Ok(resp);
         }
+        if resp.status().is_redirection() {
+            return Err(CallError::Redirect);
+        }
         let status = resp.status().as_u16();
-        let parsed: Option<ApiErrorBody> = resp.json().await.ok();
+        let parsed: Option<ApiErrorBody> = read_json(resp).await;
         Err(CallError::Api {
             status,
             code: parsed.as_ref().map(|p| p.error.clone()).unwrap_or_default(),
@@ -186,9 +223,9 @@ impl Remote {
             )
             .await
             .map_err(describe)?;
-        r.json()
-            .await
-            .map_err(|_| "resposta inválida do ComfyUI (o custom node está instalado?)".to_string())
+        read_json(r).await.ok_or_else(|| {
+            "resposta inválida do ComfyUI (o custom node está instalado?)".to_string()
+        })
     }
 
     async fn init(
@@ -208,7 +245,7 @@ impl Remote {
             )
             .await
             .map_err(call_failure)?;
-        r.json().await.map_err(|_| {
+        read_json(r).await.ok_or_else(|| {
             failed(
                 "remote_error",
                 "resposta inválida do ComfyUI ao iniciar o envio",
@@ -298,7 +335,7 @@ impl Remote {
                 } if code == "upload_not_found" => TransferError::UploadLost,
                 e => call_failure(e),
             })?;
-        let c: CommitResponse = r.json().await.map_err(|_| {
+        let c: CommitResponse = read_json(r).await.ok_or_else(|| {
             failed(
                 "remote_error",
                 "resposta inválida do ComfyUI ao finalizar o envio",
@@ -370,6 +407,10 @@ impl Remote {
 fn describe(e: CallError) -> String {
     match e {
         CallError::Network => "sem conexão com o destino ComfyUI".to_string(),
+        CallError::Redirect => {
+            "o destino respondeu com redirecionamento (não seguido); use a URL final do ComfyUI"
+                .to_string()
+        }
         CallError::Api { status, code, .. } => {
             if status == StatusCode::NOT_FOUND.as_u16() && code.is_empty() {
                 "o custom node do Hephaestus não foi encontrado no destino".to_string()

@@ -158,7 +158,7 @@ async fn crud_nunca_devolve_o_token_e_cifra_no_banco() {
         &app,
         "POST",
         &format!("{BASE}/targets"),
-        Some(json!({"name": "RunPod", "baseUrl": "http://x", "token": "t"})),
+        Some(json!({"name": "RunPod", "baseUrl": "http://x", "token": TOKEN})),
     )
     .await;
     assert_eq!(
@@ -184,7 +184,7 @@ async fn crud_nunca_devolve_o_token_e_cifra_no_banco() {
         &app,
         "PATCH",
         &format!("{BASE}/targets/{id}"),
-        Some(json!({"token": "novo-token"})),
+        Some(json!({"token": "novo-token-123456789"})),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -198,7 +198,25 @@ async fn crud_nunca_devolve_o_token_e_cifra_no_banco() {
         &changed.token_nonce,
     )
     .unwrap();
-    assert_eq!(plain, "novo-token");
+    assert_eq!(plain, "novo-token-123456789");
+
+    // Token curto demais (< 16) ⇒ 400, no POST e no PATCH.
+    let (s, _) = call(
+        &app,
+        "POST",
+        &format!("{BASE}/targets"),
+        Some(json!({"name": "curto", "baseUrl": "http://x", "token": "123456789012345"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, _) = call(
+        &app,
+        "PATCH",
+        &format!("{BASE}/targets/{id}"),
+        Some(json!({"token": "curto"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
 
     let (s, _) = call(&app, "DELETE", &format!("{BASE}/targets/{id}"), None).await;
     assert_eq!(s, StatusCode::NO_CONTENT);
@@ -222,7 +240,7 @@ async fn base_url_e_corpos_invalidos_sao_400() {
             &app,
             "POST",
             &format!("{BASE}/targets"),
-            Some(json!({"name": "n", "baseUrl": bad, "token": "t"})),
+            Some(json!({"name": "n", "baseUrl": bad, "token": TOKEN})),
         )
         .await;
         assert_eq!(
@@ -235,7 +253,7 @@ async fn base_url_e_corpos_invalidos_sao_400() {
         &app,
         "POST",
         &format!("{BASE}/targets"),
-        Some(json!({"name": " ", "baseUrl": "http://h", "token": "t"})),
+        Some(json!({"name": " ", "baseUrl": "http://h", "token": TOKEN})),
     )
     .await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
@@ -561,4 +579,48 @@ async fn run_export_direto_com_origem_vazia_falha_legivel() {
     assert_eq!(e["status"], "failed");
     assert!(e["error"].as_str().unwrap().contains("vazio"));
     assert_eq!(e["errorCode"], "source_invalid");
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres efêmero (studio_test*)"]
+async fn token_que_nao_decifra_vira_teste_falho_e_export_failed() {
+    let _g = SERIAL.lock().await;
+    let storage = api_principal::storage::MockStorage::new();
+    let (file, _) = lora_bytes();
+    let key = format!(
+        "models/diffusion/comfy-test/{}/lora.safetensors",
+        Uuid::new_v4()
+    );
+    storage.put_bytes(&key, file.clone()).await;
+    let st = state(storage).await;
+    let app = routes::build(st.clone());
+    let model = insert_lora_model(&st, &key, file.len() as i64, "lora", "sdxl").await;
+    let t = create_target(&app, "rotacionado", "http://127.0.0.1:1").await;
+    let id = t["id"].as_str().unwrap();
+    // Simula `jwt_secret` rotacionado: o ciphertext guardado não decifra mais.
+    sqlx::query("UPDATE comfy_targets SET token_nonce = $2 WHERE id = $1")
+        .bind(id.parse::<Uuid>().unwrap())
+        .bind(vec![0u8; 12])
+        .execute(&st.pool)
+        .await
+        .unwrap();
+
+    let (s, body) = call(&app, "POST", &format!("{BASE}/targets/{id}/test"), None).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(body["lastCheckOk"], false);
+    assert_eq!(
+        body["lastCheckError"],
+        "token ilegível; edite o destino e informe o token de novo"
+    );
+
+    let (s, exp) = call(
+        &app,
+        "POST",
+        &format!("{BASE}/targets/{id}/exports"),
+        Some(json!({"modelId": model})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::ACCEPTED, "{exp}");
+    assert_eq!(exp["status"], "failed");
+    assert_eq!(exp["errorCode"], "token_undecryptable");
 }

@@ -172,11 +172,31 @@ pub async fn delete_target(State(state): State<AppState>, Path(id): Path<String>
     }
 }
 
-/// Decifra o token do destino e monta o cliente remoto.
-fn remote_for(state: &AppState, t: &TargetRow) -> Result<Remote, Box<Response>> {
-    let token = crypto::decrypt(&state.jwt_secret, &t.token_ciphertext, &t.token_nonce)
-        .map_err(|_| Box::new(internal()))?;
-    Ok(Remote::new(&t.base_url, &token))
+const UNREADABLE_TOKEN_CODE: &str = "token_undecryptable";
+const UNREADABLE_TOKEN_MSG: &str = "token ilegível; edite o destino e informe o token de novo";
+
+/// Decifra o token do destino e monta o cliente remoto. `None` quando o
+/// token não decifra (ex.: `jwt_secret` rotacionado).
+fn remote_for(state: &AppState, t: &TargetRow) -> Option<Remote> {
+    crypto::decrypt(&state.jwt_secret, &t.token_ciphertext, &t.token_nonce)
+        .ok()
+        .map(|token| Remote::new(&t.base_url, &token))
+}
+
+fn resolve_error(e: ResolveError) -> Response {
+    match e {
+        ResolveError::NotFound => not_found(),
+        ResolveError::Unsupported => err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "export_unsupported",
+            MSG_EXPORT_UNSUPPORTED,
+        ),
+        ResolveError::Unavailable => err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "queue_unavailable",
+            MSG_QUEUE_UNAVAILABLE,
+        ),
+    }
 }
 
 pub async fn test_target(State(state): State<AppState>, Path(id): Path<String>) -> Response {
@@ -189,13 +209,12 @@ pub async fn test_target(State(state): State<AppState>, Path(id): Path<String>) 
         Ok(None) => return not_found(),
         Err(_) => return internal(),
     };
-    let remote = match remote_for(&state, &target) {
-        Ok(r) => r,
-        Err(r) => return *r,
-    };
-    let (ok, error) = match remote.health().await {
-        Ok(_) => (true, None),
-        Err(msg) => (false, Some(msg)),
+    let (ok, error) = match remote_for(&state, &target) {
+        None => (false, Some(UNREADABLE_TOKEN_MSG.to_string())),
+        Some(remote) => match remote.health().await {
+            Ok(_) => (true, None),
+            Err(msg) => (false, Some(msg)),
+        },
     };
     match repo::set_check(&state.pool, id, ok, error.as_deref()).await {
         Ok(Some(row)) => Json(target_wire(row)).into_response(),
@@ -225,27 +244,10 @@ pub async fn create_export(
         Ok(None) => return not_found(),
         Err(_) => return internal(),
     };
-    let remote = match remote_for(&state, &target) {
-        Ok(r) => r,
-        Err(r) => return *r,
-    };
+    let remote = remote_for(&state, &target);
     let src = match source::resolve(&state.pool, state.manager.as_ref(), &src_ref).await {
         Ok(s) => s,
-        Err(ResolveError::NotFound) => return not_found(),
-        Err(ResolveError::Unsupported) => {
-            return err(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "export_unsupported",
-                MSG_EXPORT_UNSUPPORTED,
-            )
-        }
-        Err(ResolveError::Unavailable) => {
-            return err(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "queue_unavailable",
-                MSG_QUEUE_UNAVAILABLE,
-            )
-        }
+        Err(e) => return resolve_error(e),
     };
     let export_id = Uuid::new_v4();
     let new = NewExport {
@@ -260,13 +262,29 @@ pub async fn create_export(
     if repo::insert_export(&state.pool, &new).await.is_err() {
         return internal();
     }
-    let job = ExportJob {
-        export_id,
-        remote,
-        source: src,
-        overwrite: req.overwrite,
-    };
-    tokio::spawn(run_export(state.pool.clone(), state.storage.clone(), job));
+    match remote {
+        Some(remote) => {
+            let job = ExportJob {
+                export_id,
+                remote,
+                source: src,
+                overwrite: req.overwrite,
+            };
+            tokio::spawn(run_export(state.pool.clone(), state.storage.clone(), job));
+        }
+        None => {
+            let failed = repo::finish_failed(
+                &state.pool,
+                export_id,
+                UNREADABLE_TOKEN_CODE,
+                UNREADABLE_TOKEN_MSG,
+            )
+            .await;
+            if failed.is_err() {
+                return internal();
+            }
+        }
+    }
     match repo::get_export(&state.pool, export_id).await {
         Ok(Some(row)) => (StatusCode::ACCEPTED, Json(export_wire(row))).into_response(),
         _ => internal(),

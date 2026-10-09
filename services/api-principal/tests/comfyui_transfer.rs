@@ -184,3 +184,78 @@ async fn health_ok_e_token_errado_em_ptbr() {
         .unwrap_err();
     assert!(err.contains("conexão"), "{err}");
 }
+
+/// Servidor que responde `/hephaestus/health` com o que `make` produzir e
+/// conta quantas vezes `/alvo` foi alcançado.
+async fn health_server<F>(make: F) -> (String, std::sync::Arc<std::sync::atomic::AtomicU32>)
+where
+    F: Fn() -> axum::response::Response + Clone + Send + Sync + 'static,
+{
+    use axum::routing::get;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let hits = std::sync::Arc::new(AtomicU32::new(0));
+    let h2 = hits.clone();
+    let app = axum::Router::new()
+        .route("/hephaestus/health", get(move || async move { make() }))
+        .route(
+            "/alvo",
+            get(move || async move {
+                h2.fetch_add(1, Ordering::Relaxed);
+                "x"
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (url, hits)
+}
+
+#[tokio::test]
+async fn redirect_do_destino_nao_e_seguido_e_falha_com_mensagem_clara() {
+    use axum::response::IntoResponse;
+    use std::sync::atomic::Ordering;
+    let (url, hits) = health_server(|| {
+        (
+            axum::http::StatusCode::FOUND,
+            [(axum::http::header::LOCATION, "/alvo")],
+        )
+            .into_response()
+    })
+    .await;
+    let err = remote(&url).health().await.unwrap_err();
+    assert!(err.contains("redirecionamento"), "{err}");
+    assert_eq!(hits.load(Ordering::Relaxed), 0, "o redirect foi seguido");
+}
+
+#[tokio::test]
+async fn corpo_de_erro_gigante_do_destino_e_limitado_sem_vazar_no_erro() {
+    use axum::response::IntoResponse;
+    let (url, _) = health_server(|| {
+        (
+            axum::http::StatusCode::BAD_GATEWAY,
+            "A".repeat(5 * 1024 * 1024),
+        )
+            .into_response()
+    })
+    .await;
+    let err = remote(&url).health().await.unwrap_err();
+    assert!(err.contains("502") && err.len() < 200, "{err}");
+}
+
+#[tokio::test]
+async fn corpo_de_sucesso_gigante_e_resposta_invalida() {
+    use axum::response::IntoResponse;
+    let big = format!(
+        r#"{{"version":"1","chunkSize":1,"pad":"{}"}}"#,
+        "A".repeat(200 * 1024)
+    );
+    let (url, _) = health_server(move || big.clone().into_response()).await;
+    let err = remote(&url).health().await.unwrap_err();
+    assert!(err.contains("resposta inválida"), "{err}");
+}
+
+#[test]
+fn debug_do_remote_nao_vaza_o_token() {
+    let dbg = format!("{:?}", Remote::new("http://h", TOKEN));
+    assert!(!dbg.contains(TOKEN), "{dbg}");
+}

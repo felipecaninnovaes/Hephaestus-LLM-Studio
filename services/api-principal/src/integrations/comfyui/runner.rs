@@ -85,11 +85,10 @@ async fn send(
     storage: &dyn StoragePort,
     job: &ExportJob,
 ) -> Result<(u64, String), Failure> {
-    let db_err = |e: sqlx::Error| {
-        Failure::new(
-            "internal",
-            format!("falha ao atualizar o status do envio: {e}"),
-        )
+    let export_id = job.export_id;
+    let db_err = move |e: sqlx::Error| {
+        tracing::error!(%export_id, error = %e, "comfy export: falha ao atualizar o status");
+        Failure::new("internal", "falha interna ao atualizar o status do envio")
     };
     let mut restarts = 0;
     loop {

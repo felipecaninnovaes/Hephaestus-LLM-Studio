@@ -84,6 +84,7 @@ pub struct ComfyExportResponse {
 }
 
 pub const MAX_NAME_CHARS: usize = 100;
+pub const MIN_TOKEN_CHARS: usize = 16;
 pub const MAX_TOKEN_CHARS: usize = 512;
 
 pub fn valid_name(raw: &str) -> Option<String> {
@@ -93,7 +94,8 @@ pub fn valid_name(raw: &str) -> Option<String> {
 
 pub fn valid_token(raw: &str) -> Option<String> {
     let t = raw.trim();
-    (!t.is_empty() && t.chars().count() <= MAX_TOKEN_CHARS && !t.chars().any(char::is_control))
+    let len = t.chars().count();
+    ((MIN_TOKEN_CHARS..=MAX_TOKEN_CHARS).contains(&len) && !t.chars().any(char::is_control))
         .then(|| t.to_string())
 }
 

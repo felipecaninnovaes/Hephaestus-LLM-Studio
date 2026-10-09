@@ -32,28 +32,29 @@ pub enum ResolveError {
 /// Nome aceito pelo custom node: `[A-Za-z0-9._-]`, ≤ 200, termina em
 /// `.safetensors`, sem `..`.
 pub fn remote_filename(raw: &str) -> String {
-    let base = raw.rsplit('/').next().unwrap_or(raw);
-    let stem = base.strip_suffix(".safetensors").unwrap_or(base);
-    let mut clean: String = stem
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    while clean.contains("..") {
-        clean = clean.replace("..", "_");
-    }
     const EXT: &str = ".safetensors";
-    clean.truncate(200 - EXT.len());
-    if clean.is_empty() {
-        clean.push_str("lora");
+    let base = raw.rsplit('/').next().unwrap_or(raw);
+    let stem = base.strip_suffix(EXT).unwrap_or(base);
+    // Uma passada: caractere fora do conjunto vira `_`; `.` só entra se o
+    // anterior não for `.` (nada de `..`); `.` no fim sai (evita `..safetensors`).
+    let mut clean = String::with_capacity(stem.len().min(200));
+    for c in stem.chars() {
+        if clean.len() >= 200 - EXT.len() {
+            break;
+        }
+        let c = if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+            c
+        } else {
+            '_'
+        };
+        if c == '.' && clean.ends_with('.') {
+            continue;
+        }
+        clean.push(c);
     }
-    clean.push_str(EXT);
-    clean
+    let clean = clean.trim_end_matches('.');
+    let clean = if clean.is_empty() { "lora" } else { clean };
+    format!("{clean}{EXT}")
 }
 
 /// Slug canônico de arquitetura a partir de `models.arch`/`jobs.model`.
@@ -195,12 +196,45 @@ mod tests {
             remote_filename("outputs/x/base_epoch_003.safetensors"),
             "base_epoch_003.safetensors"
         );
-        assert_eq!(remote_filename("a..b"), "a_b.safetensors");
+        assert_eq!(remote_filename("a..b"), "a.b.safetensors");
         assert_eq!(remote_filename("çãõ"), "___.safetensors");
         assert_eq!(remote_filename(""), "lora.safetensors");
         let long = remote_filename(&"x".repeat(500));
         assert_eq!(long.len(), 200);
         assert!(long.ends_with(".safetensors"));
+    }
+
+    #[test]
+    fn nome_remoto_nunca_gera_ponto_duplo_nem_termina_em_ponto() {
+        let mut cases = vec![
+            "modelo.".to_string(),
+            "modelo...".to_string(),
+            "modelo.safetensors.".to_string(),
+            "a....b".to_string(),
+            "...".to_string(),
+            ".safetensors".to_string(),
+            "..safetensors".to_string(),
+            "名前のlora é ótimo".to_string(),
+            "x.".repeat(300),
+            format!("{}.", "y".repeat(187)),
+            "z".repeat(500),
+        ];
+        cases.extend(["", "/", "a/b/.."].map(String::from));
+        for raw in cases {
+            let n = remote_filename(&raw);
+            assert!(n.ends_with(".safetensors"), "{raw:?} -> {n}");
+            assert!(n.len() <= 200, "{raw:?} -> {n}");
+            assert!(!n.contains(".."), "{raw:?} -> {n}");
+            assert!(!n.starts_with('.') || n.len() > 12, "{raw:?} -> {n}");
+            assert!(
+                n.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')),
+                "{raw:?} -> {n}"
+            );
+        }
+        assert_eq!(remote_filename("modelo."), "modelo.safetensors");
+        assert_eq!(remote_filename("..."), "lora.safetensors");
+        assert_eq!(remote_filename("名前"), "__.safetensors");
     }
 
     #[test]

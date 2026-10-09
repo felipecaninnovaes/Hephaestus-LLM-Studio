@@ -10624,3 +10624,64 @@ async fn alert_vram_high_warning_critical_resolution_and_isolation() {
         "todos os alertas devem estar resolvidos abaixo de 0.85"
     );
 }
+
+/// ETA do treino: `eta_s`/`step_time_s`/`vram_reserved_gb` do report do
+/// orchestrator viram pontos em `job_metric_points` e voltam no último item
+/// pivotado de `get_job` (a BFF deriva `JobTelemetryEvent.eta*` daí).
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn report_running_persiste_eta_step_time_e_vram_reservada() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
+        .await
+        .expect("dispatch");
+
+    for (step, eta) in [(2, 77), (3, 64)] {
+        manager::report_job(
+            &p,
+            job_id,
+            ReportRequest {
+                status: "running".into(),
+                progress: Some(0.03),
+                epoch: Some(1),
+                step: Some(step),
+                metrics: Some(serde_json::json!({
+                    "epoch": 1,
+                    "step": step,
+                    "loss": 0.12,
+                    "step_time_s": 12.9,
+                    "eta_s": eta,
+                    "vram_reserved_gb": 12.25
+                })),
+                error: None,
+                artifacts: None,
+                meta_content: None,
+                phase: Some("training".into()),
+                message: None,
+            },
+        )
+        .await
+        .expect("report running com eta");
+    }
+
+    let job = manager::get_job(&p, job_id).await.expect("get job");
+    let items = job.metrics.expect("metrics")["items"]
+        .as_array()
+        .expect("items")
+        .clone();
+    let last = items.last().expect("último item");
+    assert_eq!(last["step"], 3);
+    assert_eq!(last["eta_s"], 64.0);
+    assert_eq!(last["step_time_s"], 12.9);
+    assert_eq!(last["vram_reserved_gb"], 12.25);
+}

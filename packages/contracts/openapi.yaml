@@ -5065,13 +5065,13 @@ components:
           description: "VRAM reservada pelo processo (PyTorch), em GB — pode exceder vramUsedGb."
         stepTimeSeconds:
           type: [number, "null"]
-          description: "Duração do último passo/step em segundos."
+          description: "Duração (média móvel) do passo em segundos, do último ponto de treino reportado. `null` se o engine nunca emitiu."
         etaSeconds:
           type: [integer, "null"]
-          description: "Tempo estimado restante para conclusão, em segundos."
+          description: "Tempo estimado restante, em segundos, do último ponto de treino reportado. `null` quando o job NÃO está `running` (done/failed/cancelled/cancelling/queued: nunca um ETA velho) ou o engine não emite ETA."
         etaFormatted:
           type: [string, "null"]
-          description: "Tempo estimado restante formatado para exibição (ex.: \"1m 50s\")."
+          description: "`etaSeconds` formatado para exibição (ex.: \"1m 50s\"); `null` sempre que `etaSeconds` é `null`."
         metrics:
           type: [object, "null"]
           additionalProperties: { type: [number, string, boolean, "null"] }
@@ -5212,6 +5212,15 @@ components:
         step:
           type: integer
           description: "Passo global de otimização."
+        vramReservedGb:
+          type: number
+          description: "VRAM reservada (GB) no passo — origem de `JobTelemetryEvent.vramReservedGb`."
+        stepTimeSeconds:
+          type: number
+          description: "Tempo médio por passo (s) — origem de `JobTelemetryEvent.stepTimeSeconds`."
+        etaSeconds:
+          type: integer
+          description: "ETA (s) emitido pelo engine neste passo — origem de `JobTelemetryEvent.etaSeconds` (só do job `running`)."
 
     JobMetrics:
       type: object

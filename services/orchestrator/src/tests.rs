@@ -90,6 +90,43 @@ fn parse_metrics_line_empty() {
 }
 
 #[test]
+fn parse_metrics_line_eta_from_metrics_jsonl_reaches_report_json() {
+    // Linha real de metrics.jsonl do trainer-difusao (snake + vramReservedGb).
+    let line = r#"{"epoch":1,"step":3,"loss":0.12,"lr":0.0001,"progress":0.03,"total_steps":100,"step_time_s":12.9,"eta_s":64,"eta_formatted":"1m 4s","phase":"training","vramUsedGb":10.5,"vramReservedGb":12.25}"#;
+    let m = parse_metrics_line(line).unwrap();
+    assert_eq!(m.eta_s, Some(64));
+    assert_eq!(m.step_time_s, Some(12.9));
+    assert_eq!(m.vram_reserved_gb, Some(12.25));
+    assert!(m.is_training_metric());
+    let j = m.to_report_json();
+    assert_eq!(j["eta_s"], 64);
+    assert_eq!(j["step_time_s"], 12.9);
+    assert_eq!(j["vram_reserved_gb"], 12.25);
+}
+
+#[test]
+fn parse_metrics_line_eta_from_telemetry_jsonl_camel() {
+    let line = r#"{"timestamp":"2026-10-01T12:00:00+00:00","phase":"training","progress":0.03,"step":3,"epoch":1,"vramReservedGb":9.2,"stepTimeSeconds":12.9,"etaSeconds":64,"etaFormatted":"1m 4s","metrics":{"loss":0.2}}"#;
+    let m = parse_metrics_line(line).unwrap();
+    assert_eq!(m.eta_s, Some(64));
+    assert_eq!(m.step_time_s, Some(12.9));
+    assert_eq!(m.vram_reserved_gb, Some(9.2));
+    let j = m.to_report_json();
+    assert_eq!(j["eta_s"], 64);
+}
+
+#[test]
+fn parse_metrics_line_without_eta_omits_keys() {
+    let m = parse_metrics_line(r#"{"epoch":2,"loss":0.5}"#).unwrap();
+    assert_eq!(
+        (m.eta_s, m.step_time_s, m.vram_reserved_gb),
+        (None, None, None)
+    );
+    let j = m.to_report_json();
+    assert!(j.get("eta_s").is_none() && j.get("step_time_s").is_none());
+}
+
+#[test]
 fn parse_metrics_line_malformed() {
     assert!(parse_metrics_line(r#"{"box_loss":0.5}"#).is_none());
     assert!(parse_metrics_line("not json").is_none());

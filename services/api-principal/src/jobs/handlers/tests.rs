@@ -68,6 +68,65 @@ fn remap_metrics_missing_epoch_skipped() {
     assert!(items.is_empty());
 }
 
+fn job_with_eta_metrics(status: &str) -> InternalJob {
+    InternalJob {
+        status: status.into(),
+        metrics: Some(serde_json::json!({ "items": [
+            { "epoch": 1, "step": 2, "loss": 0.3, "eta_s": 77, "step_time_s": 12.9, "vram_reserved_gb": 12.0 },
+            { "epoch": 1, "step": 3, "loss": 0.2, "eta_s": 64, "step_time_s": 12.9, "vram_reserved_gb": 12.25 },
+            { "epoch": 1, "step": 3, "loss": 0.2 }
+        ]})),
+        ..mock_job()
+    }
+}
+
+#[test]
+fn telemetry_event_carries_last_eta_fields_when_running() {
+    // Linha do trainer atravessa o manager (pontos `eta_s`/... pivotados) até o evento.
+    let resp = to_job_response(job_with_eta_metrics("running"));
+    let ev = JobTelemetryEvent::from_job_response(&resp);
+    assert_eq!(ev.eta_seconds, Some(64));
+    assert_eq!(ev.eta_formatted.as_deref(), Some("1m 4s"));
+    assert_eq!(ev.step_time_seconds, Some(12.9));
+    assert_eq!(ev.vram_reserved_gb, Some(12.25));
+    let json = serde_json::to_string(&ev).unwrap();
+    assert!(json.contains("\"etaSeconds\":64"));
+    assert!(json.contains("\"etaFormatted\":\"1m 4s\""));
+}
+
+#[test]
+fn telemetry_event_has_no_stale_eta_when_terminal() {
+    for status in ["done", "failed", "cancelled", "cancelling"] {
+        let resp = to_job_response(job_with_eta_metrics(status));
+        let ev = JobTelemetryEvent::from_job_response(&resp);
+        assert_eq!(ev.eta_seconds, None, "{status}");
+        assert_eq!(ev.eta_formatted, None, "{status}");
+    }
+}
+
+#[test]
+fn telemetry_event_eta_null_without_engine_fields() {
+    let job = InternalJob {
+        status: "running".into(),
+        metrics: Some(serde_json::json!({ "items": [{ "epoch": 1, "loss": 0.3 }] })),
+        ..mock_job()
+    };
+    let ev = JobTelemetryEvent::from_job_response(&to_job_response(job));
+    assert!(ev.eta_seconds.is_none() && ev.eta_formatted.is_none());
+    assert!(ev.step_time_seconds.is_none() && ev.vram_reserved_gb.is_none());
+}
+
+#[test]
+fn format_eta_matches_engine_kit() {
+    use crate::jobs::handlers::types::format_eta;
+    assert_eq!(format_eta(0), "0s");
+    assert_eq!(format_eta(45), "45s");
+    assert_eq!(format_eta(60), "1m");
+    assert_eq!(format_eta(64), "1m 4s");
+    assert_eq!(format_eta(3600), "1h");
+    assert_eq!(format_eta(8100), "2h 15m");
+}
+
 #[test]
 fn to_job_response_snake_to_camel() {
     let job = InternalJob {

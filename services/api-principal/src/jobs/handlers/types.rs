@@ -39,6 +39,28 @@ pub fn extract_totals_from_params(
     (total_steps, total_epochs)
 }
 
+/// Espelha `engine_kit.telemetry.format_eta` (ex.: "45s", "1m 4s", "2h 15m").
+pub fn format_eta(seconds: i64) -> String {
+    let sec = seconds.max(0);
+    if sec < 60 {
+        return format!("{sec}s");
+    }
+    let (m, s) = (sec / 60, sec % 60);
+    if m < 60 {
+        return if s > 0 {
+            format!("{m}m {s}s")
+        } else {
+            format!("{m}m")
+        };
+    }
+    let (h, rem_m) = (m / 60, m % 60);
+    if rem_m > 0 {
+        format!("{h}h {rem_m}m")
+    } else {
+        format!("{h}h")
+    }
+}
+
 pub trait JobTelemetryEventExt {
     fn from_job_response(job: &JobResponse) -> Self;
 }
@@ -65,6 +87,25 @@ impl JobTelemetryEventExt for JobTelemetryEvent {
             .progress
             .unwrap_or(if job.status == "done" { 1.0 } else { 0.0 });
         let latest_metric = job.metrics.as_ref().and_then(|m| m.last());
+        // ETA/step-time/VRAM reservada vêm do ÚLTIMO ponto de treino que os
+        // carrega (o manager persiste `eta_s`/`step_time_s`/`vram_reserved_gb`
+        // em `job_metric_points` a partir do report do orchestrator; não há
+        // stream SSE direto orchestrator→BFF). Linhas posteriores sem esses
+        // campos (ex.: amostras) não os apagam.
+        let last_train = job.metrics.as_ref().and_then(|m| {
+            m.iter().rev().find(|i| {
+                i.eta_seconds.is_some()
+                    || i.step_time_seconds.is_some()
+                    || i.vram_reserved_gb.is_some()
+            })
+        });
+        // ETA só faz sentido com o job em execução: em estado terminal (ou
+        // cancelling/queued) vira `null` — nunca um ETA velho num job `done`.
+        let eta_seconds = if job.status == "running" {
+            last_train.and_then(|m| m.eta_seconds)
+        } else {
+            None
+        };
         let mut m_obj = serde_json::Map::new();
         if let Some(m) = latest_metric {
             if let Some(loss) = m.loss {
@@ -96,15 +137,10 @@ impl JobTelemetryEventExt for JobTelemetryEvent {
             epoch: job.epoch,
             total_epochs: job.total_epochs,
             vram_used_gb: job.vram_used_gb,
-            // 0a: sem fonte em JobResponse/MetricsItem hoje (nenhuma coluna
-            // persiste VRAM reservada/step-time/ETA do último evento) — o
-            // engine-kit só emite esses campos no stream SSE direto do
-            // orchestrator, que já carrega o JobTelemetryEvent original sem
-            // passar por este fallback. Ver relatório da fatia 0a.
-            vram_reserved_gb: None,
-            step_time_seconds: None,
-            eta_seconds: None,
-            eta_formatted: None,
+            vram_reserved_gb: last_train.and_then(|m| m.vram_reserved_gb),
+            step_time_seconds: last_train.and_then(|m| m.step_time_seconds),
+            eta_seconds,
+            eta_formatted: eta_seconds.map(format_eta),
             metrics,
             diagnostics: None,
             system_metrics: None,

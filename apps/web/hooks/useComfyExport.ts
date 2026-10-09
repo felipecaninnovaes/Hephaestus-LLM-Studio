@@ -5,6 +5,7 @@ import { showToast } from "@/components/ui/Toast";
 import { isApiError } from "@/lib/api";
 import {
 	comfyErrorMessage,
+	exportFailureMessage,
 	isFileExistsFailure,
 	pollComfyExport,
 } from "@/lib/comfyExport";
@@ -94,9 +95,7 @@ export function useComfyExport(source: ComfyExportSource, label: string) {
 					return;
 				}
 				const exists = isFileExistsFailure(e);
-				const msg = exists
-					? "o arquivo já existe no ComfyUI."
-					: (e.error ?? "falha desconhecida no envio.");
+				const msg = exportFailureMessage(e);
 				setState({
 					phase: "failed",
 					export: e,

@@ -4,6 +4,7 @@ import {
 	buildTargetPatch,
 	chooseExportTarget,
 	comfyErrorMessage,
+	exportFailureMessage,
 	exportPercent,
 	isComfyExportableArtifact,
 	isComfyExportableModel,
@@ -250,6 +251,30 @@ describe("targetCheckState", () => {
 		);
 		expect(targetCheckState({ lastCheckAt: "x", lastCheckOk: false })).toBe(
 			"failed",
+		);
+	});
+});
+
+describe("exportFailureMessage", () => {
+	it("traduz código conhecido ignorando o texto do servidor", () => {
+		expect(
+			exportFailureMessage({ error: "x", errorCode: "source_invalid" }),
+		).toContain("inválido");
+	});
+	it("código desconhecido cai na mensagem do servidor", () => {
+		expect(
+			exportFailureMessage({ error: "algo novo", errorCode: "codigo_futuro" }),
+		).toBe("algo novo");
+		expect(exportFailureMessage({ error: null, errorCode: null })).toContain(
+			"desconhecida",
+		);
+	});
+});
+
+describe("comfyErrorMessage do POST", () => {
+	it("export_unsupported (422) explica o formato aceito", () => {
+		expect(comfyErrorMessage(422, "export_unsupported")).toContain(
+			"safetensors",
 		);
 	});
 });

@@ -172,11 +172,44 @@ export function targetCheckState(
 
 /* ── Mensagens ─────────────────────────────────────────────────────── */
 
+const EXPORT_ERROR_MESSAGES: Record<string, string> = {
+	file_exists: "o arquivo já existe no ComfyUI.",
+	checksum_mismatch:
+		"o arquivo chegou corrompido ao ComfyUI (checksum diferente).",
+	size_mismatch: "o tamanho do arquivo no ComfyUI não confere.",
+	chunk_too_large: "o ComfyUI recusou uma parte grande demais.",
+	upload_not_found: "o ComfyUI perdeu a sessão de envio.",
+	token_not_configured: "o custom node não tem token configurado no ComfyUI.",
+	unauthorized: "o ComfyUI recusou o token do destino.",
+	invalid_filename: "nome de arquivo inválido para o ComfyUI.",
+	invalid_size: "tamanho de arquivo inválido.",
+	invalid_body: "requisição inválida ao ComfyUI.",
+	invalid_offset: "posição de envio inválida; tente de novo.",
+	size_exceeded: "o arquivo excede o tamanho declarado.",
+	network: "sem conexão com o ComfyUI.",
+	remote_error: "o ComfyUI respondeu com erro após várias tentativas.",
+	source_not_found: "o arquivo de origem não foi encontrado no armazenamento.",
+	source_invalid:
+		"o arquivo de origem é inválido (vazio, safetensors corrompido ou tamanho divergente).",
+	interrupted: "envio interrompido por reinício do servidor.",
+	internal: "erro interno ao enviar.",
+};
+
+/** Mensagem PT-BR por `errorCode`; código desconhecido cai na mensagem do servidor. */
+export function exportFailureMessage(
+	e: Pick<ComfyExport, "error" | "errorCode">,
+): string {
+	const known = e.errorCode ? EXPORT_ERROR_MESSAGES[e.errorCode] : undefined;
+	return known ?? e.error ?? "falha desconhecida no envio.";
+}
+
 export function comfyErrorMessage(status: number, code: string): string {
 	if (code === "comfy_target_name_taken")
 		return "Já existe um destino com esse nome.";
-	if (status === 422)
+	if (code === "export_unsupported" || status === 422)
 		return "Só LoRAs de difusão em .safetensors podem ser enviados ao ComfyUI.";
+	if (code === "queue_unavailable" || status === 503)
+		return "Serviço indisponível — tente novamente.";
 	if (status === 404) return "Destino ou item não encontrado.";
 	if (status === 400) return "Parâmetros inválidos.";
 	return "Falha na integração com o ComfyUI.";

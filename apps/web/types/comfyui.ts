@@ -27,7 +27,7 @@ export interface ComfyTargetPatchRequest {
 
 export type ComfyExportStatus = "queued" | "uploading" | "done" | "failed";
 
-/** Código estável da falha (contrato do BFF); null quando não falhou. */
+/** Códigos conhecidos (node + BFF); o servidor pode emitir outros — trate como string aberta. */
 export type ComfyExportErrorCode =
 	| "file_exists"
 	| "checksum_mismatch"
@@ -36,10 +36,18 @@ export type ComfyExportErrorCode =
 	| "upload_not_found"
 	| "token_not_configured"
 	| "unauthorized"
+	| "invalid_filename"
+	| "invalid_size"
+	| "invalid_body"
+	| "invalid_offset"
+	| "size_exceeded"
 	| "network"
 	| "remote_error"
 	| "source_not_found"
-	| "interrupted";
+	| "source_invalid"
+	| "interrupted"
+	| "internal"
+	| (string & {});
 
 export interface ComfyExport {
 	id: string;

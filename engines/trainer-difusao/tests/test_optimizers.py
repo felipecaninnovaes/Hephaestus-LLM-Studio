@@ -13,7 +13,12 @@ except ImportError:
     torch = MagicMock()  # type: ignore
     nn = MagicMock()  # type: ignore
 
-from trainer_difusao.optimizers import _create_optimizer, _create_lr_scheduler
+from trainer_difusao.optimizers import (
+    _build_optimizer_and_scheduler,
+    _create_lr_scheduler,
+    _create_optimizer,
+    _parse_lr_resume_mode,
+)
 
 
 class DummyParam:
@@ -132,85 +137,146 @@ def test_create_lr_scheduler_fallback():
         assert res is None
 
 
-@pytest.mark.parametrize("scheduler_name", ["cosine", "constant_with_warmup"])
-def test_create_lr_scheduler_resume_continuity(scheduler_name):
-    """Garante que a retomada com epoch_offset continua a cauda exata da curva original."""
+SPE, PEAK = 124, 8e-5  # passos/época e LR dos jobs reais be5bb333 -> 1413c181
+
+
+def _lrs(opt, sched, steps):
+    out = []
+    for _ in range(steps):
+        out.append(opt.param_groups[0]["lr"])
+        opt.step()
+        sched.step()
+    return out
+
+
+def _module():
+    import torch
+
+    return torch.nn.Linear(4, 2)
+
+
+def _build(mod, **kw):
+    args = dict(
+        optimizer_name="adamw",
+        learning_rate=PEAK,
+        optimizer_state_path=None,
+        lr_scheduler_name="cosine",
+        lr_warmup_steps=0,
+        steps_per_epoch=SPE,
+        epochs=6,
+        epoch_offset=4,
+        lr_resume_mode="continue",
+    )
+    args.update(kw)
+    return _build_optimizer_and_scheduler(mod, **args)
+
+
+@pytest.fixture
+def first_run(tmp_path):
+    """1º job: 5 épocas cosine, parado após a 4ª; salva o optimizer."""
     pytest.importorskip("torch")
     pytest.importorskip("diffusers")
     import torch
 
-    steps_per_epoch = 7
-    warmup_steps = 10
-    offset_epochs = 6
-    resume_epochs = 4
-    total_epochs = offset_epochs + resume_epochs  # 10
-    lr = 5e-5
-
-    total_steps = steps_per_epoch * total_epochs  # 70
-    offset_steps = steps_per_epoch * offset_epochs  # 42
-    remaining_steps = steps_per_epoch * resume_epochs  # 28
-
-    # 1. Execução ininterrupta de 10 épocas
-    p_full = torch.nn.Parameter(torch.zeros(1))
-    opt_full = torch.optim.AdamW([p_full], lr=lr)
-    sched_full = _create_lr_scheduler(
-        opt_full, scheduler_name, total_steps=total_steps, warmup_steps=warmup_steps, last_step=0
-    )
-    assert sched_full is not None
-
-    full_lrs = []
-    for _ in range(total_steps):
-        full_lrs.append(opt_full.param_groups[0]["lr"])
-        opt_full.step()
-        sched_full.step()
-
-    # 2. Execução retomada (offset=6, epochs=4)
-    p_resumed = torch.nn.Parameter(torch.zeros(1))
-    opt_resumed = torch.optim.AdamW([p_resumed], lr=lr)
-    sched_resumed = _create_lr_scheduler(
-        opt_resumed,
-        scheduler_name,
-        total_steps=total_steps,
-        warmup_steps=warmup_steps,
-        last_step=offset_steps,
-    )
-    assert sched_resumed is not None
-    # O LR imediatamente após a criação deve ser igual ao LR do step offset_steps da execução original
-    assert sched_resumed.get_last_lr()[0] == full_lrs[offset_steps]
-    assert opt_resumed.param_groups[0]["lr"] == full_lrs[offset_steps]
-    resumed_lrs = []
-    for _ in range(remaining_steps):
-        resumed_lrs.append(opt_resumed.param_groups[0]["lr"])
-        opt_resumed.step()
-        sched_resumed.step()
-
-    # A sequência de LRs da retomada deve ser idêntica à cauda da ininterrupta
-    tail_lrs = full_lrs[offset_steps:]
-    assert len(tail_lrs) == len(resumed_lrs) == remaining_steps
-    assert resumed_lrs == tail_lrs
-
-    # 3. Caso offset=0 inalterado
-    p_zero = torch.nn.Parameter(torch.zeros(1))
-    opt_zero = torch.optim.AdamW([p_zero], lr=lr)
-    sched_zero = _create_lr_scheduler(
-        opt_zero, scheduler_name, total_steps=total_steps, warmup_steps=warmup_steps, last_step=0
-    )
-    assert sched_zero is not None
-    zero_first_lr = opt_zero.param_groups[0]["lr"]
-    assert zero_first_lr == full_lrs[0]
+    mod = _module()
+    opt, sched = _build(mod, epochs=5, epoch_offset=0)
+    lrs = _lrs(opt, sched, SPE * 4)
+    path = tmp_path / "opt.pt"
+    torch.save(opt.state_dict(), path)
+    return path, lrs, opt.param_groups[0]["lr"]
 
 
-def test_create_lr_scheduler_non_lambdalr_raises():
-    """Garante que schedulers sem lr_lambdas lançam TypeError ao invés de degradar silenciosamente."""
+def test_first_run_saved_lr_is_cosine_tail(first_run):
+    import math
+
+    _, _, saved = first_run
+    assert saved == pytest.approx(PEAK / 2 * (1 + math.cos(math.pi * 4 / 5)), rel=1e-6)
+
+
+def test_resume_continue_starts_at_saved_lr_and_decays_monotonically(first_run, capsys):
+    path, _, saved = first_run
+    opt, sched = _build(_module(), optimizer_state_path=path)
+    lrs = _lrs(opt, sched, SPE * 6)
+    assert lrs[0] == saved
+    assert all(b <= a for a, b in zip(lrs, lrs[1:])), "LR subiu em algum passo"
+    assert lrs[-1] < saved * 1e-4  # ~0 no último passo
+    assert f"Retomada: LR continua de {saved:.3g} (checkpoint), curva cosine em 6 épocas" in capsys.readouterr().out
+    print("continue: passo0=%.3e passo1=%.3e meio=%.3e ultimo=%.3e" % (lrs[0], lrs[1], lrs[SPE * 3], lrs[-1]))
+
+
+def test_resume_restart_uses_request_lr_with_warmup(first_run):
+    path, _, _ = first_run
+    opt, sched = _build(_module(), optimizer_state_path=path, lr_resume_mode="restart", lr_warmup_steps=10)
+    lrs = _lrs(opt, sched, SPE * 6)
+    assert lrs[0] == 0.0
+    assert lrs[10] == pytest.approx(PEAK)
+    assert max(lrs) == pytest.approx(PEAK)
+    assert lrs[-1] < PEAK * 1e-4
+    opt2, sched2 = _build(_module(), optimizer_state_path=path, lr_resume_mode="restart")
+    assert opt2.param_groups[0]["lr"] == PEAK
+
+
+def test_resume_continue_without_optimizer_state_falls_back_to_restart(tmp_path, capsys):
     pytest.importorskip("torch")
+    pytest.importorskip("diffusers")
+    for path in (None, tmp_path / "ausente.pt"):
+        opt, sched = _build(_module(), optimizer_state_path=path)
+        assert opt.param_groups[0]["lr"] == PEAK
+        out = capsys.readouterr().out
+        assert "usando modo restart" in out
+        assert "modo restart" in out
+
+
+def test_new_training_ignores_mode_and_uses_request_lr(first_run):
+    path, full_first, _ = first_run
+    for mode in ("continue", "restart"):
+        opt, sched = _build(_module(), epochs=5, epoch_offset=0, lr_resume_mode=mode)
+        assert _lrs(opt, sched, SPE * 4) == full_first
+
+
+def test_numeric_proof_three_scenarios(first_run):
+    path, first, saved = first_run
+    cont_o, cont_s = _build(_module(), optimizer_state_path=path)
+    cont = _lrs(cont_o, cont_s, SPE * 6)
+    rest_o, rest_s = _build(_module(), optimizer_state_path=path, lr_resume_mode="restart")
+    rest = _lrs(rest_o, rest_s, SPE * 6)
+    nofile_o, nofile_s = _build(_module(), optimizer_state_path=None)
+    nofile = _lrs(nofile_o, nofile_s, SPE * 6)
+    def show(name, l):
+        idx = [0, 1, 123, 124, 371, 500, 743]
+        print(name, " ".join("p%d=%.3e" % (i, l[i]) for i in idx))
+    print("1o job (5 epocas), LR salvo apos a 4a epoca = %.3e" % saved)
+    show("continue      ", cont)
+    show("restart       ", rest)
+    show("sem opt.state ", nofile)
+    assert cont[0] == saved
+    assert rest == nofile
+
+
+def test_numeric_proof_with_real_job_checkpoint_lr(tmp_path, capsys):
+    """Checkpoint com o LR gravado no job real be5bb333 (1.07e-5): a retomada começa nele, não em 5.23e-5."""
+    pytest.importorskip("torch")
+    pytest.importorskip("diffusers")
     import torch
 
-    p = torch.nn.Parameter(torch.zeros(1))
-    opt = torch.optim.AdamW([p], lr=1e-4)
+    mod = _module()
+    opt, _ = _build(mod, epochs=5, epoch_offset=0)
+    for g in opt.param_groups:
+        g["lr"] = 1.07e-5
+    path = tmp_path / "real.pt"
+    torch.save(opt.state_dict(), path)
+    o, s = _build(_module(), optimizer_state_path=path)
+    lrs = _lrs(o, s, SPE * 6)
+    old = PEAK / 2 * (1 + __import__("math").cos(__import__("math").pi * 4 / 10))
+    print("job real: passo0 retomada=%.3e (comportamento antigo: %.3e) ultimo=%.3e" % (lrs[0], old, lrs[-1]))
+    assert lrs[0] == pytest.approx(1.07e-5)
+    assert all(b <= a for a, b in zip(lrs, lrs[1:]))
 
-    fake_scheduler = MagicMock()
-    del fake_scheduler.lr_lambdas  # sem lr_lambdas
 
-    with patch("diffusers.optimization.get_scheduler", return_value=fake_scheduler):
-        with pytest.raises(TypeError, match="não possui atributos 'lr_lambdas'"):
-            _create_lr_scheduler(opt, "custom", total_steps=100, warmup_steps=10, last_step=20)
+def test_parse_lr_resume_mode():
+    assert _parse_lr_resume_mode({}) == "continue"
+    assert _parse_lr_resume_mode({"lr_resume_mode": "Restart"}) == "restart"
+    with patch("trainer_difusao.common._die", side_effect=SystemExit(2)):
+        for bad in ("foo", 3):
+            with pytest.raises(SystemExit):
+                _parse_lr_resume_mode({"lr_resume_mode": bad})

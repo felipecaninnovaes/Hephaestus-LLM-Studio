@@ -18,6 +18,7 @@ function DifusaoContent() {
     id: string;
     name: string;
     epoch?: number;
+    sourceJobId?: string;
   } | null>(null);
   const [epochOffset, setEpochOffset] = useState<number>(0);
   const [initialPreset, setInitialPreset] = useState<Partial<DiffusionPreset> | undefined>(undefined);

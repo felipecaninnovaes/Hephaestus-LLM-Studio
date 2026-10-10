@@ -122,7 +122,13 @@ export function diffusionEpochOffset(job: Job, art: JobArtifact): number {
 export interface DiffusionResumePayload {
 	datasetId: string | null;
 	epochOffset: number;
-	resumeCheckpoint?: { id: string; name: string; epoch: number };
+	resumeCheckpoint?: {
+		id: string;
+		name: string;
+		epoch: number;
+		/** Job de origem do checkpoint — usado para ler o LR em que ele parou. */
+		sourceJobId: string;
+	};
 	initialPreset?: DiffusionPresetFromJob;
 }
 
@@ -152,7 +158,12 @@ export function buildDiffusionResume(
 	return {
 		datasetId: job.datasetId,
 		epochOffset,
-		resumeCheckpoint: { id: art.id, name: checkpointName, epoch: epochOffset },
+		resumeCheckpoint: {
+			id: art.id,
+			name: checkpointName,
+			epoch: epochOffset,
+			sourceJobId: job.id,
+		},
 		initialPreset,
 	};
 }

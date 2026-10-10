@@ -19,6 +19,8 @@ export interface DiffusionHyperparametersSectionProps {
   busy: boolean;
   batchOptions: SelectOption<number>[];
   rankOptions: SelectOption<number>[];
+  /** Retomada em modo "continuar": o LR vem do checkpoint, o campo não vale. */
+  learningRateDisabled?: boolean;
 }
 
 export function DiffusionHyperparametersSection({
@@ -30,6 +32,7 @@ export function DiffusionHyperparametersSection({
   busy,
   batchOptions,
   rankOptions,
+  learningRateDisabled = false,
 }: DiffusionHyperparametersSectionProps) {
   return (
     <>
@@ -149,7 +152,12 @@ export function DiffusionHyperparametersSection({
             onChange={(e) =>
               setParams((p) => ({ ...p, learningRate: e.target.value }))
             }
-            disabled={busy}
+            disabled={busy || learningRateDisabled}
+            title={
+              learningRateDisabled
+                ? "Não usado: a retomada continua do LR do checkpoint."
+                : undefined
+            }
             fontMono
             className="h-[38px] text-xs font-mono"
           />

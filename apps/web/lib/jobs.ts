@@ -1,4 +1,5 @@
 import { apiFetch } from "@/lib/api";
+import type { LrResumeMode } from "@/lib/lrResume";
 import type {
   DiffusionOptimizer,
   Job,
@@ -43,8 +44,7 @@ export function startYoloJob(params: {
 	});
 }
 
-/** POST /api/jobs/diffusion — cria job de treino de difusão LoRA. Retorna 202 (preparing|queued). */
-export function startDiffusionJob(params: {
+export interface StartDiffusionJobParams {
 	datasetId: string;
 	baseModel?: "sdxl" | "flux" | "flux-2-klein-9b" | "sd15" | "qwen-image-2.1" | null;
 	customModelId?: string | null;
@@ -74,7 +74,14 @@ export function startDiffusionJob(params: {
 	enableBucket?: boolean;
 	checkpointInterval?: number;
 	epochOffset?: number;
-}): Promise<SubmitJobResponse> {
+	/** Só vale em retomada (epochOffset > 0); ausente = backend usa "continue". */
+	lrResumeMode?: LrResumeMode;
+}
+
+/** Corpo de POST /api/jobs/diffusion (função pura, testável). */
+export function buildDiffusionJobBody(
+	params: StartDiffusionJobParams,
+): Record<string, unknown> {
 	const {
 		weights,
 		orchestratorId,
@@ -93,6 +100,7 @@ export function startDiffusionJob(params: {
 		enableBucket,
 		checkpointInterval,
 		epochOffset,
+		lrResumeMode,
 		controlDatasetId,
 		cacheTextEmbeddings,
 		...rest
@@ -123,6 +131,8 @@ export function startDiffusionJob(params: {
 	if (lrScheduler) body.lrScheduler = lrScheduler;
 	if (lrWarmupSteps != null) body.lrWarmupSteps = lrWarmupSteps;
 	if (epochOffset != null) body.epochOffset = epochOffset;
+	if (lrResumeMode && epochOffset != null && epochOffset > 0)
+		body.lrResumeMode = lrResumeMode;
 	if (mixedPrecision) body.mixedPrecision = mixedPrecision;
 	if (quantization) body.quantization = quantization;
 	if (enableBucket != null) body.enableBucket = enableBucket;
@@ -135,9 +145,16 @@ export function startDiffusionJob(params: {
 		if (sampleInterval != null) body.sampleInterval = sampleInterval;
 		if (sampleSeed != null) body.sampleSeed = sampleSeed;
 	}
+	return body;
+}
+
+/** POST /api/jobs/diffusion — cria job de treino de difusão LoRA. Retorna 202 (preparing|queued). */
+export function startDiffusionJob(
+	params: StartDiffusionJobParams,
+): Promise<SubmitJobResponse> {
 	return apiFetch("/api/jobs/diffusion", {
 		method: "POST",
-		body,
+		body: buildDiffusionJobBody(params),
 	});
 }
 

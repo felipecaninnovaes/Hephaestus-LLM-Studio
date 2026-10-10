@@ -86,6 +86,7 @@ describe("buildDiffusionResume", () => {
 			id: "art-checkpoint-6",
 			name: "checkpoint.safetensors",
 			epoch: 6,
+			sourceJobId: "job-123",
 		});
 		// Invariant: epochs = max(1, originalEpochs - epochOffset) -> 10 - 6 = 4
 		expect(payload.initialPreset?.epochs).toBe(4);

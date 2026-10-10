@@ -39,6 +39,8 @@ export interface DiffusionJobRequest {
   enableBucket?: boolean;
   checkpointInterval?: number;
   epochOffset?: number;
+  /** Só vale em retomada (epochOffset > 0). Padrão "continue". */
+  lrResumeMode?: "continue" | "restart";
   outputName?: string | null;
 }
 

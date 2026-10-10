@@ -15,6 +15,7 @@ import {
 	type SelectRefHandle,
 } from "@/components/ui/Select";
 import { showToast } from "@/components/ui/Toast";
+import { useCheckpointLr } from "@/hooks/useCheckpointLr";
 import { useVramEstimator } from "@/hooks/useVramEstimator";
 import { ApiError } from "@/lib/api";
 import {
@@ -26,6 +27,11 @@ import { isFlux2Klein4b, isFlux2Klein9b, normalizeDiffusionArch } from "@/lib/di
 import { formatBytes } from "@/lib/format";
 import { resolveTargetGpu } from "@/lib/gpuCapacity";
 import { startDiffusionJob } from "@/lib/jobs";
+import {
+  DEFAULT_LR_RESUME_MODE,
+  type LrResumeMode,
+  lrResumeModeForSubmit,
+} from "@/lib/lrResume";
 import { listModels } from "@/lib/models";
 import type { Orchestrator } from "@/lib/monitoring";
 import type {
@@ -38,6 +44,7 @@ import { diffusionErrorMessage } from "@/types/studio";
 import GpuDeviceSelect from "../GpuDeviceSelect";
 import NodeSelect from "../NodeSelect";
 import { DiffusionAdvancedSettings } from "./DiffusionAdvancedSettings";
+import { DiffusionLrResumeControl } from "./DiffusionLrResumeControl";
 import { DiffusionHyperparametersSection } from "./DiffusionHyperparametersSection";
 import { DiffusionPresetBar } from "./DiffusionPresetBar";
 import { DiffusionSamplesSection } from "./DiffusionSamplesSection";
@@ -56,7 +63,12 @@ export interface ForjaDifusaoSetupProps {
     outputName?: string | null;
   };
   initialDatasetId?: string;
-  resumeCheckpoint?: { id: string; name: string; epoch?: number } | null;
+  resumeCheckpoint?: {
+    id: string;
+    name: string;
+    epoch?: number;
+    sourceJobId?: string;
+  } | null;
   epochOffset?: number;
 }
 
@@ -101,6 +113,7 @@ export function ForjaDifusaoSetup({
     id: string;
     name: string;
     epoch?: number;
+    sourceJobId?: string;
   } | null>(resumeCheckpoint ?? null);
   const [epochOffset, setEpochOffset] = useState<number>(propEpochOffset);
 
@@ -135,6 +148,9 @@ export function ForjaDifusaoSetup({
   >(initialPreset?.lrScheduler ?? "cosine");
   const [lrWarmupSteps, setLrWarmupSteps] = useState<number>(
     initialPreset?.lrWarmupSteps ?? 0,
+  );
+  const [lrResumeMode, setLrResumeMode] = useState<LrResumeMode>(
+    DEFAULT_LR_RESUME_MODE,
   );
   const [mixedPrecision, setMixedPrecision] = useState<"fp16" | "bf16" | "no">(
     initialPreset?.mixedPrecision ?? "bf16",
@@ -876,6 +892,15 @@ export function ForjaDifusaoSetup({
     [],
   );
 
+  const isResume = epochOffset > 0;
+  const checkpointLr = useCheckpointLr(
+    isResume ? currentResumeCheckpoint?.sourceJobId : undefined,
+    epochOffset,
+  );
+  const requestLr = Number.isFinite(parseFloat(params.learningRate))
+    ? parseFloat(params.learningRate)
+    : null;
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setTopError(null);
@@ -896,7 +921,8 @@ export function ForjaDifusaoSetup({
     }
 
     const lr = parseFloat(params.learningRate);
-    if (Number.isNaN(lr) || lr <= 0) {
+    const lrIgnored = epochOffset > 0 && lrResumeMode === "continue";
+    if (!lrIgnored && (Number.isNaN(lr) || lr <= 0)) {
       setTopError(
         "Learning Rate inválida. Use notação decimal ou científica (ex: 0.0001 ou 1e-4).",
       );
@@ -915,7 +941,7 @@ export function ForjaDifusaoSetup({
         triggerWord: params.triggerWord.trim() || undefined,
         epochs: params.epochs,
         batchSize: params.batchSize,
-        learningRate: lr,
+        learningRate: Number.isNaN(lr) || lr <= 0 ? undefined : lr,
         rank: params.rank,
         alpha: params.alpha,
         weights: selectedWeightId || null,
@@ -942,6 +968,7 @@ export function ForjaDifusaoSetup({
         enableBucket,
         checkpointInterval,
         epochOffset: epochOffset > 0 ? epochOffset : undefined,
+        lrResumeMode: lrResumeModeForSubmit(epochOffset, lrResumeMode),
         outputName: outputName.trim() ? outputName.trim() : undefined,
       });
 
@@ -1151,7 +1178,20 @@ export function ForjaDifusaoSetup({
         busy={busy}
         batchOptions={batchOptions}
         rankOptions={rankOptions}
+        learningRateDisabled={isResume && lrResumeMode === "continue"}
       />
+
+      {isResume && (
+        <DiffusionLrResumeControl
+          mode={lrResumeMode}
+          onModeChange={setLrResumeMode}
+          checkpointLr={checkpointLr}
+          requestLr={requestLr}
+          epochs={params.epochs}
+          scheduler={lrScheduler}
+          disabled={busy}
+        />
+      )}
 
       {/* Configurações Avançadas (Colapsável) */}
       <DiffusionAdvancedSettings

@@ -816,6 +816,7 @@ const ALLOWED_DIFFUSION_OPTIMIZERS: &[&str] = &[
     "paged_adamw8bit",
     "paged_adamw32bit",
 ];
+const ALLOWED_DIFFUSION_LR_RESUME_MODES: &[&str] = &["continue", "restart"];
 const ALLOWED_DIFFUSION_LR_SCHEDULERS: &[&str] =
     &["cosine", "linear", "constant", "constant_with_warmup"];
 const ALLOWED_DIFFUSION_PRECISION: &[&str] = &["fp16", "bf16", "no"];
@@ -905,6 +906,9 @@ pub struct DiffusionJobRequest {
     pub checkpoint_interval: u32,
     #[serde(default)]
     pub epoch_offset: Option<u32>,
+    /// Política de LR na retomada (`epochOffset > 0`): `continue` (padrão) ou `restart`.
+    #[serde(default = "default_diffusion_lr_resume_mode")]
+    pub lr_resume_mode: String,
     /// Dataset de regularização/controle (treino Flux.2). `None` = sem controle.
     /// Wire camelCase `controlDatasetId`; quando `Some`, deve diferir do
     /// dataset principal e existir (ownership = existência, mesma guarda do
@@ -949,6 +953,9 @@ fn default_diffusion_optimizer() -> String {
 }
 fn default_diffusion_lr_scheduler() -> String {
     "cosine".to_string()
+}
+fn default_diffusion_lr_resume_mode() -> String {
+    "continue".to_string()
 }
 fn default_diffusion_lr_warmup() -> u32 {
     0
@@ -1050,6 +1057,12 @@ pub fn validate_diffusion_request(
         return Err(format!(
             "lrWarmupSteps must be between 0 and 1000, got {}",
             req.lr_warmup_steps
+        ));
+    }
+    if !ALLOWED_DIFFUSION_LR_RESUME_MODES.contains(&req.lr_resume_mode.as_str()) {
+        return Err(format!(
+            "lrResumeMode must be one of {:?}, got '{}'",
+            ALLOWED_DIFFUSION_LR_RESUME_MODES, req.lr_resume_mode
         ));
     }
     if !ALLOWED_DIFFUSION_PRECISION.contains(&req.mixed_precision.as_str()) {
@@ -1238,6 +1251,7 @@ checkpoint_interval: {checkpoint_interval}
   optimizer: "{optimizer}"
   lr_scheduler: "{lr_scheduler}"
   lr_warmup_steps: {lr_warmup_steps}
+  lr_resume_mode: "{lr_resume_mode}"
   mixed_precision: "{mixed_precision}"
   quantization: "{quantization}"
 {enable_bucket_line}  checkpoint_interval: {checkpoint_interval}
@@ -1263,6 +1277,7 @@ checkpoint_interval: {checkpoint_interval}
         optimizer = req.optimizer,
         lr_scheduler = req.lr_scheduler,
         lr_warmup_steps = req.lr_warmup_steps,
+        lr_resume_mode = req.lr_resume_mode,
         mixed_precision = req.mixed_precision,
         quantization = req.quantization,
         enable_bucket_line = enable_bucket_line,
@@ -3004,8 +3019,33 @@ mod tests {
         assert!(yaml.contains(r#"optimizer: "adamw8bit""#));
         assert!(yaml.contains(r#"lr_scheduler: "cosine""#));
         assert!(yaml.contains("lr_warmup_steps: 50"));
+        assert!(yaml.contains(r#"lr_resume_mode: "continue""#));
         assert!(yaml.contains(r#"mixed_precision: "bf16""#));
         assert!(yaml.contains(r#"quantization: "8bit""#));
+        assert_eq!(validated.lr_resume_mode, "continue");
+    }
+
+    fn diffusion_resume_req(extra: &str) -> DiffusionJobRequest {
+        let json = format!(
+            r#"{{"datasetId": "550e8400-e29b-41d4-a716-446655440001", "baseModel": "sdxl", "epochOffset": 4{extra}}}"#
+        );
+        serde_json::from_str(&json).expect("should parse json")
+    }
+
+    #[test]
+    fn diffusion_lr_resume_mode_restart_is_forwarded_to_yaml() {
+        let validated =
+            validate_diffusion_request(diffusion_resume_req(r#", "lrResumeMode": "restart""#))
+                .expect("restart is valid");
+        let yaml = generate_diffusion_config_yaml("job-r", &validated, None);
+        assert!(yaml.contains(r#"lr_resume_mode: "restart""#));
+    }
+
+    #[test]
+    fn diffusion_lr_resume_mode_invalid_is_rejected() {
+        let err = validate_diffusion_request(diffusion_resume_req(r#", "lrResumeMode": "bogus""#))
+            .expect_err("invalid mode must be rejected");
+        assert!(err.contains("lrResumeMode"));
     }
 
     #[test]

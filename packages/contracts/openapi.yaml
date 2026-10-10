@@ -4083,6 +4083,11 @@ components:
           minimum: 0
           default: 0
           description: "Deslocamento da época inicial para continuação sequencial de treino prévio. Padrão 0."
+        lrResumeMode:
+          type: string
+          enum: [continue, restart]
+          default: continue
+          description: "Política de LR na retomada (só vale com epochOffset > 0). continue = pico de LR é o LR do optimizer no checkpoint (sem optimizer state cai em restart); restart = LR informado em learningRate. Em ambos a curva lrScheduler cobre só as épocas adicionais, com warmup lrWarmupSteps. Padrão continue."
         checkpointInterval:
           type: integer
           minimum: 1
@@ -5256,6 +5261,7 @@ components:
         enableBucket: { type: boolean }
         checkpointInterval: { type: integer }
         epochOffset: { type: integer }
+        lrResumeMode: { type: string, enum: [continue, restart] }
         samplePrompt: { type: [string, "null"] }
         sampleInterval: { type: integer }
 

@@ -94,22 +94,39 @@ def _create_optimizer(unet: Any, optimizer_name: str, lr: float) -> Any:
         )
         return torch.optim.AdamW(trainable_params, lr=lr)
 
+LR_RESUME_MODES = ("continue", "restart")
+
+
+def _parse_lr_resume_mode(lora_cfg: dict[str, Any]) -> str:
+    """Lê `lora.lr_resume_mode` (padrão `continue`); valor inválido encerra via `_die`."""
+    from trainer_difusao.common import _die
+
+    raw = lora_cfg.get("lr_resume_mode")
+    if raw is None or raw == "":
+        return "continue"
+    mode = str(raw).strip().lower() if isinstance(raw, str) else ""
+    if mode not in LR_RESUME_MODES:
+        _die(
+            f"lora.lr_resume_mode inválido: {raw!r}. Valores aceitos: "
+            f"{', '.join(LR_RESUME_MODES)}."
+        )
+    return mode
+
+
 def _create_lr_scheduler(
     optimizer: Any,
     scheduler_name: str,
     total_steps: int,
     warmup_steps: int = 0,
-    last_step: int = 0,
 ) -> Any:
-    """Cria scheduler de taxa de aprendizado via diffusers ou torch.
+    """Cria scheduler de taxa de aprendizado via diffusers, partindo do passo 0.
 
-    Se `last_step > 0`, o scheduler é posicionado no step `last_step` da curva original,
-    mantendo o horizonte total de treino (`total_steps`) e o warmup configurados.
+    O LR de pico é o `initial_lr`/`lr` dos param_groups no momento da criação.
     """
     try:
         from diffusers.optimization import get_scheduler
 
-        scheduler = get_scheduler(
+        return get_scheduler(
             scheduler_name.lower().strip() or "cosine",
             optimizer=optimizer,
             num_warmup_steps=warmup_steps,
@@ -122,17 +139,69 @@ def _create_lr_scheduler(
         )
         return None
 
-    if last_step > 0 and scheduler is not None:
-        if not hasattr(scheduler, "lr_lambdas") or not hasattr(scheduler, "base_lrs"):
-            raise TypeError(
-                f"Scheduler '{scheduler_name}' ({type(scheduler).__name__}) não possui "
-                f"atributos 'lr_lambdas'/'base_lrs' necessários para posicionamento contínuo em last_step={last_step}."
-            )
-        scheduler.last_epoch = last_step
-        for i, (param_group, base_lr) in enumerate(
-            zip(optimizer.param_groups, scheduler.base_lrs)
-        ):
-            param_group["lr"] = scheduler.lr_lambdas[i](last_step) * base_lr
-        scheduler._last_lr = [group["lr"] for group in optimizer.param_groups]
 
-    return scheduler
+def _build_optimizer_and_scheduler(
+    module: Any,
+    *,
+    optimizer_name: str,
+    learning_rate: float,
+    optimizer_state_path: Any,
+    lr_scheduler_name: str,
+    lr_warmup_steps: int,
+    steps_per_epoch: int,
+    epochs: int,
+    epoch_offset: int,
+    lr_resume_mode: str,
+) -> tuple[Any, Any]:
+    """Cria optimizer + scheduler decidindo (modo, LR inicial) da retomada.
+
+    Único ponto de decisão para Qwen e loop compartilhado. A curva sempre cobre só
+    as épocas desta execução (`steps_per_epoch * epochs`), do passo 0, com o warmup
+    da requisição. Em retomada (`epoch_offset > 0`):
+    - `continue`: o LR de pico é o `lr` do optimizer restaurado (lido antes de
+      qualquer override); sem optimizer state restaurado cai em `restart` com aviso.
+    - `restart`: o LR de pico é o da requisição.
+    Em treino novo o modo é ignorado e vale o LR da requisição.
+    """
+    from trainer_difusao.common import _load_optimizer_state, _override_optimizer_lr
+
+    optimizer = _create_optimizer(module, optimizer_name, learning_rate)
+    restored = bool(optimizer_state_path) and _load_optimizer_state(
+        optimizer, optimizer_state_path
+    )
+    resuming = epoch_offset > 0
+    peak_lr = learning_rate
+    mode = lr_resume_mode
+    if resuming and mode == "continue":
+        if restored:
+            peak_lr = float(optimizer.param_groups[0]["lr"])
+        else:
+            mode = "restart"
+            print(
+                "[WARN] Retomada com lr_resume_mode=continue, mas o estado do optimizer "
+                "não foi restaurado (checkpoint só com pesos): usando modo restart, "
+                f"LR da requisição {learning_rate:.3g}.",
+                flush=True,
+            )
+    # Sempre normaliza lr/initial_lr: o state restaurado traz o initial_lr da curva antiga.
+    _override_optimizer_lr(optimizer, peak_lr)
+    scheduler = _create_lr_scheduler(
+        optimizer,
+        lr_scheduler_name,
+        max(1, steps_per_epoch * epochs),
+        lr_warmup_steps,
+    )
+    if resuming:
+        origin = "checkpoint" if mode == "continue" else "requisição"
+        verb = "continua" if mode == "continue" else "reinicia"
+        print(
+            f"Retomada: LR {verb} de {peak_lr:.3g} ({origin}), curva "
+            f"{lr_scheduler_name} em {epochs} épocas (modo {mode}).",
+            flush=True,
+        )
+    else:
+        print(
+            f"Treino novo: LR {peak_lr:.3g}, curva {lr_scheduler_name} em {epochs} épocas.",
+            flush=True,
+        )
+    return optimizer, scheduler

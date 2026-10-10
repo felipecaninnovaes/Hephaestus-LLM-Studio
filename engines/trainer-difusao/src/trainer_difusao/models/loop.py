@@ -17,8 +17,6 @@ from trainer_difusao.common import (
     _die,
     _emit_metric,
     _load_lora_weights,
-    _load_optimizer_state,
-    _override_optimizer_lr,
     _precompute_text_cache,
     _precompute_text_cache_with_cleanup,
     _prune_checkpoints,
@@ -42,7 +40,7 @@ from trainer_difusao.common_pkg.latent_cache import (
     vae_on_device,
 )
 from trainer_difusao.dataset import DiffusionDataset, build_dataloader
-from trainer_difusao.optimizers import _create_lr_scheduler, _create_optimizer
+from trainer_difusao.optimizers import _build_optimizer_and_scheduler, _parse_lr_resume_mode
 
 __all__ = ["LoraTrainConfig", "parse_lora_train_config", "ModelAdapter", "ModelComponents", "TrainingLoopRunner"]
 
@@ -67,6 +65,7 @@ class LoraTrainConfig:
     optimizer_name: str
     lr_scheduler_name: str
     lr_warmup_steps: int
+    lr_resume_mode: str
     checkpoint_interval: int
     epoch_offset: int
     weights_path: str | None
@@ -127,6 +126,7 @@ def parse_lora_train_config(
     optimizer_name = str(lora_cfg.get("optimizer", "adamw8bit"))
     lr_scheduler_name = str(lora_cfg.get("lr_scheduler", "cosine"))
     lr_warmup_steps = int(lora_cfg.get("lr_warmup_steps", 0))
+    lr_resume_mode = _parse_lr_resume_mode(lora_cfg)
 
     checkpoint_interval = max(
         1, int(cfg.get("checkpoint_interval") or lora_cfg.get("checkpoint_interval") or 1)
@@ -181,6 +181,7 @@ def parse_lora_train_config(
         optimizer_name=optimizer_name,
         lr_scheduler_name=lr_scheduler_name,
         lr_warmup_steps=lr_warmup_steps,
+        lr_resume_mode=lr_resume_mode,
         checkpoint_interval=checkpoint_interval,
         epoch_offset=epoch_offset,
         weights_path=weights_path,
@@ -377,15 +378,6 @@ class TrainingLoopRunner:
         dtype = comp["dtype"]
 
         # Cria otimizador e scheduler
-        optimizer = _create_optimizer(comp["trainable_module"], tcfg.optimizer_name, tcfg.learning_rate)
-        if tcfg.optimizer_state_path:
-            _load_optimizer_state(optimizer, tcfg.optimizer_state_path)
-            # O LR da requisição (tcfg.learning_rate) representa o LR de pico da curva
-            # original e sempre prevalece sobre o persistido no optimizer state restaurado.
-            # Quando epoch_offset > 0, o scheduler continua a curva original a partir
-            # de steps_per_epoch * epoch_offset.
-            _override_optimizer_lr(optimizer, tcfg.learning_rate)
-
         # Dataset principal
         dataset = DiffusionDataset(
             tcfg.dataset_path,
@@ -422,17 +414,18 @@ class TrainingLoopRunner:
         # Scheduler e steps
         steps_per_epoch = math.ceil(len(dataloader) / tcfg.grad_accum)
         total_train_steps = max(1, steps_per_epoch * tcfg.epochs)
-        # Se epoch_offset > 0, o horizonte total da curva original é (epoch_offset + epochs)
-        # e o scheduler é posicionado no step correspondente às épocas já concluídas.
-        # Mantemos total_train_steps inalterado para métricas de progresso/diagnóstico locais da execução.
-        schedule_total_steps = max(1, steps_per_epoch * (tcfg.epoch_offset + tcfg.epochs))
-        offset_steps = steps_per_epoch * tcfg.epoch_offset
-        lr_scheduler = _create_lr_scheduler(
-            optimizer,
-            tcfg.lr_scheduler_name,
-            schedule_total_steps,
-            tcfg.lr_warmup_steps,
-            last_step=offset_steps,
+        # Curva só sobre as épocas desta execução; LR inicial decidido por lr_resume_mode.
+        optimizer, lr_scheduler = _build_optimizer_and_scheduler(
+            comp["trainable_module"],
+            optimizer_name=tcfg.optimizer_name,
+            learning_rate=tcfg.learning_rate,
+            optimizer_state_path=tcfg.optimizer_state_path,
+            lr_scheduler_name=tcfg.lr_scheduler_name,
+            lr_warmup_steps=tcfg.lr_warmup_steps,
+            steps_per_epoch=steps_per_epoch,
+            epochs=tcfg.epochs,
+            epoch_offset=tcfg.epoch_offset,
+            lr_resume_mode=tcfg.lr_resume_mode,
         )
         # Pré-computa embeddings da amostra
         sample_embeds = self.adapter.precompute_sample_embeds(comp, tcfg)

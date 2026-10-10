@@ -25,8 +25,6 @@ from trainer_difusao.common import (
     _die,
     _emit_metric,
     _load_lora_weights,
-    _load_optimizer_state,
-    _override_optimizer_lr,
     _normalize_train_quantization,
     _resolve_output_name,
     _setup_cache_dir,
@@ -45,7 +43,7 @@ from trainer_difusao.common_pkg.latent_cache import (
 )
 from trainer_difusao.dataset import DiffusionDataset, build_dataloader
 from trainer_difusao.models.base import BaseModelTrainer
-from trainer_difusao.optimizers import _create_lr_scheduler, _create_optimizer
+from trainer_difusao.optimizers import _build_optimizer_and_scheduler, _parse_lr_resume_mode
 from trainer_difusao.models.mock import _mock_train
 from trainer_difusao.common_pkg.metrics import StepTimer, emit_training_step
 from trainer_difusao.common_pkg.diagnostics import (
@@ -474,6 +472,7 @@ def _setup_optimization(
     optimizer_state_path: str | None,
     lr_scheduler_name: str,
     lr_warmup_steps: int,
+    lr_resume_mode: str,
     steps_per_epoch: int,
     epochs: int,
     epoch_offset: int,
@@ -481,20 +480,20 @@ def _setup_optimization(
 ) -> tuple[Any, Any, _GradAccumulator]:
     """Otimizador (`lora.optimizer`), scheduler e acumulador, como no loop compartilhado.
 
-    O LR da requisição prevalece sobre o do optimizer state restaurado. O horizonte
-    da curva é (epoch_offset + epochs) épocas; em resume o scheduler é posicionado
-    nos passos das épocas já concluídas.
+    A curva cobre só as épocas desta execução, do passo 0; o LR inicial em retomada
+    segue `lr_resume_mode` (ver `_build_optimizer_and_scheduler`).
     """
-    optimizer = _create_optimizer(module, optimizer_name, learning_rate)
-    if optimizer_state_path:
-        _load_optimizer_state(optimizer, optimizer_state_path)
-        _override_optimizer_lr(optimizer, learning_rate)
-    lr_scheduler = _create_lr_scheduler(
-        optimizer,
-        lr_scheduler_name,
-        max(1, steps_per_epoch * (epoch_offset + epochs)),
-        lr_warmup_steps,
-        last_step=steps_per_epoch * epoch_offset,
+    optimizer, lr_scheduler = _build_optimizer_and_scheduler(
+        module,
+        optimizer_name=optimizer_name,
+        learning_rate=learning_rate,
+        optimizer_state_path=optimizer_state_path,
+        lr_scheduler_name=lr_scheduler_name,
+        lr_warmup_steps=lr_warmup_steps,
+        steps_per_epoch=steps_per_epoch,
+        epochs=epochs,
+        epoch_offset=epoch_offset,
+        lr_resume_mode=lr_resume_mode,
     )
     return optimizer, lr_scheduler, _GradAccumulator(module, optimizer, lr_scheduler, grad_accum)
 
@@ -543,6 +542,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
     optimizer_name = str(lora_cfg.get("optimizer", "adamw8bit"))
     lr_scheduler_name = str(lora_cfg.get("lr_scheduler", "cosine"))
     lr_warmup_steps = int(lora_cfg.get("lr_warmup_steps", 0))
+    lr_resume_mode = _parse_lr_resume_mode(lora_cfg)
     batch_size = max(1, int(lora_cfg.get("batch_size", 1)))
     resolution = int(cfg.get("resolution") or lora_cfg.get("resolution") or 768)
 
@@ -984,6 +984,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         optimizer_state_path=optimizer_state_path,
         lr_scheduler_name=lr_scheduler_name,
         lr_warmup_steps=lr_warmup_steps,
+        lr_resume_mode=lr_resume_mode,
         steps_per_epoch=steps_per_epoch,
         epochs=epochs,
         epoch_offset=epoch_offset,

@@ -573,6 +573,7 @@ class TestQwenGradAccumAndScheduler(unittest.TestCase):
             optimizer_state_path=None,
             lr_scheduler_name="cosine",
             lr_warmup_steps=2,
+            lr_resume_mode="continue",
             steps_per_epoch=2,
             epochs=2,
             epoch_offset=0,
@@ -593,12 +594,14 @@ class TestQwenGradAccumAndScheduler(unittest.TestCase):
         self.assertLess(lrs[4], lrs[3])
 
     def test_optimizer_scheduler_names_reach_factories(self):
-        from trainer_difusao.models import qwen_image
+        from trainer_difusao import optimizers
 
         module = torch.nn.Linear(2, 1)
         fake_opt = torch.optim.SGD(module.parameters(), lr=0.1)
-        with mock.patch.object(qwen_image, "_create_optimizer", return_value=fake_opt) as co, \
-                mock.patch.object(qwen_image, "_create_lr_scheduler", return_value=None) as cs:
+        from trainer_difusao.models import qwen_image
+
+        with mock.patch.object(optimizers, "_create_optimizer", return_value=fake_opt) as co, \
+                mock.patch.object(optimizers, "_create_lr_scheduler", return_value=None) as cs:
             qwen_image._setup_optimization(
                 module,
                 optimizer_name="paged_adamw32bit",
@@ -606,14 +609,15 @@ class TestQwenGradAccumAndScheduler(unittest.TestCase):
                 optimizer_state_path=None,
                 lr_scheduler_name="cosine_with_restarts",
                 lr_warmup_steps=7,
+                lr_resume_mode="continue",
                 steps_per_epoch=3,
                 epochs=5,
                 epoch_offset=2,
                 grad_accum=4,
             )
         co.assert_called_once_with(module, "paged_adamw32bit", 2e-4)
-        # horizonte = steps_per_epoch * (offset + epochs); resume posiciona em steps_per_epoch * offset
-        cs.assert_called_once_with(fake_opt, "cosine_with_restarts", 21, 7, last_step=6)
+        # horizonte = só as épocas desta execução, partindo do passo 0
+        cs.assert_called_once_with(fake_opt, "cosine_with_restarts", 15, 7)
 
 
 @unittest.skipIf(not HAS_TORCH, "torch not available")

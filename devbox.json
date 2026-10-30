@@ -51,7 +51,9 @@
         "npm run format --workspace=web -- --write"
       ],
       "up": [
-        "docker-compose -f infra/compose.yaml up -d --wait db seaweedfs s3-init"
+        "set -e",
+        "docker-compose -f infra/compose.yaml up -d --wait db seaweedfs",
+        "docker-compose -f infra/compose.yaml up --no-deps --exit-code-from s3-init s3-init"
       ],
       "down": [
         "docker-compose -f infra/compose.yaml stop db seaweedfs"

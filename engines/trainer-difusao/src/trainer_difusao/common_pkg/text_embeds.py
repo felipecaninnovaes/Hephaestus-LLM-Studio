@@ -246,17 +246,20 @@ def _temporary_device_encoders(encoders: list[Any], device: Any, *, force: bool 
                 enc.to(device)
         yield
     finally:
+        # Retorno à CPU não depende de torch: só o empty_cache de CUDA precisa dele.
         try:
-            import torch
-
             for enc in encoders:
                 if enc is not None and hasattr(enc, "to"):
                     enc.to("cpu")
             import gc
 
             gc.collect()
+            import torch
+
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+        except ImportError:
+            pass  # sem torch: nada a liberar em CUDA
         except Exception as e:
             print(f"[WARN] Falha ao retornar text encoders para CPU: {e}", flush=True)
 

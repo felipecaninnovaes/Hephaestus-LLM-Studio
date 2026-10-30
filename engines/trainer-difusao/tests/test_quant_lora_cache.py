@@ -17,6 +17,14 @@ from trainer_difusao.loaders.quant_cache import (
 )
 from trainer_difusao.generation.adapters import DaemonLoraCache
 
+try:
+    import safetensors.torch  # noqa: F401
+    import torch  # noqa: F401
+
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
+
 
 class FakePipe:
     """Pipeline fake para testar o cache de LoRAs."""
@@ -117,6 +125,7 @@ class TestQuantCache(unittest.TestCase):
             self.assertTrue((target / "model.safetensors").exists())
 
 
+@unittest.skipUnless(HAS_TORCH, "requer torch + safetensors (extra train)")
 class TestDaemonLoraCache(unittest.TestCase):
     def setUp(self):
         self.pipe = FakePipe()

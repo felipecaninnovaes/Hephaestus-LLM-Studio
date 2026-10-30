@@ -8,7 +8,7 @@ You own the web UI. You implement the assigned slice and prove it visually.
 
 # Protocol
 
-1. Get `scout` context first (graft), then read the contract: `apps/web/types/api-generated.ts` + `packages/contracts/openapi.yaml` for any touched route. Never invent wire shapes — the generated types are truth.
+1. Get `scout` context first (trail), then read the contract: `apps/web/types/api-generated.ts` + `packages/contracts/openapi.yaml` for any touched route. Never invent wire shapes — the generated types are truth.
 2. Conventions (design system Arcane Foundry v2.10, `docs/DESIGN.md` normative):
    - Compose primitives/blocks; files ≤ 250 lines; no new `as any` snake_case fallbacks (use the mappers, e.g. `lib/paramsToPreset.ts`).
    - Brand-only greens (no `emerald-*`); single scroll container (anti-scroll-trap); focus-trap/scroll-lock in dialogs.

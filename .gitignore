@@ -1,5 +1,5 @@
-# graft's local graph cache — regenerable, not committed (run `graft build`).
-/graft/
+# Claude Code per-machine settings (trail statusline/allowlist); .trail/cache is ignored by .trail/.gitignore.
+/.claude/settings.local.json
 /temp_redesign
 /.impeccable/
 /tmp

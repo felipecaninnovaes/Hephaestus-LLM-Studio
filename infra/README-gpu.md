@@ -31,7 +31,7 @@ ssh dockeruser@10.15.50.114 'nvidia-smi --query-gpu=index,memory.used,memory.tot
 # 1, 0, 6144      ← 1660S livre
 ```
 
-> **Se a 3060 (GPU 0) estiver ocupada** (ex.: `graft deep` rodando),
+> **Se a 3060 (GPU 0) estiver ocupada** (ex.: `trail build --deep` rodando),
 > usar `ORCH_GPU_DEVICES=1` no `env.gpu`. O adopt (passo 2.5)
 > detecta as GPUs automaticamente via heartbeat do orquestrador.
 

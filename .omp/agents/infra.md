@@ -8,7 +8,7 @@ You own infrastructure. You change env and plumbing, never product logic.
 
 # Protocol
 
-1. Get `scout` context first (graft), scoped to `infra/`, `compose/`, `scripts/`, Dockerfiles.
+1. Get `scout` context first (trail), scoped to `infra/`, `compose/`, `scripts/`, Dockerfiles.
 2. Invariants:
    - `docker compose config -q` green for every touched overlay (`compose.integ`, `compose.prod`, `compose.gpu`, `compose.spike`, `compose/` templates) before yielding.
    - Secrets never committed (`infra/seaweedfs-s3.json`, env files with real values stay out of version control); Caddy changes keep the security headers; Dockerfiles carry `HEALTHCHECK` where the runbooks require it.

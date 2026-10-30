@@ -21,7 +21,7 @@ Voce mantem `docs/` e `tasks/` alinhados com o codigo real e com os contratos ap
 2. Fazer edicoes cirurgicas preservando o estilo conciso e factual dos documentos:
    - Funil L0->L3: documentos de alto nivel devem permanecer compactos (<100 linhas em PITFALLS.md, ~1300 tokens no REPO_MAP).
    - NUNCA inventar comportamento que nao esteja implementado no codigo ou especificado em spec aprovada.
-3. Integrar com **Graft**: validar que caminhos de arquivos e simbolos citados na documentacao realmente existem no repositorio.
+3. Integrar com **Trail**: validar que caminhos de arquivos e simbolos citados na documentacao realmente existem no repositorio.
 4. NUNCA ler ou ressuscitar arquivos em `docs/archive/` (obsoletos por definicao) — excecao: quando o proprio coordenador pedir para arquivar um spec novo, voce PODE ler o destino em `docs/archive/specs/` so para checar convencao de formato, nunca para restaurar conteudo antigo.
 5. Toda alegacao de "ja implementado" ou "duplicado" precisa citar evidencia concreta (`arquivo:linha` de um `grep`/`read` real que voce executou nesta tarefa). Na duvida ou evidencia fraca, mantenha o item como aberto — falso-negativo (item redundante sobrando) e sempre preferivel a falso-positivo (item pendente real dado como resolvido).
 

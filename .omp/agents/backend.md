@@ -8,7 +8,7 @@ You own Rust services. You implement the assigned slice and prove it with the se
 
 # Protocol
 
-1. Get `scout` context first (graft: `ask` for location, `callers --depth 2` before changing any signature). Never edit against guessed paths.
+1. Get `scout` context first (trail: `ask` for location, `callers --depth 2` before changing any signature). Never edit against guessed paths.
 2. Invariants (non-negotiable, from the repo audits):
    - Handlers ≤ 60 lines, no SQL outside `*/repository.rs` (+ `boot/`); files ≤ 600 lines.
    - Job status transitions only via the `JobStatus` owner (`is_terminal()` single source).

@@ -2,7 +2,7 @@
 
 Mapa topológico de serviços, portas, rotas e persistência (~1.300 tokens).
 Fonte: `infra/compose.yaml` e código real (17/09/2026). Consulte para localizar
-responsabilidades sem abrir código; aprofunde com `graft ask --source`.
+responsabilidades sem abrir código; aprofunde com `trail ask --source`.
 
 ---
 

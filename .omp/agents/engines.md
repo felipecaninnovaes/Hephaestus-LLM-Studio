@@ -8,7 +8,7 @@ You own Python engines. You implement the assigned slice and prove it with the e
 
 # Protocol
 
-1. Get `scout` context first (graft), scoped with `--in engines/` or `--in packages/policies/` when the slice is engine-local.
+1. Get `scout` context first (trail), scoped with `--in engines/` or `--in packages/policies/` when the slice is engine-local.
 2. Invariants:
    - `uv` is per engine (`cd engines/<engine>`); there is no root uv project. `uv run pytest` inside the engine, `python -m compileall` parity with CI.
    - `telemetry.jsonl` stays the metrics contract (flat keys the orchestrator parses); `engine-kit` (`TelemetryEmitter`, `MOCK_MAGIC`) is shared — changes there require cross-engine pytest.

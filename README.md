@@ -159,6 +159,24 @@ O repositório inclui a CLI unificada para gestão do ambiente:
 
 ---
 
+## 🧰 Ambiente de desenvolvimento
+
+O ambiente de dev é reproduzível e independente de distro via [Devbox](https://www.jetify.com/devbox): Rust 1.97.1, Node 22, Python 3.12, uv, bun e as dependências nativas de build (cmake, gcc, perl, pkg-config) vêm pinadas em `devbox.json`/`devbox.lock` — nada é instalado globalmente.
+
+**Pré-requisitos:** [Nix](https://nixos.org/download), [Devbox](https://www.jetify.com/docs/devbox/installing_devbox), [direnv](https://direnv.net/) e Docker (daemon ativo).
+
+```bash
+git clone <url-do-repositorio> && cd Hephaestus-LLM-Studio
+direnv allow          # carrega o ambiente (e o .env da raiz, se existir) ao entrar na pasta
+devbox run setup      # npm ci + uv sync dos 4 engines + lefthook install
+devbox run up         # sobe db + seaweedfs + s3-init (infra/compose.yaml) para rodar Rust/web nativamente
+devbox run test       # cargo test + bun test (web) + pytest dos engines
+```
+
+Também: `devbox run lint` (fmt --check + clippy + biome), `devbox run fmt` (aplica rustfmt + biome) e `devbox run down` (para db/seaweedfs sem apagar volumes). Sem direnv, use `devbox shell`.
+
+---
+
 ## 📋 Requisitos de Sistema
 
 - **Servidor Central / Control Plane:**

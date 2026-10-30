@@ -77,7 +77,7 @@ jobs:
   web:
     runs-on: ubuntu-latest
     container:
-      image: node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0
+      image: node:22-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da
     env:
       HEPH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:

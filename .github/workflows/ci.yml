@@ -35,28 +35,32 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Setup Devbox
+        uses: jetify-com/devbox-install-action@v0.15.0
         with:
-          components: rustfmt
+          enable-cache: true
+          devbox-version: 0.19.0
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-directories: .devbox/cargo/registry
+
       - name: fmt (padrão rustfmt, workspace inteiro)
-        run: cargo fmt --all --check
+        run: devbox run -- cargo fmt --all --check
 
       - name: check (workspace, sem banco — regra ADR-0002 D10)
-        run: cargo check --workspace
+        run: devbox run -- cargo check --workspace
 
       - name: test — units + contract (sem banco, workspace)
-        run: cargo test --workspace
+        run: devbox run -- cargo test --workspace
 
       - name: test — integração de banco (--ignored, migrações no setup do teste)
         env:
           DATABASE_URL: postgres://studio:test@127.0.0.1:5432/studio_test
         run: |
-          cargo test -p api-principal --test datasets_db -- --ignored
-          cargo test -p manager --test manager_db -- --ignored
+          devbox run -- cargo test -p api-principal --test datasets_db -- --ignored
+          devbox run -- cargo test -p manager --test manager_db -- --ignored
 
   web:
     runs-on: ubuntu-latest
@@ -64,20 +68,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Devbox
+        uses: jetify-com/devbox-install-action@v0.15.0
         with:
-          node-version: 20
-          cache: npm
+          enable-cache: true
+          devbox-version: 0.19.0
 
       - name: Install dependencies
-        run: npm ci
+        run: devbox run -- npm ci
 
       - name: Lint web
-        run: npm run lint --workspace=web
+        run: devbox run -- npm run lint --workspace=web
 
       - name: Build web
-        run: npm run build --workspace=web
+        run: devbox run -- npm run build --workspace=web
 
   compose:
     runs-on: ubuntu-latest
@@ -115,19 +119,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Setup uv
-        uses: astral-sh/setup-uv@v5
+      - name: Setup Devbox
+        uses: jetify-com/devbox-install-action@v0.15.0
         with:
           enable-cache: true
-          cache-dependency-glob: "engines/**/pyproject.toml"
+          devbox-version: 0.19.0
+
+      - name: Cache uv
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-${{ hashFiles('engines/**/pyproject.toml', 'engines/**/uv.lock') }}
 
       - name: Compile check
-        run: python -m compileall engines/*/src
+        run: devbox run -- python -m compileall engines/*/src
 
       - name: Test ${{ matrix.engine }}
-        run: cd engines/${{ matrix.engine }} && uv run --extra test pytest
+        run: devbox run -- sh -c 'cd engines/${{ matrix.engine }} && uv run --extra test pytest'

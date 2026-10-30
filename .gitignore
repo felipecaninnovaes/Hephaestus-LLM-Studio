@@ -22,3 +22,7 @@ next-env.d.ts
 
 # Orchestrator runtime outputs — fallback volume, never versioned
 services/orchestrator/infra_outputs/
+
+# Devbox / direnv
+.devbox/
+.direnv/

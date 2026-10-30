@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Build real Next.js (Fatia 1.5). Contexto de build = raiz do repo (infra/compose.yaml).
-FROM node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS builder
+FROM node:22-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da AS builder
 WORKDIR /app
 
 # Manifests primeiro (cache de dependências; workspaces na raiz)
@@ -19,7 +19,7 @@ ENV API_INTERNAL_URL=$API_INTERNAL_URL
 RUN npm run build --workspace=web
 
 # Runtime enxuto (standalone + usuário não-root)
-FROM node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0
+FROM node:22-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
